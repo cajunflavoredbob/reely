@@ -1,0 +1,39 @@
+.toastList {
+  position: fixed;
+  bottom: var(--s2);
+  left: 0;
+  width: 100vw;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.toast {
+  width: 80vw;
+  max-width: 19rem;
+  background-color: var(--ry-black);
+  color: var(--ry-white);
+  border-radius: 0.5rem;
+  padding: var(--s2);
+  text-align: center;
+  box-shadow: -1px 3px 8px 1px rgba(33, 33, 33, 0.3);
+  margin-bottom: var(--s2);
+  list-style: none;
+  animation: toast-in 200ms ease-in-out;
+}
+
+@keyframes toast-in {
+  from { transform: translateY(200%); }
+  to   { transform: translateY(0%); }
+}
+
+.toastSuccess {
+  composes: toast;
+  background-color: var(--ry-success-color);
+}
+
+.toastFailure {
+  composes: toast;
+  background-color: var(--ry-failure-color);
+}
+

@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>reely</Name>
+  <Repository>cajunflavoredbob/reely:latest</Repository>
+  <Registry>https://hub.docker.com/r/cajunflavoredbob/reely</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/cajunflavoredbob/reely/issues</Support>
+  <Project>https://github.com/cajunflavoredbob/reely</Project>
+  <Overview>Swipe together, watch together. A social movie-picking app for Plex. Each person swipes through your library independently -- when everyone loves the same film, it's a match.</Overview>
+  <Category>MediaApp:Video</Category>
+  <WebUI>http://[IP]:[PORT:1895]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/cajunflavoredbob/reely/main/deploy/unraid-template.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/cajunflavoredbob/reely/main/web/app/static/icons/icon.svg</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <!-- Required -->
+  <Config Name="Web UI Port" Target="8000" Default="1895" Mode="tcp" Description="Port to access the reely web interface." Type="Port" Display="always" Required="true" Mask="false">1895</Config>
+  <Config Name="Plex URL" Target="PLEX_URL" Default="" Description="URL of your Plex Media Server, e.g. http://192.168.1.x:32400" Type="Variable" Display="always" Required="true" Mask="false"></Config>
+  <Config Name="Plex Token" Target="PLEX_TOKEN" Default="" Description="Your Plex authentication token. Find it in the Plex web app under Settings > Troubleshooting > Show." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="Data" Target="/app/data" Default="/mnt/user/appdata/reely" Description="Where reely stores room state between restarts." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/reely</Config>
+
+  <!-- Optional / Advanced -->
+  <Config Name="Basic Auth Username" Target="AUTH_USER" Default="" Description="Enable HTTP Basic Auth by setting both a username and password. Leave blank to disable." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="Basic Auth Password" Target="AUTH_PASS" Default="" Description="HTTP Basic Auth password. Required if Auth Username is set." Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+  <Config Name="Log Level" Target="LOG_LEVEL" Default="info" Description="Logging verbosity: debug, info, warning, error, critical." Type="Variable" Display="advanced" Required="false" Mask="false">info</Config>
+  <Config Name="Allowed Origins" Target="ALLOWED_ORIGINS" Default="" Description="Comma-separated extra WebSocket Origins to accept beyond same-origin. Only needed if a reverse proxy serves reely under an origin that differs from the container's Host header." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+</Container>

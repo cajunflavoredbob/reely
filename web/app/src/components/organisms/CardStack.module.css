@@ -1,0 +1,236 @@
+.stack {
+  --card-height: min(calc(80vmin * 1.5), 72dvh);
+  --card-width: calc(var(--card-height) * 0.66666);
+
+  position: relative;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  perspective: var(--card-height);
+  /* Anchor the vanishing point at the top so back-card foreshortening pulls
+     UP (exposing their top edges above the front card) instead of pulling
+     toward the stack's vertical center (the CSS default), which hid them
+     behind the front. */
+  perspective-origin: 50% 0%;
+  overflow: hidden;
+  /* Top padding has to clear the peek of the two back cards (~72px above
+     the front card's baseline at Y_PEEK = -36) so their tops aren't clipped. */
+  padding-top: 96px;
+  /* bottom padding gives room for the action buttons */
+  padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+}
+
+/* Mobile: extra top padding (0.5.1) gives the cardstack visible
+   breathing room from the mobile top bar. Desktop is centered by
+   .desktopSwipeStage so the extra padding isn't needed there. */
+@media (max-width: 899px) {
+  .stack {
+    padding-top: 120px;
+  }
+}
+
+.emptyStack {
+  composes: stack;
+  place-items: center;
+  min-height: calc(var(--card-height) + 100px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 32px;
+  text-align: center;
+}
+
+.emptyIcon {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--ry-grad-soft);
+  border: 1px solid rgba(255, 78, 126, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.emptyText {
+  font-family: var(--ry-font-display);
+  font-size: 1.6rem;
+  line-height: 1.1;
+  color: var(--ry-text-0);
+}
+
+.emptySubtext {
+  font-size: 13px;
+  color: var(--ry-text-2);
+  max-width: 240px;
+  line-height: 1.5;
+}
+
+.item {
+  position: absolute;
+  touch-action: pan-y;
+  user-select: none;
+  border-radius: var(--ry-radius-card);
+  overflow: hidden;
+  transition: box-shadow 220ms;
+}
+
+.item:last-of-type {
+  position: relative;
+}
+
+/* Front card sits on a soft shadow so it reads as lifted off the stack. */
+.item[data-index="0"] {
+  box-shadow: 0 24px 48px -16px rgba(0, 0, 0, 0.55);
+}
+
+.cardWrapper {
+  position: relative;
+}
+
+/* LOVE / PASS swipe hint overlays */
+.likeHint,
+.dislikeHint {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  display: flex;
+  align-items: flex-start;
+  padding: 28px 20px;
+}
+
+.likeHint {
+  background: linear-gradient(to left, rgba(74, 222, 158, 0.35) 0%, transparent 60%);
+  justify-content: flex-start;
+}
+
+.likeHint::after {
+  content: 'LOVE';
+  color: var(--ry-like);
+  font-family: var(--ry-font-display);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 2rem;
+  letter-spacing: 0.05em;
+  border: 3px solid var(--ry-like);
+  padding: 5px 12px;
+  border-radius: 6px;
+  transform: rotate(-12deg);
+  transform-origin: left top;
+}
+
+.dislikeHint {
+  background: linear-gradient(to right, rgba(255, 78, 126, 0.35) 0%, transparent 60%);
+  justify-content: flex-end;
+}
+
+.dislikeHint::after {
+  content: 'PASS';
+  color: var(--ry-pink);
+  font-family: var(--ry-font-display);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 2rem;
+  letter-spacing: 0.05em;
+  border: 3px solid var(--ry-pink);
+  padding: 5px 12px;
+  border-radius: 6px;
+  transform: rotate(12deg);
+  transform-origin: right top;
+}
+
+/* Action buttons */
+.dislikeButton,
+.likeButton {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  z-index: 10;
+  transition: transform 150ms, filter 150ms;
+  border-radius: 50%;
+}
+
+.dislikeButton {
+  width: 56px;
+  height: 56px;
+  background: var(--ry-bg-2);
+  border: 1px solid var(--ry-line-strong);
+  left: calc(50% - 70px);
+}
+
+.dislikeButton:hover {
+  background: var(--ry-bg-3);
+}
+
+.dislikeButton:active {
+  transform: scale(0.95);
+}
+
+.likeButton {
+  width: 64px;
+  height: 64px;
+  background: var(--ry-grad);
+  box-shadow: 0 12px 28px -8px rgba(255, 78, 126, 0.6);
+  right: calc(50% - 76px);
+}
+
+.likeButton:hover {
+  filter: brightness(1.08);
+}
+
+.likeButton:active {
+  transform: scale(0.96);
+}
+
+/* 900px in px, NOT em (audit 16 #457): this must stay in lockstep with
+   Room's useIsDesktop matchMedia('(min-width: 900px)') and the 899px
+   mobile rule above. The prior 56.25em only equals 900px at a 16px root
+   font size -- a larger browser default opened a zone that got the JS
+   desktop layout with mobile CardStack styling. */
+@media screen and (min-width: 900px) {
+  .stack {
+    /* Desktop: scale with viewport height, capped by available stage width.
+       Stage width = 100vw - 300px sidebar. Card is 2:3 so height = width * 1.5.
+       Targeting ~55% of stage width → * 1.5 = 82.5% of stage as height limit. */
+    --card-height: min(
+      75dvh,
+      calc((100vw - 300px) * 0.825)
+    );
+    /* Extra top padding on desktop so the back-card peek isn't crowded
+       against (or partially hidden beneath) the desktop top bar. */
+    padding-top: 130px;
+  }
+
+  .dislikeButton {
+    width: 60px;
+    height: 60px;
+    left: calc(50% - ((var(--card-width) / 2) + 80px));
+    bottom: auto;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+
+  .dislikeButton:active {
+    transform: translateY(-50%) scale(0.95);
+  }
+
+  .likeButton {
+    width: 70px;
+    height: 70px;
+    right: calc(50% - ((var(--card-width) / 2) + 86px));
+    bottom: auto;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+
+  .likeButton:active {
+    transform: translateY(-50%) scale(0.96);
+  }
+}

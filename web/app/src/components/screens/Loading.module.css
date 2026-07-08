@@ -1,0 +1,48 @@
+.root {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Progressive enhancement: 100vh first as the fallback, then 100dvh
+     for browsers that support it (mobile Safari ~16+, Chrome ~108+).
+     Older browsers ignore the second rule; modern browsers override
+     with the dynamic viewport height that excludes browser UI chrome. */
+  min-height: 100vh;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: intentional vh -> dvh fallback. */
+  min-height: 100dvh;
+  width: 100%;
+  padding: 32px;
+}
+
+.wordmark {
+  font-family: var(--ry-font-display);
+  font-weight: 400;
+  font-style: italic;
+  letter-spacing: -0.01em;
+  font-size: clamp(64px, 14vw, 144px);
+  line-height: 1;
+  background: var(--ry-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: pulse 1.6s ease-in-out infinite;
+  /* Tells the browser the element will animate -- avoids paint thrash */
+  will-change: opacity, transform;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 0.55;
+    transform: scale(0.97);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wordmark {
+    animation: none;
+    opacity: 0.85;
+  }
+}

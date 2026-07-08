@@ -1,0 +1,21 @@
+{
+  // Type-checking scope for the server-side test suite. The main tsconfig.json
+  // is also the build config (build:server runs `tsc` against it), so the
+  // tests can't live there -- they'd be emitted into dist/. This config is
+  // used only by `typecheck:tests` (tsc --noEmit). tests/web is excluded; it
+  // imports React/TSX and is type-checked by web/app's tsconfig instead.
+  //
+  // Module + resolution overrides (audit 12 #250): vitest runs ESM at
+  // runtime via Vite/esbuild, so the test typecheck uses module: ESNext +
+  // moduleResolution: Bundler to match. The main tsconfig.json stays on
+  // CommonJS (production server runtime); the override is local to this
+  // typecheck pass only.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler"
+  },
+  "include": ["tests"],
+  "exclude": ["node_modules", "dist", "tests/web"]
+}

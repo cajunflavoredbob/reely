@@ -1,0 +1,148 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  # Gate the release on the test suite passing on the exact tag SHA before
+  # we build and push the image (audit 10 #173). ci.yml runs on every push
+  # but a tag race could otherwise reach the release job before its CI
+  # finished -- the release would then ship without a green test run.
+  # Re-running tests here is the only cross-workflow guarantee Actions
+  # offers today; the duplicate run is the cost of that safety.
+  test:
+    name: Tests (release gate)
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      # Exercise the actual build at release time too (audit 12 #220). The
+      # Docker layer cache could otherwise hide a regression in the UI
+      # build that only manifests on a cold build -- and the release IS
+      # the cold build on a fresh runner.
+      - run: pnpm build
+
+  release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    needs: test
+    # Only run on a tag ref. workflow_dispatch from a branch would derive a
+    # garbage version from GITHUB_REF_NAME (the "${...#v}" tag-strip is a
+    # no-op on a branch name).
+    if: github.ref_type == 'tag'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if [[ "$(cat VERSION)" != "${VERSION}" ]]; then
+            echo "Tag version ${VERSION} does not match VERSION file $(cat VERSION)"
+            exit 1
+          fi
+          # Enforce the full 4-file release-bump rule (audit 16 #435). The
+          # docker-compose image pin previously drifted 13 releases
+          # (audit 11 #180) because only VERSION was gated; verify the
+          # compose pin and package.json here so a partial bump fails the
+          # release instead of publishing a stale-pinned compose example.
+          if ! grep -qF "cajunflavoredbob/reely:${VERSION}" docker-compose.yml; then
+            echo "docker-compose.yml image pin does not match ${VERSION}"
+            exit 1
+          fi
+          if ! grep -qF "\"version\": \"${VERSION}\"" package.json; then
+            echo "package.json version does not match ${VERSION}"
+            exit 1
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Release gate: scan the image BEFORE the multi-arch push so a
+      # CRITICAL CVE with an upstream fix blocks the publish entirely.
+      # Single-platform local-load build (Trivy needs a daemon-loaded
+      # image, which build-push-action only supports for one arch);
+      # the subsequent multi-arch push reuses every layer via the
+      # shared `type=gha` cache. Mirrors the warn-level scan in
+      # ci.yml but with severity tightened to CRITICAL and NO
+      # continue-on-error -- this is the hard gate. (Closes the
+      # second half of audit 12 #217.)
+      - name: Build image (amd64, local load for scan)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          platforms: linux/amd64
+          tags: reely:release-scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy scan (release gate -- CRITICAL fails build)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: reely:release-scan
+          format: table
+          severity: CRITICAL
+          # ignore-unfixed (see ci.yml trivy job for rationale). At
+          # release time we only care about CRITICAL CVEs that have
+          # an upstream patch available -- those are the ones a base-
+          # image or dep bump would fix.
+          ignore-unfixed: true
+          exit-code: '1'
+        # NO continue-on-error: a CRITICAL fixable CVE blocks the
+        # publish. Bump the base image or the offending dep and re-tag.
+
+      - name: Login to Docker Hub
+        # DOCKERHUB_TOKEN should be a Docker Hub PAT scoped to read/write
+        # on the `cajunflavoredbob/reely` repository ONLY -- not an
+        # account-wide token. Limits blast radius if the secret leaks
+        # (audit 9 #126). Rotation is an ops action; no code change needed.
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # Image namespace is pinned (not derived from the login secret) so
+          # it always matches the deploy/unraid-template.xml repository.
+          tags: |
+            cajunflavoredbob/reely:${{ steps.version.outputs.version }}
+            cajunflavoredbob/reely:latest
+          # GHA cache reuse from ci.yml's docker job (audit 12 #218).
+          # Without this the release build is fully cold even when ci.yml
+          # just exercised the same Dockerfile minutes earlier on the
+          # tagged commit. Same `type=gha` scope as ci.yml so the caches
+          # are shared.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true

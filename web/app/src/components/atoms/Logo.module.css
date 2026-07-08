@@ -1,0 +1,19 @@
+.root {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+
+.wordmark {
+  font-family: var(--ry-font-display);
+  font-weight: 400;
+  font-style: italic;
+  letter-spacing: -0.01em;
+  background: var(--ry-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  line-height: 1;
+}

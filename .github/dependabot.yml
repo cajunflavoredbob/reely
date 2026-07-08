@@ -1,0 +1,43 @@
+# Dependabot configuration (audit 12 #217). Opens weekly PRs that bump
+# pnpm dependencies, GitHub Actions versions, and the Dockerfile base
+# image. Grouped by ecosystem so a flurry of micro-bumps doesn't drown
+# the PR queue. No automerge: the owner reviews each bump in the per-version
+# CHANGELOG batch cycle.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # Keep grouping for minor+patch only -- majors come as
+      # individual PRs so each can be triaged on its own merits.
+      # Mixed bundles (a major + a few minors in one PR) are
+      # un-cherrypickable: closing the bundle to reject the major
+      # also drops the minors. Learned the hard way at the 0.5.0
+      # close-out (PR #4 closed for the same reason) and again on
+      # the 2026-05-25 weekly run (#5/#6/#7 all closed). After this
+      # change, the bot's weekly drop is: one grouped minor+patch
+      # PR per group + N solo major PRs.
+      runtime:
+        dependency-type: production
+        update-types: [minor, patch]
+      dev:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2

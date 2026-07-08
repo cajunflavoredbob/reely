@@ -1,0 +1,182 @@
+.card {
+  --height: var(--card-height, min(calc(80vmin * 1.5), 75dvh, 410px));
+
+  display: block;
+  width: calc(var(--height) * 0.6666);
+  height: var(--height);
+  border-radius: var(--ry-radius-card);
+  overflow: hidden;
+  position: relative;
+  background: #000;
+  color: white;
+  flex-shrink: 0;
+}
+
+.linkCard {
+  composes: card;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.linkCard:hover {
+  filter: brightness(1.05);
+}
+
+@media screen and (min-width: 48em) {
+  .card {
+    --height: var(--card-height, 50dvh);
+  }
+}
+
+/* Poster image fills entire card */
+.poster {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Subtle film grain texture */
+.grain {
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,.02) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgba(0,0,0,.04) 0 1px, transparent 1px 3px);
+  mix-blend-mode: overlay;
+  pointer-events: none;
+}
+
+/* Always-visible bottom gradient with title */
+.titleContainer {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 48px 20px 20px;
+  background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.5) 55%, transparent 100%);
+  pointer-events: none;
+}
+
+.title {
+  font-family: var(--ry-font-display);
+  font-size: clamp(1.1rem, 6vmin, 1.5rem);
+  line-height: 1.05;
+  color: white;
+  text-shadow: 0 1px 2px rgba(0,0,0,1), 0 2px 8px rgba(0,0,0,0.9), 0 6px 24px rgba(0,0,0,0.7);
+  letter-spacing: -0.02em;
+  margin-bottom: 6px;
+}
+
+.meta {
+  font-family: var(--ry-font-mono);
+  font-size: 11px;
+  color: rgba(255,255,255,0.9);
+  letter-spacing: 0.08em;
+  text-shadow: 0 1px 2px rgba(0,0,0,1), 0 2px 6px rgba(0,0,0,0.8);
+}
+
+/* Info overlay -- slides up when showMoreInfo is true */
+.moreInfo {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.88) 45%, rgba(0,0,0,0.96) 100%);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 24px;
+  animation: ry-float-up 240ms ease;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.genrePills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.genrePill {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: rgba(255,255,255,0.12);
+  color: white;
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
+.moreInfoTitle {
+  font-family: var(--ry-font-display);
+  font-size: clamp(1.3rem, 6vmin, 1.8rem);
+  line-height: 1.1;
+  color: white;
+  margin-bottom: 6px;
+}
+
+.moreInfoMeta {
+  font-family: var(--ry-font-mono);
+  font-size: 11px;
+  color: rgba(255,255,255,0.65);
+  margin-bottom: 12px;
+  letter-spacing: 0.05em;
+}
+
+.moreInfoDescription {
+  font-size: 13px;
+  color: rgba(255,255,255,0.85);
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.plexLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255,255,255,0.95);
+  color: #1a0f0f;
+  padding: 10px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  align-self: flex-start;
+}
+
+/* Info toggle button -- bottom-center circle */
+.infoButton {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--ry-info);
+  transition: background 150ms;
+  z-index: 5;
+}
+
+.infoButton:hover {
+  background: rgba(0,0,0,0.7);
+}
+
+/* ── Local @keyframes (moved from main.css in 0.5.5) ──
+ * See the warning comment at the top of main.css for why these can't
+ * live globally -- vite scopes the animation-name reference inside
+ * module files but not @keyframes in global CSS. Same hash on both
+ * sides only when the @keyframes is in the same .module.css. */
+@keyframes ry-float-up {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
