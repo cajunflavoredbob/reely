@@ -1,0 +1,375 @@
+/* Toast variant (non-first match)
+ *
+ * 0.5.2: split into a `.toastSlot` clipping wrapper + the visual
+ * `.toast` inside. The slot holds the absolute positioning + an
+ * `overflow: hidden` that CLIPS the toast when it translates above
+ * its rest position -- so the slide-from-behind-the-header effect
+ * works without needing to give the header a solid background or
+ * boost its z-index. Same approach applies on mobile (slot top
+ * 64px, below the header) + desktop (slot top 8px, inside the
+ * desktopSwipeStage which itself starts below the desktop header).
+ */
+.toastSlot {
+  position: absolute;
+  /* Mobile: .screen (Room.module.css) overrides .screenLayout's
+     padding-top to 0, so .mobileTopBar starts at viewport y=0
+     inside the positioned ancestor. Header content height = max(
+     Logo 24px, UserPill 26px) = 26px; plus 12px top + 12px bottom
+     pad = 50px. Slot's top must land flush at header bottom = y=50.
+
+     Pre-0.5.6 was `top: calc(max(env(safe-area-inset-top), 4rem)
+     + 52px)` -- WRONG on two counts:
+     1. Assumed .screenLayout's 4rem padding-top applied. It
+        doesn't on Room (.screen overrides padding to 0). That
+        added a phantom 64px gap below the header.
+     2. Used 52px for header height (mismeasured Logo as 28). The
+        actual header is 50px (UserPill is 26, the tallest child).
+
+     If UserPill height, Logo size, .mobileTopBar padding, or
+     .screen's padding-top change, audit this number. */
+  top: 50px;
+  left: 16px;
+  right: 16px;
+  z-index: 150;
+  overflow: hidden;
+}
+
+.toast {
+  background: rgba(20, 12, 14, 0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 78, 126, 0.4);
+  border-radius: 18px;
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 12px 32px -8px rgba(255, 78, 126, 0.4);
+  /* 0.5.4: 320ms -> 600ms + switched to ry-slide-fade-in (was
+     ry-slide-down). Pure translate within overflow:hidden was correct
+     geometry but the eye couldn't register the motion at 320ms with
+     no opacity change -- the toast just read as "appears." Adding the
+     fade + lengthening the duration makes the slide unmistakable.
+     The springy cubic-bezier overshoot stays. */
+  animation: ry-slide-fade-in 600ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Exit animation: slides the toast back up behind the header AND
+ * fades it out. The component (MatchMoment.tsx) sets this class then
+ * schedules a setTimeout matching this duration before calling the
+ * parent's onDismiss so the slide+fade completes BEFORE the unmount.
+ * `forwards` holds the end state in case the unmount is delayed for
+ * any reason.
+ * 0.5.4: 200ms -> 350ms + switched to ry-slide-fade-out. Same
+ * rationale as ry-slide-fade-in. TOAST_EXIT_MS in MatchMoment.tsx
+ * MUST match this duration -- drift makes the toast vanish mid-slide
+ * (jank). The MatchMoment test asserts the bumped value, so a
+ * mismatch fails CI loudly. */
+.toastExiting {
+  animation: ry-slide-fade-out 350ms ease-in forwards;
+}
+
+/* 0.5.7: applied when the parent demotes this toast (a new match
+ * slid in on top -- see Room.tsx's pendingStack model). Pure opacity
+ * fade with no transform -- the demoted toast stays in its rest
+ * position while gracefully disappearing underneath the new one;
+ * sliding out would visually fight the new one's slide-in.
+ *
+ * Source-order matters: this rule comes AFTER .toastExiting so if
+ * both classes apply (m1's auto-dismiss timer fires while it's
+ * already demoted), this one wins by CSS source-order tiebreak.
+ * Defensive: MatchMoment.tsx also skips the auto-dismiss timer
+ * when replaced=true, so the two-class scenario shouldn't happen
+ * in practice -- this is the belt to the suspenders.
+ *
+ * The parent (Room.tsx) prunes the demoted instance ~400ms after
+ * demotion, which gives the 200ms fade time to complete + a 200ms
+ * buffer. */
+.toastReplaced {
+  animation: ry-fade-out-fast 200ms ease-out forwards;
+}
+
+.toastPoster {
+  width: 44px;
+  aspect-ratio: 2 / 3;
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--ry-bg-2);
+}
+
+.toastPosterImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.toastBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.toastLabel {
+  font-size: 11px;
+  font-family: var(--ry-font-mono);
+  color: var(--ry-pink);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+
+.toastTitle {
+  font-size: 13px;
+  color: var(--ry-text-0);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Dismiss button -- 0.5.2 made it a prominent gradient pill (was a
+ * plain icon). 40x40 hit area is comfortable for mobile taps without
+ * dominating the toast layout; reely gradient bg matches the toast's
+ * pink border + makes the button reads as the primary affordance. */
+.toastClose {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--ry-grad);
+  color: white;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: filter 120ms, transform 100ms;
+}
+
+.toastClose:hover {
+  filter: brightness(1.08);
+}
+
+.toastClose:active {
+  transform: scale(0.94);
+}
+
+/* Desktop: containing block is .desktopSwipeStage (position: relative),
+   which is the right column of .desktopMain. The stage starts directly
+   below .desktopTopBar -- so top: 0 lands the slot's top edge flush
+   with the header bottom. The overflow:hidden clip then simulates the
+   toast emerging from behind the header. A pre-0.5.3 top: 8px left an
+   8px gap above the slot's top edge -- the user saw the toast appear
+   8px below the header instead of sliding out from under it. */
+@media (min-width: 900px) {
+  .toastSlot {
+    top: 0;
+  }
+}
+
+/* Big celebratory overlay (first match) */
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 200;
+  background: radial-gradient(
+    circle at 50% 40%,
+    rgba(255, 78, 126, 0.4),
+    rgba(0, 0, 0, 0.92) 70%
+  );
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  cursor: pointer;
+  overflow: hidden;
+  animation: ry-float-up 320ms ease;
+}
+
+/* Confetti pieces */
+.confettiPiece {
+  position: absolute;
+  width: 8px;
+  height: 12px;
+  border-radius: 2px;
+  animation: ry-confetti-fall linear infinite;
+}
+
+@keyframes ry-confetti-fall {
+  0% {
+    transform: translateY(0) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(700px) rotate(720deg);
+    opacity: 0;
+  }
+}
+
+.headline {
+  font-family: var(--ry-font-display);
+  font-style: italic;
+  font-size: 64px;
+  line-height: 0.95;
+  text-align: center;
+  margin-bottom: 8px;
+  color: var(--ry-text-0);
+  animation: ry-pop-in 480ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.headlineAccent {
+  background: var(--ry-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.subline {
+  font-size: 14px;
+  color: var(--ry-text-1);
+  margin-bottom: 28px;
+  text-align: center;
+}
+
+.posterBig {
+  width: 220px;
+  aspect-ratio: 2 / 3;
+  border-radius: 24px;
+  overflow: hidden;
+  box-shadow: 0 30px 80px -20px rgba(255, 78, 126, 0.6),
+    0 0 0 4px rgba(255, 255, 255, 0.1);
+  margin-bottom: 24px;
+  background: var(--ry-bg-2);
+  animation: ry-pop-in 600ms cubic-bezier(0.34, 1.56, 0.64, 1) 100ms backwards;
+}
+
+.posterBigImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.posterBigPlaceholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--ry-font-display);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--ry-text-2);
+  text-align: center;
+  padding: 16px;
+}
+
+.avatarRow {
+  display: flex;
+  margin-bottom: 24px;
+}
+
+.avatarItem {
+  margin-left: -10px;
+}
+
+.avatarItem:first-child {
+  margin-left: 0;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  max-width: 320px;
+}
+
+.keepSwipingBtn {
+  flex: 1;
+  padding: 14px;
+  border-radius: var(--ry-radius-btn);
+  background: transparent;
+  border: 1px solid var(--ry-line-strong);
+  color: var(--ry-text-1);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.keepSwipingBtn:hover {
+  background: var(--ry-bg-2);
+}
+
+.watchBtn {
+  flex: 1;
+  padding: 14px;
+  border-radius: var(--ry-radius-btn);
+  background: var(--ry-grad);
+  border: none;
+  color: white;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 24px -8px rgba(255, 78, 126, 0.6);
+  transition: filter 120ms;
+}
+
+.watchBtn:hover {
+  filter: brightness(1.06);
+}
+
+/* ── Local @keyframes (moved from main.css in 0.5.5) ──
+ * See the warning comment at the top of main.css for why these can't
+ * live globally -- vite scopes the animation-name reference inside
+ * module files but not @keyframes in global CSS. Same hash on both
+ * sides only when the @keyframes is in the same .module.css. */
+
+/* Toast entry: slides from above its rest position AND fades in.
+ * Pure translate within an overflow:hidden parent is technically a
+ * slide but at short durations with no opacity change the eye just
+ * registers "appears." The opacity 0->1 gives the eye a second
+ * motion cue. Paired with ry-slide-fade-out for the exit. */
+@keyframes ry-slide-fade-in {
+  from { transform: translateY(-100%); opacity: 0; }
+  to   { transform: translateY(0);     opacity: 1; }
+}
+
+/* Reverse of ry-slide-fade-in for the toast exit. Component schedules
+ * a setTimeout matching TOAST_EXIT_MS (MatchMoment.tsx) before
+ * calling onDismiss so the slide+fade completes BEFORE unmount. */
+@keyframes ry-slide-fade-out {
+  from { transform: translateY(0);     opacity: 1; }
+  to   { transform: translateY(-100%); opacity: 0; }
+}
+
+/* Celebration overlay: pop-in for the headline + poster. */
+@keyframes ry-pop-in {
+  from { transform: scale(0.6); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+
+/* Celebration overlay backdrop entrance. */
+@keyframes ry-float-up {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+/* 0.5.7: .toastReplaced fade-out for demoted toasts (a newer match
+ * has arrived and is sliding in on top). Pure opacity; no transform.
+ * Defined locally per the 0.5.5 keyframe-scoping fix -- vite hashes
+ * the animation-name reference inside this module so the @keyframes
+ * MUST live in the same module file or the name won't resolve. */
+@keyframes ry-fade-out-fast {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}

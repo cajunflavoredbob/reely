@@ -1,0 +1,40 @@
+.screenLayout {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  min-height: 100dvh;
+  padding:
+    max(env(safe-area-inset-top), var(--s9))
+    max(env(safe-area-inset-right), var(--s5))
+    max(env(safe-area-inset-bottom), var(--s3))
+    max(env(safe-area-inset-left), var(--s5));
+  background: var(--ry-bg-0);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Ambient glow blobs */
+.screenLayout::before,
+.screenLayout::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  filter: blur(40px);
+}
+
+.screenLayout::before {
+  top: -80px;
+  right: -80px;
+  width: 320px;
+  height: 320px;
+  background: radial-gradient(circle, rgba(255, 78, 126, 0.3), transparent 70%);
+}
+
+.screenLayout::after {
+  bottom: -100px;
+  left: -100px;
+  width: 360px;
+  height: 360px;
+  background: radial-gradient(circle, rgba(255, 179, 71, 0.24), transparent 70%);
+}

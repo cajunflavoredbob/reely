@@ -1,0 +1,40 @@
+// Module mode is CommonJS by deliberate choice (audit 10 #172).
+// reely's runtime ships as Node CommonJS; the server entry is
+// `node dist/cmd/reely/main.js` -- no bundler, no `"type": "module"` in
+// package.json. Migrating to ESM is straightforward in isolation, but two
+// long-tail dependencies still publish their CommonJS API as primary:
+//   - `pino` exposes ESM, used here via the CJS bridge
+//   - `pino-pretty` (dev-only) is ESM-first in newer majors
+// When a dependency we use goes ESM-only and breaks the CJS interop bridge,
+// flip `module` -> `NodeNext`, add `"type": "module"` to package.json, and
+// rewrite the few `require()` calls (the healthcheck inline node -e and the
+// dynamic `require(proto)` in Dockerfile HEALTHCHECK).
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": "dist",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": false,
+    // Match the web/app strictness floor (audit 13 #345). The web
+    // tsconfig has had these on since the Vite scaffold; the root
+    // tsconfig didn't, so server code could carry dead vars / dead
+    // params past typecheck. Biome catches these too once it lands
+    // (audit 13 #283), but having tsc enforce them keeps a fast
+    // local-loop gate that doesn't require running the linter.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": ["cmd/**/*", "internal/**/*", "types/**/*"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "web"
+  ]
+}
