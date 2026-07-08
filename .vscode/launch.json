@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch server",
+      "request": "launch",
+      "type": "node",
+      "program": "${workspaceFolder}/dist/cmd/reely/main.js",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PLEX_URL": "",
+        "PLEX_TOKEN": ""
+      },
+      "preLaunchTask": "build:server"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+.row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 4px;
+  margin: -4px;
+  cursor: pointer;
+  border-radius: 999px;
+  transition: background 140ms;
+}
+
+.row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.row:focus-visible {
+  outline: 2px solid var(--ry-pink);
+  outline-offset: 2px;
+}
+
+.overflow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  min-width: 30px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--ry-bg-3);
+  border: 1px solid var(--ry-line-strong);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ry-text-1);
+  font-family: var(--ry-font-mono);
+  flex-shrink: 0;
+}

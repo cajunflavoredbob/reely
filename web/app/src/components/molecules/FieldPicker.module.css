@@ -1,0 +1,127 @@
+/* FieldPicker -- searchable list of available filter fields.
+ *
+ * Extracted from FilterPanel.module.css in 0.4.47 (audit 13 #321 split,
+ * Option B). The classes here are byte-identical to the originals --
+ * the move is purely an organizational refactor.
+ */
+
+.pickerCard {
+  background: var(--ry-bg-1);
+  border: 1px solid var(--ry-line);
+  border-radius: 18px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.pickerSearchRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pickerSearch {
+  flex: 1;
+  background: var(--ry-bg-2);
+  border: 1px solid var(--ry-line);
+  border-radius: 10px;
+  color: var(--ry-text-0);
+  font-size: 13px;
+  padding: 10px 12px;
+  font-family: var(--ry-font-ui);
+}
+
+.pickerSearch:focus {
+  outline: none;
+  border-color: var(--ry-pink);
+}
+
+.pickerCancel {
+  color: var(--ry-text-2);
+  padding: 8px;
+  font-size: 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pickerList {
+  display: flex;
+  flex-direction: column;
+  max-height: 220px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.pickerList::-webkit-scrollbar {
+  display: none;
+}
+
+.pickerEmpty {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--ry-text-3);
+  text-align: center;
+  font-family: var(--ry-font-mono);
+  margin: 0;
+}
+
+.pickerItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 8px;
+  border-radius: 10px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  transition: background 100ms;
+}
+
+.pickerItem:hover {
+  background: var(--ry-bg-2);
+}
+
+.pickerItemIcon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ry-bg-2);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--ry-pink);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.pickerItemMeta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.pickerItemTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ry-text-0);
+}
+
+.pickerItemType {
+  font-size: 10px;
+  color: var(--ry-text-3);
+  font-family: var(--ry-font-mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.pickerItemPlus {
+  color: var(--ry-text-3);
+  font-size: 16px;
+}
