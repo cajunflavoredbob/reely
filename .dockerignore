@@ -1,0 +1,38 @@
+.git
+# **-prefixed so the workspace's web/app/node_modules is excluded too
+# (audit 16 #434). A bare `node_modules` is anchored to the context root,
+# so a dev machine's web/app tree -- pnpm symlinks into a store that IS
+# excluded, plus Vite's .vite cache -- was uploaded into the context and
+# copied over the builder's fresh install, breaking `build: .` builds.
+**/node_modules
+.vscode
+.env
+.DS_Store
+*.sketch
+config.yaml
+# Repo metadata + docs are not part of the runtime image (audit 12 #267).
+# Excluding them trims the build context so `docker build` uploads less
+# from the local checkout to the daemon.
+tests/
+# Test-config files at the repo root (audit 13 #348). tests/ excludes
+# the test sources themselves, but the configs that wire vitest +
+# tsconfig.test.json into the build context are separate files; without
+# excluding them, every Docker build pushes them through the context
+# even though `pnpm install --frozen-lockfile --prod` never reads them.
+tsconfig.test.json
+vitest.config.ts
+.github/
+docs/
+*.markdown
+CHANGELOG.md
+RELEASE_NOTES.markdown
+# `dist/` is excluded from the build context, but the multi-stage
+# Dockerfile produces its own `dist/` INSIDE the builder image and the
+# runtime image copies it via `COPY --from=builder /app/dist ./dist`.
+# `COPY --from=<stage>` bypasses .dockerignore by design, so the runtime
+# image always ships a freshly-built bundle -- excluding a stale local
+# `dist/` here just prevents it from polluting the context (audit 9 #124).
+dist/
+data/
+secrets/
+web/app/dist

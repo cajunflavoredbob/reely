@@ -1,0 +1,41 @@
+.pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 11px;
+  border-radius: 999px;
+  background: hsl(var(--hue) 35% 22%);
+  border: 1px solid hsl(var(--hue) 40% 32%);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ry-text-0);
+  white-space: nowrap;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+/* Left-to-right progress fill, painted behind the label. Saturation and
+   lightness are pushed well above the dim base so the filled portion
+   reads at a glance, not just on close inspection. */
+.fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--progress, 0%);
+  background: hsl(var(--hue) 70% 50%);
+  transition: width 320ms ease-out;
+  pointer-events: none;
+}
+
+.label {
+  position: relative;
+  z-index: 1;
+}
+
+.pillMe {
+  /* Subtle outer ring so the current user can spot themselves at a glance. */
+  box-shadow: 0 0 0 1.5px var(--ry-text-0);
+}

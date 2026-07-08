@@ -1,0 +1,28 @@
+.avatar {
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+.avatarCircle {
+  --size: 2rem;
+  stroke: hsl(var(--hue) 50% 40%);
+  stroke-width: clamp(2px, calc(var(--size) * 0.033333333), 0.5rem);
+  fill: hsl(var(--hue) 45% 30%);
+}
+
+/* Progress ring uses the Reely pink */
+.progress {
+  --circumference: calc(2 * 3.1415 * 15);
+  stroke: var(--ry-pink);
+  stroke-width: 2px;
+  stroke-dasharray: var(--progress), var(--circumference);
+  stroke-linecap: round;
+}
+
+.letter {
+  font-family: var(--ry-font-ui);
+  font-size: calc(var(--size) / 2);
+  font-weight: 700;
+  fill: hsl(var(--hue) 50% 90%);
+  user-select: none;
+}

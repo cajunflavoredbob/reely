@@ -1,0 +1,558 @@
+/* Mobile screen wrapper */
+.screen {
+  padding: 0px 0px max(env(safe-area-inset-bottom), var(--s3)) 0;
+}
+
+/* ───────── Mobile top bar ───────── */
+.mobileTopBar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* Bottom padding (added 0.5.1) gives the avatar pills breathing room
+     from the header's bottom edge + visually separates the header from
+     the cardstack below. Symmetric with the 12px top padding. */
+  padding: 12px 20px 12px;
+  flex-shrink: 0;
+}
+
+.mobileAvatarGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mobileSwipingCount {
+  font-size: 11px;
+  color: var(--ry-text-2);
+  white-space: nowrap;
+}
+
+/* ───────── Mobile bottom bar ───────── */
+.mobileBottomBar {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 16px;
+  flex-shrink: 0;
+}
+
+.mobileActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* Share + Filter buttons -- 20% larger than desktop pill buttons */
+.mobileShareBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 15px 8px 13px;
+  border-radius: 999px;
+  background: var(--ry-bg-2);
+  border: 1px solid var(--ry-line-strong);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ry-text-0);
+  cursor: pointer;
+  transition: background 140ms, transform 100ms;
+  white-space: nowrap;
+}
+
+.mobileShareBtn:active {
+  background: var(--ry-bg-3);
+  transform: scale(0.97);
+}
+
+.mobileShareBtn:focus-visible {
+  outline: 2px solid var(--ry-pink);
+  outline-offset: 2px;
+}
+
+.mobileFilterBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 15px 8px 13px;
+  border-radius: 999px;
+  background: var(--ry-bg-2);
+  border: 1px solid var(--ry-line-strong);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ry-text-0);
+  cursor: pointer;
+  transition: background 140ms, transform 100ms;
+  white-space: nowrap;
+}
+
+.mobileFilterBtn:active {
+  background: var(--ry-bg-3);
+  transform: scale(0.97);
+}
+
+.mobileFilterBtn:focus-visible {
+  outline: 2px solid var(--ry-pink);
+  outline-offset: 2px;
+}
+
+.mobileFilterBtnActive {
+  composes: mobileFilterBtn;
+  background: var(--ry-grad-soft);
+  border: 1px solid rgba(255, 78, 126, 0.4);
+}
+
+.mobileFilterBadge {
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--ry-pink);
+  color: white;
+  padding: 1px 6px;
+  border-radius: 999px;
+  margin-left: 2px;
+}
+
+/* Match thumbnail strip */
+.mobileMatchStrip {
+  display: flex;
+  overflow-x: auto;
+  gap: 10px;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+  cursor: pointer;
+}
+
+.mobileMatchStrip::-webkit-scrollbar {
+  display: none;
+}
+
+.mobileMatchThumb {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+  width: 52px;
+}
+
+.mobileMatchPoster {
+  width: 52px;
+  aspect-ratio: 2 / 3;
+  border-radius: 6px;
+  object-fit: cover;
+  display: block;
+}
+
+.mobileMatchPosterFallback {
+  width: 52px;
+  aspect-ratio: 2 / 3;
+  border-radius: 6px;
+  background: var(--ry-bg-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  color: var(--ry-text-2);
+  text-align: center;
+  padding: 4px;
+  overflow: hidden;
+}
+
+.mobileMatchTitle {
+  font-size: 9px;
+  color: var(--ry-text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 52px;
+  margin: 0;
+}
+
+.mobileMatchEmpty {
+  /* Match the strip's vertical footprint (52px poster + 4px gap + 9px title
+     + 4px pad) so the bottom bar height is stable across the first match. */
+  height: 73px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--ry-line-strong);
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--ry-text-2);
+  text-align: center;
+  padding: 0 16px;
+}
+
+/* ───────── Desktop layout ───────── */
+.desktopLayout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--ry-bg-0);
+  color: var(--ry-text-0);
+  position: relative;
+}
+
+.desktopLayout::before {
+  content: "";
+  position: absolute;
+  top: -240px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 800px;
+  height: 600px;
+  background: radial-gradient(ellipse, rgba(255, 78, 126, 0.18), transparent 70%);
+  filter: blur(60px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Top bar */
+.desktopTopBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 28px;
+  border-bottom: 1px solid var(--ry-line);
+  background: rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  position: relative;
+  z-index: 3;
+  flex-shrink: 0;
+}
+
+.desktopRoomMeta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.desktopRoomName {
+  text-align: center;
+}
+
+.desktopRoomLabel {
+  font-size: 10px;
+  font-family: var(--ry-font-mono);
+  letter-spacing: 0.12em;
+  color: var(--ry-text-3);
+  text-transform: uppercase;
+}
+
+.desktopRoomValue {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ry-text-0);
+  margin-top: 1px;
+}
+
+.desktopDivider {
+  width: 1px;
+  height: 28px;
+  background: var(--ry-line);
+  flex-shrink: 0;
+}
+
+.desktopAvatarGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.desktopSwipingCount {
+  font-size: 11px;
+  color: var(--ry-text-2);
+}
+
+.desktopTopBarActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.desktopShareBtn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: var(--ry-bg-2);
+  border: 1px solid var(--ry-line-strong);
+  font-size: 12px;
+  color: var(--ry-text-1);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 140ms, color 140ms, transform 100ms;
+  white-space: nowrap;
+}
+
+.desktopShareBtn:hover {
+  background: var(--ry-bg-3);
+}
+
+.desktopShareBtn:active {
+  transform: scale(0.97);
+}
+
+.desktopShareBtn:focus-visible {
+  outline: 2px solid var(--ry-pink);
+  outline-offset: 2px;
+}
+
+.desktopFilterBtn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: var(--ry-bg-2);
+  border: 1px solid var(--ry-line-strong);
+  font-size: 12px;
+  color: var(--ry-text-1);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 140ms, color 140ms, transform 100ms;
+}
+
+.desktopFilterBtn:hover {
+  background: var(--ry-bg-3);
+}
+
+.desktopFilterBtn:active {
+  transform: scale(0.97);
+}
+
+.desktopFilterBtn:focus-visible {
+  outline: 2px solid var(--ry-pink);
+  outline-offset: 2px;
+}
+
+.desktopFilterBtnActive {
+  background: var(--ry-grad);
+  border-color: transparent;
+  color: white;
+}
+
+.desktopFilterBadge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  min-width: 18px;
+  text-align: center;
+  background: var(--ry-grad);
+  color: white;
+}
+
+.desktopFilterBadgeActive {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Main row: matches sidebar + swipe stage */
+.desktopMain {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Left: matches sidebar */
+.desktopSidebar {
+  background: var(--ry-bg-1);
+  border-right: 1px solid var(--ry-line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.desktopSidebarHeader {
+  padding: 20px 20px 8px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.desktopSidebarTitle {
+  font-family: var(--ry-font-display);
+  font-size: 22px;
+  font-style: italic;
+  background: var(--ry-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  margin: 0;
+}
+
+.desktopSidebarCount {
+  font-size: 11px;
+  font-family: var(--ry-font-mono);
+  color: var(--ry-text-3);
+  letter-spacing: 0.12em;
+}
+
+.desktopMatchList {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  scrollbar-width: none;
+}
+
+.desktopMatchList::-webkit-scrollbar {
+  display: none;
+}
+
+.desktopMatchEmpty {
+  border: 1px dashed var(--ry-line-strong);
+  border-radius: 14px;
+  padding: 20px 14px;
+  text-align: center;
+  color: var(--ry-text-2);
+  font-size: 12px;
+  line-height: 1.6;
+  margin-top: 8px;
+}
+
+.desktopMatchCard {
+  display: flex;
+  gap: 10px;
+  padding: 8px;
+  background: var(--ry-bg-2);
+  border-radius: 12px;
+  border: 1px solid var(--ry-line);
+  text-align: left;
+  cursor: pointer;
+  transition: background 140ms;
+  width: 100%;
+}
+
+.desktopMatchCard:hover {
+  background: var(--ry-bg-3);
+}
+
+.desktopMatchPoster {
+  width: 44px;
+  aspect-ratio: 2 / 3;
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--ry-bg-3);
+}
+
+.desktopMatchPosterImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.desktopMatchInfo {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.desktopMatchTitle {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ry-text-0);
+}
+
+.desktopMatchMeta {
+  font-size: 10px;
+  color: var(--ry-text-2);
+  font-family: var(--ry-font-mono);
+  margin-top: 2px;
+}
+
+/* Center: swipe stage */
+.desktopSwipeStage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  min-height: 0;
+}
+
+/* Right: filter drawer */
+.desktopFilterBackdrop {
+  display: none;
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  z-index: 54;
+}
+
+.desktopFilterBackdropOpen {
+  display: block;
+}
+
+.desktopFilterDrawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 380px;
+  z-index: 55;
+  background: var(--ry-bg-1);
+  border-left: 1px solid var(--ry-line);
+  box-shadow: -20px 0 40px -10px rgba(0, 0, 0, 0.5);
+  transform: translateX(100%);
+  /* visibility:hidden removes the closed drawer from the tab order and
+     the accessibility tree -- transform + pointer-events alone left every
+     control Tab-reachable while invisible, and Enter on the hidden (but
+     enabled) "Clear filters" button cleared filters for the whole room
+     (audit 16 #431). The visibility flip is DELAYED by the slide duration
+     on close so the panel stays visible while it animates out; on open
+     the delay is zeroed so it appears immediately. */
+  visibility: hidden;
+  transition:
+    transform 280ms cubic-bezier(0.4, 0, 0.2, 1),
+    visibility 0s 280ms;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+
+.desktopFilterDrawerOpen {
+  transform: translateX(0);
+  visibility: visible;
+  transition-delay: 0s;
+  pointer-events: auto;
+}
+
+/* Share button label stabilizer -- grid-stack both label strings
+   ("Share" + "Copied!") in one cell so the button width is the
+   max of the two. The inactive span is visibility:hidden so it
+   doesn't draw but still contributes to the cell's intrinsic
+   width; the button no longer pops when "Share" flips to "Copied!"
+   on press. Both call sites (.desktopShareBtn / .mobileShareBtn)
+   use the same <ShareButton> component, so this rule covers both. */
+.shareBtnLabel {
+  display: inline-grid;
+  grid-template-columns: 1fr;
+}
+.shareBtnLabel > span {
+  grid-column: 1;
+  grid-row: 1;
+  text-align: center;
+}
+.shareBtnLabel > span[aria-hidden="true"] {
+  visibility: hidden;
+}
+

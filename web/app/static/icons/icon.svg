@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 112 112" width="512" height="512">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF4E7E"/>
+      <stop offset="50%" stop-color="#FF6A4D"/>
+      <stop offset="100%" stop-color="#FFB347"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background (iOS-style app icon) -->
+  <rect width="112" height="112" rx="24" fill="#0a0604"/>
+  <!-- Three-card stack, shifted down 3px to center vertically in 112x112 -->
+  <g transform="translate(0,3)">
+    <rect x="16" y="0" width="80" height="106" rx="10" fill="#3a2118"/>
+    <rect x="13" y="8" width="86" height="98" rx="11" fill="#62342a"/>
+    <rect x="10" y="16" width="92" height="90" rx="12" fill="url(#g)"/>
+    <text x="56" y="82" text-anchor="middle"
+          font-family="'Liberation Serif', Georgia, 'Times New Roman', serif"
+          font-style="italic" font-size="86" fill="white">r</text>
+  </g>
+</svg>

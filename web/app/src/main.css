@@ -1,0 +1,135 @@
+/* ── Legacy tokens (used by Config, Loading, Toast, etc.) ── */
+:root {
+  --ry-blue-hue: 240;
+  --ry-red-hue: 360;
+
+  --ry-black: hsl(var(--ry-blue-hue) 0% 20%);
+  --ry-black-lighter: hsl(var(--ry-blue-hue) 0% 40%);
+  --ry-light-red: hsl(var(--ry-red-hue) 76% 60%);
+  --ry-dark-red: hsl(var(--ry-red-hue) 76% 55%);
+  --ry-blue: hsl(var(--ry-blue-hue) 48% 55%);
+  --ry-pale-blue: hsl(var(--ry-blue-hue) 40% 60%);
+  --ry-white: hsl(var(--ry-blue-hue) 1% 100%);
+  --ry-plex-color: hsl(41 100% 25%);
+  --ry-plex-highlight-color: hsl(41 100% 30%);
+  --ry-line-color: hsl(var(--ry-blue-hue) 22% 90%);
+  --ry-success-color: hsl(110 40% 40%);
+  --ry-failure-color: hsl(var(--ry-red-hue) 50% 50%);
+  --ry-add-color: hsl(var(--ry-blue-hue), 46%, 82%);
+  --ry-add-highlight-color: hsl(var(--ry-blue-hue), 76%, 90%);
+  --ry-remove-color: hsl(var(--ry-red-hue), 56%, 72%);
+  --ry-remove-highlight-color: hsl(var(--ry-red-hue), 59%, 84%);
+
+  --s1: 0.25rem;
+  --s2: 0.5rem;
+  --s3: 1rem;
+  --s4: 1.5rem;
+  --s5: 2rem;
+  --s6: 2.5rem;
+  --s7: 3rem;
+  --s8: 3.5rem;
+  --s9: 4rem;
+
+  --z-far: 0;
+  --z-normal: 1;
+  --z-near: 2;
+  --z-modal: 3;
+
+  --ry-transition-duration: 100ms;
+
+  /* ── Reely design tokens ── */
+  --ry-bg-0: oklch(0.14 0.012 25);
+  --ry-bg-1: oklch(0.19 0.015 25);
+  --ry-bg-2: oklch(0.24 0.02 25);
+  --ry-bg-3: oklch(0.30 0.025 25);
+
+  --ry-text-0: oklch(0.98 0.005 60);
+  --ry-text-1: oklch(0.78 0.012 60);
+  --ry-text-2: oklch(0.58 0.012 60);
+  --ry-text-3: oklch(0.42 0.012 60);
+
+  --ry-line: oklch(1 0 0 / 0.08);
+  --ry-line-strong: oklch(1 0 0 / 0.16);
+
+  --ry-pink: #FF4E7E;
+  --ry-coral: #FF6A4D;
+  --ry-amber: #FFB347;
+  --ry-like: #4ADE9E;
+  --ry-info: #5BBEFF;
+
+  --ry-grad: linear-gradient(135deg, #FF4E7E 0%, #FF6A4D 45%, #FFB347 100%);
+  --ry-grad-soft: linear-gradient(135deg, rgba(255,78,126,.20), rgba(255,179,71,.20));
+
+  --ry-radius-card: 28px;
+  --ry-radius-btn: 999px;
+  --ry-radius-input: 16px;
+
+  --ry-shadow-card: 0 30px 60px -20px rgba(0,0,0,0.6), 0 8px 24px -8px rgba(255,78,126,0.12);
+
+  --ry-font-display: "Instrument Serif", "Times New Roman", serif;
+  --ry-font-ui: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --ry-font-mono: "Geist Mono", ui-monospace, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body,
+h1, h2, h3, h4, p,
+figure, blockquote, dl, dd {
+  margin: 0;
+}
+
+input, button, textarea, select {
+  font: inherit;
+}
+
+body {
+  background: var(--ry-bg-0);
+  color: var(--ry-text-0);
+  /* dvh follows the mobile address bar's collapse/expand automatically;
+     supported by every browser reely targets (audit 10 #171). */
+  min-height: 100dvh;
+  text-rendering: optimizeLegibility;
+  line-height: 1.5;
+  font-family: var(--ry-font-ui);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+  scroll-behavior: smooth;
+}
+
+body:not(.show-focus-ring) *:focus {
+  outline: none;
+}
+
+/* ── Shared utilities ── */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+/* ────────────────────────────────────────────────────────────────────
+ * IMPORTANT: Do NOT add @keyframes here if they're referenced from a
+ * .module.css file. Vite's CSS Modules implementation hashes the
+ * `animation-name` reference inside module files (`animation: foo
+ * 200ms` becomes `animation: _foo_<hash>_<n> 200ms`) but does NOT
+ * hash @keyframes defined in this global stylesheet. The names don't
+ * match -> the animation silently no-ops. No error, no warning, no
+ * test failure.
+ *
+ * Found 0.5.5 (cycle 4 audit). Every animation that used to live
+ * here (ry-pop-in, ry-float-up, ry-slide-fade-in, ry-slide-fade-out)
+ * had been silently dead since they were written -- the bug only
+ * became visible when 0.5.1-0.5.4 chased phantom positioning issues
+ * that weren't the real problem. Fix: keyframes live in the SAME
+ * .module.css that references them. ry-confetti-fall already worked
+ * this way -- that's why it was the only MatchMoment animation
+ * visibly firing.
+ *
+ * For a shared keyframe, DUPLICATE it into each module that uses it
+ * (ry-float-up is currently duplicated 4x, ~16 lines total).
+ * Redundant but isolated; the alternative is project-wide CSS
+ * Modules config (riskier) or the :global() escape hatch (vite +
+ * postcss-modules support varies).
+ * ──────────────────────────────────────────────────────────────── */

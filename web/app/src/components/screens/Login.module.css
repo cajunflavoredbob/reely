@@ -1,0 +1,339 @@
+.screen {
+  align-items: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.inner {
+  width: 100%;
+  max-width: 420px;
+  padding: 0 28px 28px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+/* Top bar */
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+/* Server chip */
+.serverChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 6px;
+  border-radius: 999px;
+  background: var(--ry-bg-2);
+  border: 1px solid var(--ry-line);
+  animation: ry-chip-fade-in 240ms ease both;
+}
+
+@keyframes ry-chip-fade-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.serverName {
+  font-family: var(--ry-font-mono);
+  font-size: 11px;
+  color: var(--ry-text-1);
+  letter-spacing: 0.02em;
+}
+
+.serverDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4ADE80;
+  flex-shrink: 0;
+  transition: background 200ms;
+}
+
+.serverDot[data-status="connecting"] {
+  background: #FFB347;
+  animation: ry-pulse-dot 1.2s ease-in-out infinite;
+}
+
+.serverDot[data-status="disconnected"] {
+  background: #FF4E7E;
+}
+
+@keyframes ry-pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* Spacer -- pushes headline to lower half */
+.spacer {
+  flex: 1;
+  min-height: 24px;
+}
+
+/* Headline */
+.headline {
+  font-family: var(--ry-font-display);
+  font-style: italic;
+  font-size: 56px;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  color: var(--ry-text-0);
+  margin: 0 0 10px;
+}
+
+.subline {
+  font-size: 14px;
+  color: var(--ry-text-2);
+  margin: 0 0 28px;
+  line-height: 1.5;
+}
+
+/* Error */
+.errorBox {
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(255, 78, 126, 0.12);
+  border: 1px solid rgba(255, 78, 126, 0.3);
+  color: var(--ry-pink);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+/* Form */
+.form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.fieldGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fieldLabel {
+  font-family: var(--ry-font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ry-text-2);
+}
+
+.fieldError {
+  font-size: 12px;
+  color: var(--ry-pink);
+}
+
+/* Name chip (filled state) */
+.nameChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 8px 8px;
+  border-radius: 999px;
+  background: var(--ry-bg-1);
+  border: 1px solid var(--ry-line);
+  cursor: pointer;
+  transition: border-color 100ms;
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+.nameChip:hover {
+  border-color: var(--ry-line-strong);
+}
+
+.nameChipAvatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--ry-grad);
+  font-size: 12px;
+  font-weight: 600;
+  color: white;
+  flex-shrink: 0;
+}
+
+.nameChipText {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ry-text-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.nameChipSep {
+  width: 1px;
+  height: 14px;
+  background: var(--ry-line-strong);
+  flex-shrink: 0;
+}
+
+.nameChipChange {
+  font-family: var(--ry-font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ry-text-2);
+  flex-shrink: 0;
+}
+
+/* Name input (empty/editing state) */
+.nameInputWrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--ry-radius-input);
+  background: var(--ry-bg-1);
+  border: 1px solid var(--ry-line);
+  transition: border-color 100ms;
+}
+
+.nameInputWrapper:focus-within {
+  border-color: var(--ry-line-strong);
+}
+
+.nameInputAvatar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.nameInput {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  font-family: var(--ry-font-ui);
+  font-size: 14px;
+  color: var(--ry-text-0);
+  caret-color: var(--ry-pink);
+  min-width: 0;
+}
+
+.nameInput::placeholder {
+  color: var(--ry-text-3);
+}
+
+/* Room input (hero field) */
+.roomInputWrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  border-radius: var(--ry-radius-input);
+  background: var(--ry-bg-1);
+  border: 1px solid var(--ry-line);
+  transition: border-color 100ms;
+}
+
+.roomInputWrapper::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: calc(var(--ry-radius-input) + 1px);
+  padding: 1px;
+  background: var(--ry-grad);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  -webkit-mask-composite: destination-out;
+  opacity: 0;
+  transition: opacity 150ms;
+  pointer-events: none;
+}
+
+.roomInputWrapper:focus-within {
+  border-color: transparent;
+}
+
+.roomInputWrapper:focus-within::before {
+  opacity: 1;
+}
+
+.roomHash {
+  font-family: var(--ry-font-display);
+  font-style: italic;
+  font-size: 26px;
+  line-height: 1;
+  color: var(--ry-text-2);
+  flex-shrink: 0;
+  margin-right: 4px;
+  user-select: none;
+}
+
+.roomInput {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  font-family: var(--ry-font-display);
+  font-style: italic;
+  font-size: 28px;
+  line-height: 1;
+  color: var(--ry-text-0);
+  caret-color: var(--ry-pink);
+  min-width: 0;
+  padding: 0;
+}
+
+.roomInput::placeholder {
+  color: var(--ry-text-3);
+}
+
+/* CTA */
+.ctaButton {
+  width: 100%;
+  margin-top: 4px;
+  padding: 18px 20px;
+  border-radius: var(--ry-radius-btn);
+  background: var(--ry-grad);
+  color: white;
+  border: none;
+  font-family: var(--ry-font-ui);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-shadow: 0 8px 24px -8px rgba(255, 78, 126, 0.6);
+  transition: filter 120ms;
+}
+
+.ctaButton:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.ctaButton:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Footer */
+.footer {
+  font-family: var(--ry-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ry-text-3);
+  text-align: center;
+  margin: 20px 0 0;
+}

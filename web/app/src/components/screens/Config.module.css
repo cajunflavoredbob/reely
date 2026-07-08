@@ -1,0 +1,20 @@
+.notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--s3);
+  margin-top: var(--s7);
+  font-family: var(--ry-font-ui);
+  color: var(--ry-text-1);
+}
+
+.heading {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.body {
+  max-width: 26rem;
+  line-height: 1.5;
+}

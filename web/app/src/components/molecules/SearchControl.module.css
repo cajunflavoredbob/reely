@@ -1,0 +1,86 @@
+/* SearchControl -- free-text tag input.
+ *
+ * Extracted from FilterPanel.module.css in 0.4.47 (audit 13 #321 split,
+ * Option B). The classes here are byte-identical to the originals --
+ * the move is purely an organizational refactor.
+ */
+
+.searchControl {
+  padding-top: 12px;
+}
+
+.searchRow {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.searchInput {
+  flex: 1;
+  min-width: 0;
+  background: var(--ry-bg-2);
+  border: 1px solid var(--ry-line);
+  border-radius: 10px;
+  color: var(--ry-text-0);
+  font-size: 13px;
+  padding: 10px 12px;
+  font-family: var(--ry-font-ui);
+  box-sizing: border-box;
+}
+
+.searchInput:focus {
+  outline: none;
+  border-color: var(--ry-pink);
+}
+
+.applyBtn {
+  flex-shrink: 0;
+  padding: 0 16px;
+  border-radius: 10px;
+  background: var(--ry-grad);
+  color: white;
+  border: none;
+  font-family: var(--ry-font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 120ms;
+}
+
+.applyBtn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.applyBtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.searchTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.searchTag {
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--ry-grad-soft);
+  border: 1px solid rgba(255, 78, 126, 0.3);
+  padding: 5px 8px 5px 12px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ry-text-0);
+}
+
+.searchTagRemove {
+  color: var(--ry-text-2);
+  display: inline-flex;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}

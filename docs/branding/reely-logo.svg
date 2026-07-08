@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  
+  <defs>
+    <linearGradient id="reely-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FF4E7E"></stop>
+      <stop offset="50%" stop-color="#FF6A4D"></stop>
+      <stop offset="100%" stop-color="#FFB347"></stop>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(100 100) scale(7.1428)">
+    
+    <rect x="16" y="0" width="80" height="106" rx="10" fill="#3a2118"></rect>
+    
+    <rect x="13" y="8" width="86" height="98" rx="11" fill="#62342a"></rect>
+    
+    <rect x="10" y="16" width="92" height="90" rx="12" fill="url(#reely-grad)"></rect>
+    
+    <text x="56" y="80" text-anchor="middle" font-family="Instrument Serif, Times New Roman, serif" font-style="italic" font-size="86" fill="#ffffff">r</text>
+  </g>
+</svg>

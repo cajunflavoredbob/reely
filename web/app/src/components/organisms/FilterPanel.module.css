@@ -1,0 +1,499 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--ry-bg-0);
+  display: flex;
+  flex-direction: column;
+  animation: ry-float-up 240ms ease;
+}
+
+/* Drawer variant: positioning handled by parent wrapper */
+.drawerContent {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--ry-bg-1);
+}
+
+/* Header */
+.header {
+  padding: max(env(safe-area-inset-top), 52px) 24px 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.headerDrawer {
+  composes: header;
+  padding-top: 22px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--ry-line);
+}
+
+.headerText {
+  display: flex;
+  flex-direction: column;
+}
+
+.headerLabel {
+  font-size: 11px;
+  color: var(--ry-text-3);
+  font-family: var(--ry-font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.title {
+  font-family: var(--ry-font-display);
+  font-size: 30px;
+  line-height: 1.05;
+  color: var(--ry-text-0);
+  margin: 2px 0 0;
+}
+
+.titleAccent {
+  background: var(--ry-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-style: italic;
+}
+
+.subLabel {
+  font-size: 11px;
+  color: var(--ry-text-3);
+  font-family: var(--ry-font-mono);
+  margin-top: 6px;
+}
+
+.closeButton {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--ry-bg-1);
+  border: 1px solid var(--ry-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  color: var(--ry-text-1);
+  transition: background 120ms;
+}
+
+.closeButton:hover {
+  background: var(--ry-bg-2);
+}
+
+/* Body */
+.body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  scrollbar-width: none;
+}
+
+.body::-webkit-scrollbar {
+  display: none;
+}
+
+.loading {
+  text-align: center;
+  padding: 48px 0;
+  color: var(--ry-text-2);
+  font-size: 14px;
+  font-family: var(--ry-font-mono);
+  letter-spacing: 0.06em;
+}
+
+/* Inline filter proposal card -- shown at top of panel body */
+.proposalCard {
+  background: var(--ry-bg-2);
+  border: 1px solid rgba(255, 78, 126, 0.3);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.proposalLine {
+  font-size: 13px;
+  color: var(--ry-text-1);
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.proposalName {
+  color: var(--ry-text-0);
+  font-weight: 600;
+}
+
+.proposalChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.proposalChip {
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--ry-grad-soft);
+  color: var(--ry-text-0);
+  border: 1px solid rgba(255, 78, 126, 0.3);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.proposalActions {
+  display: flex;
+  gap: 8px;
+}
+
+.proposalRejectBtn {
+  flex: 1;
+  padding: 8px 0;
+  border-radius: 999px;
+  background: var(--ry-bg-3);
+  color: var(--ry-text-1);
+  border: 1px solid var(--ry-line);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.proposalRejectBtn:hover {
+  background: var(--ry-bg-3);
+  filter: brightness(1.1);
+}
+
+.proposalAcceptBtn {
+  flex: 1;
+  padding: 8px 0;
+  border-radius: 999px;
+  background: var(--ry-grad);
+  color: white;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 120ms;
+}
+
+.proposalAcceptBtn:hover {
+  filter: brightness(1.06);
+}
+
+.proposalWaiting {
+  font-size: 13px;
+  color: var(--ry-text-2);
+  font-family: var(--ry-font-mono);
+  letter-spacing: 0.04em;
+  margin: 0;
+  flex: 1;
+}
+
+.proposalCancelBtn {
+  background: none;
+  border: 1px solid var(--ry-line-strong);
+  color: var(--ry-text-2);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.proposalCancelBtn:hover {
+  background: var(--ry-bg-3);
+}
+
+/* Footer CTA */
+.footer {
+  padding: 12px 24px max(env(safe-area-inset-bottom), 28px);
+  border-top: 1px solid var(--ry-line);
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  flex-shrink: 0;
+}
+
+.footerHint {
+  font-size: 11px;
+  color: var(--ry-text-3);
+  font-family: var(--ry-font-mono);
+  letter-spacing: 0.05em;
+  text-align: center;
+  margin-bottom: 10px;
+}
+
+.proposeButton {
+  width: 100%;
+  padding: 16px;
+  border-radius: var(--ry-radius-btn);
+  background: var(--ry-grad);
+  color: white;
+  border: none;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 8px 24px -8px rgba(255, 78, 126, 0.6);
+  transition: filter 120ms;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.proposeButton:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.proposeButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Empty state */
+.emptyFilters {
+  border: 1px dashed var(--ry-line-strong);
+  border-radius: 16px;
+  padding: 24px;
+  text-align: center;
+  color: var(--ry-text-2);
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+/* Filter rows */
+.row {
+  background: var(--ry-bg-1);
+  border: 1px solid var(--ry-line);
+  border-radius: 16px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.rowHeader {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  text-align: left;
+}
+
+.rowExpandBtn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+}
+
+.rowIcon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ry-bg-2);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--ry-pink);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.rowMeta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.rowLabel {
+  font-size: 11px;
+  color: var(--ry-text-3);
+  font-family: var(--ry-font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.rowSummary {
+  font-size: 13px;
+  color: var(--ry-text-0);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowOp {
+  color: var(--ry-text-2);
+  margin-right: 4px;
+}
+
+.operatorSelect {
+  background: var(--ry-bg-2);
+  border: 1px solid var(--ry-line);
+  color: var(--ry-text-1);
+  border-radius: 8px;
+  font-size: 11px;
+  padding: 4px 6px;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+.removeBtn {
+  color: var(--ry-text-3);
+  padding: 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.rowExpanded {
+  padding: 0 14px 14px;
+  border-top: 1px solid var(--ry-line);
+}
+
+/* Inline "Loading values..." shown inside an expanded filter row while
+   the filterValues request is in flight. More compact than the panel-level
+   .loading class which is sized for the empty-panel initial state. */
+.loadingInline {
+  padding: 14px 0 4px;
+  font-size: 12px;
+  color: var(--ry-text-2);
+  font-family: var(--ry-font-mono);
+  letter-spacing: 0.04em;
+  margin: 0;
+}
+
+/* Multi-select pills */
+.multiPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 12px;
+}
+
+.pill {
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: var(--ry-bg-2);
+  color: var(--ry-text-1);
+  border: 1px solid var(--ry-line);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.pillActive {
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: var(--ry-grad);
+  color: white;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Bool control */
+.boolControl {
+  display: flex;
+  gap: 8px;
+  padding-top: 12px;
+}
+
+.boolBtn {
+  flex: 1;
+  padding: 10px 0;
+  border-radius: 12px;
+  background: var(--ry-bg-2);
+  color: var(--ry-text-1);
+  border: 1px solid var(--ry-line);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.boolBtnActive {
+  flex: 1;
+  padding: 10px 0;
+  border-radius: 12px;
+  background: var(--ry-grad);
+  color: white;
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* SearchControl CSS moved to molecules/SearchControl.module.css in
+ * 0.4.47 (audit 13 #321 split, Option B). FieldPicker CSS moved to
+ * molecules/FieldPicker.module.css alongside it. The classes left
+ * here are FilterPanel-only.
+ */
+
+/* Add filter button */
+.addBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 16px;
+  background: var(--ry-bg-1);
+  border: 1px dashed var(--ry-line-strong);
+  color: var(--ry-text-1);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  width: 100%;
+  transition: background 120ms;
+  margin-top: 2px;
+}
+
+.addBtn:hover {
+  background: var(--ry-bg-2);
+}
+
+/* Picker drawer styles moved to molecules/FieldPicker.module.css in
+ * 0.4.47 (audit 13 #321 split). */
+
+/* ── Local @keyframes (moved from main.css in 0.5.5) ──
+ * See the warning comment at the top of main.css for why these can't
+ * live globally -- vite scopes the animation-name reference inside
+ * module files but not @keyframes in global CSS. Same hash on both
+ * sides only when the @keyframes is in the same .module.css. */
+@keyframes ry-float-up {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
