@@ -2,7 +2,7 @@
 # builds (audit 9 #122). The matching CI workflow floors to `24` so an
 # upstream Node 24.x compat issue surfaces in PR CI before it hits the
 # image. Bump in lockstep with `engines.node` in package.json.
-FROM node:24.16.0-slim AS builder
+FROM node:26.5.1-slim AS builder
 WORKDIR /app
 
 RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
@@ -37,7 +37,7 @@ RUN pnpm --filter=reely deploy --prod --legacy /deploy
 
 # ──────────────────────────────────────
 # Runtime image pinned to the same exact patch as the builder above.
-FROM node:24.16.0-slim
+FROM node:26.5.1-slim
 ENV NODE_ENV=production
 WORKDIR /app
 
