@@ -26,8 +26,8 @@ RUN pnpm build
 # this output instead of running a second `pnpm install --prod` --
 # which previously re-fetched every prod dep from the network even
 # though the builder had already resolved them. Saves the network
-# round-trip on every cold image build and drops corepack/pnpm from
-# the runtime image entirely.
+# round-trip on every cold image build and keeps pnpm out of the
+# runtime image entirely.
 #
 # `--legacy` is required on pnpm v10+ for non-injected workspaces:
 # v10 changed deploy's default to require inject-workspace-packages=true.
@@ -73,9 +73,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Bring in the prod-only node_modules + package.json from the builder's
-# pnpm deploy output. corepack/pnpm are NOT installed in this stage
-# (audit 14 #335) -- runtime only invokes `node`, so the pnpm CLI is
-# pure overhead.
+# pnpm deploy output. pnpm is NOT installed in this stage (audit 14
+# #335) -- runtime only invokes `node`, so the pnpm CLI is pure
+# overhead.
 COPY --from=builder /deploy/node_modules ./node_modules
 COPY --from=builder /deploy/package.json ./
 

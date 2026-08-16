@@ -38,6 +38,11 @@ jobs:
         task: [typecheck, build, test]
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The workflows only read the tree; keeping the GITHUB_TOKEN out
+          # of .git/config removes a credential from every later step's
+          # reach (audit 17 #2).
+          persist-credentials: false
       # pnpm version is read from `packageManager` in package.json -- keep
       # it in sync with the Dockerfile's `npm install -g pnpm@<X>` pin
       # so CI and the production image use exactly the same pnpm release
@@ -61,6 +66,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The workflows only read the tree; keeping the GITHUB_TOKEN out
+          # of .git/config removes a credential from every later step's
+          # reach (audit 17 #2).
+          persist-credentials: false
       # QEMU + buildx for cross-platform emulation. Audit 12 #268: ci.yml
       # used to build amd64 only, so an arm64 regression only surfaced at
       # release time. Now both arches build in PR CI, matching the
@@ -92,6 +102,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The workflows only read the tree; keeping the GITHUB_TOKEN out
+          # of .git/config removes a credential from every later step's
+          # reach (audit 17 #2).
+          persist-credentials: false
       - uses: pnpm/action-setup@v6.0.9
       - uses: actions/setup-node@v7
         with:
@@ -115,6 +130,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The workflows only read the tree; keeping the GITHUB_TOKEN out
+          # of .git/config removes a credential from every later step's
+          # reach (audit 17 #2).
+          persist-credentials: false
       - uses: pnpm/action-setup@v6.0.9
       - uses: actions/setup-node@v7
         with:
@@ -147,6 +167,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The workflows only read the tree; keeping the GITHUB_TOKEN out
+          # of .git/config removes a credential from every later step's
+          # reach (audit 17 #2).
+          persist-credentials: false
       - uses: docker/setup-buildx-action@v4
       # Single-platform local-load build: Trivy scans via the Docker
       # daemon, which `docker/build-push-action` only supports for one
