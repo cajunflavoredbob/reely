@@ -1,11 +1,14 @@
 # Node base image pinned to an exact patch for reproducible production
-# builds (audit 9 #122). The matching CI workflow floors to `24` so an
-# upstream Node 24.x compat issue surfaces in PR CI before it hits the
+# builds (audit 9 #122). The matching CI workflow floors to `26` so an
+# upstream Node 26.x compat issue surfaces in PR CI before it hits the
 # image. Bump in lockstep with `engines.node` in package.json.
-FROM node:24.16.0-slim AS builder
+FROM node:26.7.0-slim AS builder
 WORKDIR /app
 
-RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
+# Node 25+ images no longer ship corepack, so pnpm installs via npm
+# directly. Keep this pin in sync with `packageManager` in package.json
+# (same invariant the corepack pin used to carry -- audit 9 #123).
+RUN npm install -g pnpm@10.33.2
 
 # Install deps before copying source for better layer caching
 COPY pnpm-workspace.yaml pnpm-lock.yaml ./
@@ -37,7 +40,7 @@ RUN pnpm --filter=reely deploy --prod --legacy /deploy
 
 # ──────────────────────────────────────
 # Runtime image pinned to the same exact patch as the builder above.
-FROM node:24.16.0-slim
+FROM node:26.7.0-slim
 ENV NODE_ENV=production
 WORKDIR /app
 
@@ -62,7 +65,7 @@ LABEL org.opencontainers.image.title="reely" \
 #
 # Originally added in 0.4.18 to clear five libgnutls30 CVEs (CVE-2026-
 # 33845 + -42010 CRITICAL; -33846 + -3833 + -42009 HIGH) that the
-# upstream node:24.16.0-slim still carried. apt-get clean + rm of the
+# upstream node:24.16.0-slim of the day still carried. apt-get clean + rm of the
 # lists cache keep the layer small.
 RUN apt-get update \
     && apt-get upgrade -y \
@@ -82,7 +85,7 @@ COPY --from=builder /app/configs ./configs
 COPY --from=builder /app/VERSION ./
 
 # Drop root: chown /app and switch to the unprivileged 'node' user that ships
-# with node:24-slim (UID 1000). Reduces blast radius if the process is
+# with node:26-slim (UID 1000). Reduces blast radius if the process is
 # compromised; the server only needs read access to its own bundle and write
 # access to data/.
 #
@@ -95,7 +98,7 @@ RUN mkdir -p /app/data && chown -R node:node /app
 USER node
 
 # Hit /health every 30s to mark container health. node -e is used instead of
-# wget/curl since those aren't installed in node:24-slim. The probe mirrors
+# wget/curl since those aren't installed in node:26-slim. The probe mirrors
 # how the app resolves config: port from $PORT, else a `port:` in config.yaml,
 # else 8000; and protocol = https when TLS is configured (TLS_CERT/TLS_KEY env
 # or a `tlsConfig` block in config.yaml), else http. Without the TLS check a
