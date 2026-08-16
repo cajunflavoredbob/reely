@@ -6,3 +6,4 @@ data/
 web/app/dist
 config.yaml
 secrets/
+coverage/
