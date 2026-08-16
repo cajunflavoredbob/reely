@@ -15,6 +15,24 @@ the continuation's first stable release.
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-08-16
+
+### Changed
+
+- README rebuilt around the new brand: header lockup, feature summary,
+  desktop and mobile screenshots, compose-first run instructions, and
+  an identity-model note; configuration reference and FAQ carried over.
+- Brand refresh: the dark-plate logo is replaced by a transparent
+  fanned-card mark that works on light and dark surfaces, with an
+  outlined Instrument Serif wordmark lockup for the README header.
+  Docker Hub and Unraid exports regenerated; the separate light
+  variant is gone (no longer needed).
+
+### Added
+
+- docs/screenshots/: desktop and mobile app captures used by the
+  README.
+
 ## [1.1.2] - 2026-08-16
 
 ### Changed
