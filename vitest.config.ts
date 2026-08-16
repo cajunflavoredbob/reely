@@ -41,6 +41,18 @@ export default defineConfig({
     // file (audit 13 #338 web-layer setup, 0.4.34). Per-file override
     // keeps the rest of the suite on the faster node env.
     environment: 'node',
+    // Node 26 ships the Web Storage API as a built-in: `localStorage`
+    // becomes an own getter on globalThis that yields `undefined` unless
+    // node runs with --localstorage-file. That pre-existing key stops
+    // vitest's jsdom environment from installing jsdom's localStorage,
+    // so every `@vitest-environment jsdom` test touching localStorage
+    // broke on node 26 while passing on node 24. Disabling node's
+    // webstorage in the worker processes restores the jsdom
+    // implementation. The legacy `--no-experimental-webstorage`
+    // spelling is accepted by node 24 (harmless no-op there) AND node
+    // 26 (where the stable alias is --no-webstorage, which node 24
+    // rejects as a bad option) -- the one spelling that covers both.
+    execArgv: ['--no-experimental-webstorage'],
     // `.tsx` added 0.4.34 so React component tests under tests/web/components/
     // are picked up alongside the existing `.test.ts` files.
     include: ['tests/**/*.test.{ts,tsx}'],
