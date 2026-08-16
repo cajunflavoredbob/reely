@@ -1,4 +1,7 @@
 import { StrictMode } from "react";
+// React 19 removed the global JSX namespace; the type now imports from
+// the react package itself.
+import type { JSX } from "react";
 import { createRoot } from "react-dom/client";
 
 import "./main.css";

@@ -320,9 +320,9 @@ export const CardStack = memo(
               if (!removed) {
                 if (id === _id) {
                   controller.set({
-                    // SpringValue.get() exists at runtime but @react-spring/web v9 doesn't expose it on the typed springs record (audit 14 #364; revisit on v10 bump).
-                    // biome-ignore lint/suspicious/noExplicitAny: react-spring v9 typedef gap.
-                    x: (controller.springs as any).x.get() + x,
+                    // v10 typedef exposes SpringValue.get() on the springs
+                    // record, so the v9-era any-cast is gone (audit 14 #364).
+                    x: controller.springs.x.get() + x,
                   });
                   isAfterId = true;
                 } else {
