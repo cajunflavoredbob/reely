@@ -1,12 +1,12 @@
 # reely
 
-A community continuation of [MovieMatch](https://github.com/LukeChannings/moviematch) by Luke Channings, picking up from MovieMatch 2.0.0-beta.4 — the last upstream release before the project was abandoned in 2021.
+A community continuation of [MovieMatch](https://github.com/LukeChannings/moviematch) by Luke Channings, picking up from MovieMatch 2.0.0-beta.4, the last upstream release before the project was abandoned in 2021.
 
 > **Looking for the original upstream project?** It is archived at [github.com/LukeChannings/moviematch](https://github.com/LukeChannings/moviematch). The [v1 branch](https://github.com/LukeChannings/moviematch/tree/v1) contains the last stable Deno-based release.
 
 ---
 
-Have you ever spent longer deciding on a movie than it would take to just watch a random one? reely helps you and your friends pick something from your [Plex](https://www.plex.tv) server. Everyone swipes through the same shuffled list — swipe right to like, swipe left to pass. When two or more people like the same title, it's a match.
+Have you ever spent longer deciding on a movie than it would take to just watch a random one? reely helps you and your friends pick something from your [Plex](https://www.plex.tv) server. Everyone swipes through the same shuffled list: swipe right to like, swipe left to pass. When two or more people like the same title, it's a match.
 
 ## Quick start
 
@@ -37,20 +37,20 @@ reely can be configured via environment variables or a `config.yaml` file; envir
 
 | Variable | Docker secret name | Description | Required | Default |
 |---|---|---|---|---|
-| `PLEX_URL` | — | URL of your Plex server, e.g. `http://192.168.1.10:32400` | **Yes** | — |
-| `PLEX_TOKEN` | `plex_token` | Plex auth token. [How to find yours](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/) | **Yes** | — |
-| `HOST` | — | Network interface to listen on | No | `0.0.0.0` |
-| `PORT` | — | Port to listen on | No | `8000` |
-| `LOG_LEVEL` | — | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` | No | `INFO` |
-| `ROOT_PATH` | — | Sub-path prefix when behind a reverse proxy, e.g. `/reely` | No | — |
-| `LIBRARY_TITLE_FILTER` | — | Comma-separated movie-library names to include, e.g. `Films,Kids Movies` | No | All movie libraries |
-| `AUTH_USER` | — | Username for HTTP basic auth | No | — |
-| `AUTH_PASS` | `auth_pass` | Password for HTTP basic auth | No | — |
-| `EXPOSE_PLEX_BASE_URL` | — | Whether the WS `config` frame ships the Plex server's base URL to the browser. Default `true` so the frontend can build direct-LAN "Open in Plex" links when reachable. Set `false` to withhold; all links then route through `app.plex.tv`. Useful when reely is WAN-exposed and you don't want the internal Plex address visible to anyone with WS access. Accepts `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`. | No | `true` |
-| `TLS_CERT` | — | Path to a PEM certificate; set together with `TLS_KEY` to serve HTTPS directly (most deployments terminate TLS at a reverse proxy instead -- see [docs/reverse-proxy.markdown](docs/reverse-proxy.markdown)) | No | — |
-| `TLS_KEY` | — | Path to the PEM private key matching `TLS_CERT` | No | — |
-| `ALLOWED_ORIGINS` | — | Comma-separated extra origins to accept on WebSocket handshakes beyond same-origin; needed when a reverse proxy serves reely under an origin that differs from its Host (see [docs/reverse-proxy.markdown](docs/reverse-proxy.markdown)) | No | — |
-| `CONFIG_PATH` | — | Alternate path to `config.yaml` (equivalent to the `--config` flag) | No | `./config.yaml` |
+| `PLEX_URL` | - | URL of your Plex server, e.g. `http://192.168.1.10:32400` | **Yes** | - |
+| `PLEX_TOKEN` | `plex_token` | Plex auth token. [How to find yours](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/) | **Yes** | - |
+| `HOST` | - | Network interface to listen on | No | `0.0.0.0` |
+| `PORT` | - | Port to listen on | No | `8000` |
+| `LOG_LEVEL` | - | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` | No | `INFO` |
+| `ROOT_PATH` | - | Sub-path prefix when behind a reverse proxy, e.g. `/reely` | No | - |
+| `LIBRARY_TITLE_FILTER` | - | Comma-separated movie-library names to include, e.g. `Films,Kids Movies` | No | All movie libraries |
+| `AUTH_USER` | - | Username for HTTP basic auth | No | - |
+| `AUTH_PASS` | `auth_pass` | Password for HTTP basic auth | No | - |
+| `EXPOSE_PLEX_BASE_URL` | - | Whether the WS `config` frame ships the Plex server's base URL to the browser. Default `true` so the frontend can build direct-LAN "Open in Plex" links when reachable. Set `false` to withhold; all links then route through `app.plex.tv`. Useful when reely is WAN-exposed and you don't want the internal Plex address visible to anyone with WS access. Accepts `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`. | No | `true` |
+| `TLS_CERT` | - | Path to a PEM certificate; set together with `TLS_KEY` to serve HTTPS directly (most deployments terminate TLS at a reverse proxy instead -- see [docs/reverse-proxy.markdown](docs/reverse-proxy.markdown)) | No | - |
+| `TLS_KEY` | - | Path to the PEM private key matching `TLS_CERT` | No | - |
+| `ALLOWED_ORIGINS` | - | Comma-separated extra origins to accept on WebSocket handshakes beyond same-origin; needed when a reverse proxy serves reely under an origin that differs from its Host (see [docs/reverse-proxy.markdown](docs/reverse-proxy.markdown)) | No | - |
+| `CONFIG_PATH` | - | Alternate path to `config.yaml` (equivalent to the `--config` flag) | No | `./config.yaml` |
 
 ### Docker secrets
 
