@@ -43,7 +43,7 @@ jobs:
       # so CI and the production image use exactly the same pnpm release
       # (audit 9 #123).
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           # Floors to the latest 24.x at job time; the Dockerfile pins an
           # exact patch (audit 9 #122). Keeping CI on the major-only float
@@ -93,7 +93,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: "pnpm"
@@ -116,7 +116,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: "pnpm"
