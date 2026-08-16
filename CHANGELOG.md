@@ -15,6 +15,18 @@ the continuation's first stable release.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-16
+
+### Removed
+
+- Pre-1.0 development history: the 0.x changelog entries and the separate
+  archive file are gone; this changelog now starts at 1.0.0.
+- CONTRIBUTING note about pending filter-panel i18n coverage.
+
+### Changed
+
+- Wording and punctuation cleanups in README and CONTRIBUTING.
+
 ## [1.1.0] - 2026-08-16
 
 Dependency refresh.
