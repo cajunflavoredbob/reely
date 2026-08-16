@@ -26,11 +26,11 @@ node dist/cmd/reely/main.js
 For frontend development with hot reload, run the server in one terminal and Vite in another:
 
 ```
-# Terminal 1 — backend
+# Terminal 1 - backend
 pnpm build:server
 PLEX_URL=... PLEX_TOKEN=... node dist/cmd/reely/main.js
 
-# Terminal 2 — frontend dev server (proxies /api to port 8000)
+# Terminal 2 - frontend dev server (proxies /api to port 8000)
 cd web/app && pnpm dev
 ```
 
@@ -80,9 +80,7 @@ The WebSocket protocol is defined in `types/reely.ts`. Both the server and front
 
 Translation files live in `configs/localization/` and follow [BCP47](https://tools.ietf.org/html/bcp47) naming (`en.json`, `de.json`, etc.). The `TranslationKey` type in `types/reely.ts` defines all required keys.
 
-All keys are present in all six locales (en, es, fr, pl, de, nl). Native speaker review of the German and Dutch translations is welcome -- they were machine-translated.
-
-The filter panel UI (Filters button, proposal banner, active filter chips) currently uses hardcoded English strings. Adding i18n coverage for these is tracked as a future task.
+All keys are present in all six locales (en, es, fr, pl, de, nl). Native speaker review of the German and Dutch translations is welcome.
 
 ## CI
 
