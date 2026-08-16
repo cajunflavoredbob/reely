@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) v24 or later
+- [Node.js](https://nodejs.org/) v26 or later
 - [pnpm](https://pnpm.io/) v10 (`npm install -g pnpm`)
 - A Plex server with a valid token (for end-to-end testing)
 

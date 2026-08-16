@@ -19,6 +19,11 @@ jobs:
     if: github.ref_type == 'tag'
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The workflows only read the tree; keeping the GITHUB_TOKEN out
+          # of .git/config removes a credential from every later step's
+          # reach (audit 17 #2).
+          persist-credentials: false
       - uses: pnpm/action-setup@v6.0.9
       - uses: actions/setup-node@v7
         with:
@@ -45,6 +50,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The workflows only read the tree; keeping the GITHUB_TOKEN out
+          # of .git/config removes a credential from every later step's
+          # reach (audit 17 #2).
+          persist-credentials: false
 
       - name: Set version from tag
         id: version

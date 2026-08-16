@@ -166,6 +166,23 @@ export const Application = (config: Config, signal?: AbortSignal): ApplicationIn
       // path identically.
       app.get('/{*splat}', templateLimit, templateHandler);
 
+      // Terminal error handler (audit 17 #1). Express 5 forwards rejected
+      // async handler promises here (v4 left them as unhandled rejections
+      // that hung the socket). Without this, finalhandler takes over: it
+      // console.error()s the stack (bypassing the redacting pino logger)
+      // and, when NODE_ENV is not 'production', echoes the stack --
+      // filesystem paths included -- into the 500 body. Log through pino,
+      // answer with a bare 500. The 4-arity signature is what marks this
+      // as error middleware; the unused `next` must stay.
+      app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+        // Non-Error rejections (a thrown string) have no .stack/.message;
+        // String() keeps the log line meaningful for those too.
+        const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+        logger.error(`Unhandled handler error: ${detail}`);
+        if (!res.headersSent) res.status(500).send('Internal Server Error');
+        else res.destroy();
+      });
+
       // Build the underlying http/https server so we can attach the WS upgrade listener.
       // TLS bundle was already read at the top of this IIFE (audit 13
       // #293) so a bad cert/key path failed-fast before any startup

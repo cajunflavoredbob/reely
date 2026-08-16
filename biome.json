@@ -1,62 +1,70 @@
 {
-	"$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
-	"vcs": {
-		"enabled": true,
-		"clientKind": "git",
-		"useIgnoreFile": true
-	},
-	"files": {
-		"ignoreUnknown": true,
-		"includes": [
-			"**",
-			"!**/dist",
-			"!**/node_modules",
-			"!**/data",
-			"!**/secrets",
-			"!**/coverage",
-			"!**/.pnpm-store",
-			"!**/docs",
-			"!**/static/i18n"
-		]
-	},
-	"formatter": {
-		"enabled": false
-	},
-	"linter": {
-		"enabled": true,
-		"rules": {
-			"preset": "recommended",
-			"suspicious": {
-				"noExplicitAny": "warn",
-				"noConsole": {
-					"level": "warn",
-					"options": { "allow": ["error", "warn", "info"] }
-				}
-			},
-			"style": {
-				"noNonNullAssertion": "warn",
-				"useImportType": "warn",
-				"useExportType": "warn"
-			},
-			"correctness": {
-				"noUnusedVariables": "error",
-				"noUnusedImports": "error",
-				"useExhaustiveDependencies": "warn"
-			},
-			"complexity": {
-				"noForEach": "off"
-			},
-			"a11y": {
-				"noSvgWithoutTitle": "warn",
-				"useButtonType": "warn",
-				"useKeyWithClickEvents": "warn",
-				"noStaticElementInteractions": "warn",
-				"useSemanticElements": "warn",
-				"noAutofocus": "warn"
-			}
-		}
-	},
-	"javascript": {
-		"globals": ["globalThis"]
-	}
+  "$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": true,
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/node_modules",
+      "!**/data",
+      "!**/secrets",
+      "!**/coverage",
+      "!**/.pnpm-store",
+      "!**/docs",
+      "!**/static/i18n"
+    ]
+  },
+  "formatter": {
+    "enabled": false
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "suspicious": {
+        "noExplicitAny": "warn",
+        "noConsole": {
+          "level": "warn",
+          "options": {
+            "allow": [
+              "error",
+              "warn",
+              "info"
+            ]
+          }
+        }
+      },
+      "style": {
+        "noNonNullAssertion": "warn",
+        "useImportType": "warn",
+        "useExportType": "warn"
+      },
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error",
+        "useExhaustiveDependencies": "warn"
+      },
+      "complexity": {
+        "noForEach": "off"
+      },
+      "a11y": {
+        "noSvgWithoutTitle": "warn",
+        "useButtonType": "warn",
+        "useKeyWithClickEvents": "warn",
+        "noStaticElementInteractions": "warn",
+        "useSemanticElements": "warn",
+        "noAutofocus": "warn"
+      }
+    }
+  },
+  "javascript": {
+    "globals": [
+      "globalThis"
+    ]
+  }
 }
