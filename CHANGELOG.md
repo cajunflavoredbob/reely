@@ -15,6 +15,13 @@ the continuation's first stable release.
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-08-16
+
+### Changed
+
+- The 1.0.0 changelog entry is now simply the initial-release marker;
+  per-change detail starts with the versions that follow it.
+
 ## [1.1.1] - 2026-08-16
 
 ### Removed
