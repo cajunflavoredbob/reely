@@ -24,7 +24,7 @@ jobs:
           # of .git/config removes a credential from every later step's
           # reach (audit 17 #2).
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.9
+      - uses: pnpm/action-setup@v6.0.10
       - uses: actions/setup-node@v7
         with:
           node-version: "26"

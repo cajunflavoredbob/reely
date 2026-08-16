@@ -47,7 +47,7 @@ jobs:
       # it in sync with the Dockerfile's `npm install -g pnpm@<X>` pin
       # so CI and the production image use exactly the same pnpm release
       # (audit 9 #123).
-      - uses: pnpm/action-setup@v6.0.9
+      - uses: pnpm/action-setup@v6.0.10
       - uses: actions/setup-node@v7
         with:
           # Floors to the latest 26.x at job time; the Dockerfile pins an
@@ -107,7 +107,7 @@ jobs:
           # of .git/config removes a credential from every later step's
           # reach (audit 17 #2).
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.9
+      - uses: pnpm/action-setup@v6.0.10
       - uses: actions/setup-node@v7
         with:
           node-version: "26"
@@ -135,7 +135,7 @@ jobs:
           # of .git/config removes a credential from every later step's
           # reach (audit 17 #2).
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.9
+      - uses: pnpm/action-setup@v6.0.10
       - uses: actions/setup-node@v7
         with:
           node-version: "26"
