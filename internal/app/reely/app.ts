@@ -161,7 +161,10 @@ export const Application = (config: Config, signal?: AbortSignal): ApplicationIn
       app.use(basicAuthHandler);
       app.get('/api/poster/:providerIndex/:metadataId/:thumbId', posterLimit, posterHandler);
       app.use(serveStaticHandler);
-      app.get('*', templateLimit, templateHandler);
+      // Express 5 (path-to-regexp v8) rejects the bare '*' catch-all;
+      // '/{*splat}' is the v5 spelling that matches '/' and every deeper
+      // path identically.
+      app.get('/{*splat}', templateLimit, templateHandler);
 
       // Build the underlying http/https server so we can attach the WS upgrade listener.
       // TLS bundle was already read at the top of this IIFE (audit 13
