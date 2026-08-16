@@ -21,6 +21,7 @@ the continuation's first stable release.
 
 - The 1.0.0 changelog entry is now simply the initial-release marker;
   per-change detail starts with the versions that follow it.
+- docker-compose.yml example pin raised to the current image tag.
 
 ## [1.1.1] - 2026-08-16
 
