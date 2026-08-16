@@ -15,6 +15,18 @@ the continuation's first stable release.
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-08-16
+
+### Changed
+
+- In-app brand brought in line with the 1.1.3 refresh: the Logo
+  component draws the fanned card mark with the "r" as an outlined
+  path (pixel-matches docs/branding, no serif-fallback flash before
+  the webfont loads), and every static icon is regenerated from the
+  new mark: SVG favicon, favicon.ico (now proper 16/32/48 multi-size),
+  PWA icon-192/512, icon-32, and the apple-touch icon-180 (app-chrome
+  background baked in, since iOS renders transparency as black).
+
 ## [1.1.3] - 2026-08-16
 
 ### Changed
