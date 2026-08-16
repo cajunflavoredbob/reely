@@ -5,7 +5,17 @@ import type { ReelyProvider } from '../providers/types';
 
 // Route: GET /api/poster/:providerIndex/:metadataId/:thumbId
 // Proxies and transcodes artwork from Plex, streaming the response body directly.
-export const handler = async (req: Request, res: Response): Promise<void> => {
+// The Request generic pins each param to `string`: express 5 types the
+// default params dictionary as `string | string[]` (arrays arrive from
+// repeating wildcards), but this route's three named params are always
+// single segments. Exported so the handler's tests type their request
+// stub against the same shape.
+export type PosterParams = { providerIndex: string; metadataId: string; thumbId: string };
+
+export const handler = async (
+  req: Request<PosterParams>,
+  res: Response,
+): Promise<void> => {
   const { providerIndex, metadataId, thumbId } = req.params;
   const providers = res.locals.providers as ReelyProvider[];
 
