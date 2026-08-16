@@ -37,7 +37,7 @@ jobs:
       matrix:
         task: [typecheck, build, test]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # pnpm version is read from `packageManager` in package.json -- keep
       # it in sync with the Dockerfile's `corepack prepare pnpm@<X>` pin
       # so CI and the production image use exactly the same pnpm release
@@ -60,7 +60,7 @@ jobs:
     name: Docker build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # QEMU + buildx for cross-platform emulation. Audit 12 #268: ci.yml
       # used to build amd64 only, so an arm64 regression only surfaced at
       # release time. Now both arches build in PR CI, matching the
@@ -91,7 +91,7 @@ jobs:
     name: pnpm audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
@@ -114,7 +114,7 @@ jobs:
     name: biome lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
@@ -146,7 +146,7 @@ jobs:
     name: Trivy image scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
       # Single-platform local-load build: Trivy scans via the Docker
       # daemon, which `docker/build-push-action` only supports for one
