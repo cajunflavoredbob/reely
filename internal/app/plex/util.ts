@@ -1,23 +1,12 @@
 import type { Filter } from '../../../types/reely';
 import { logger } from '../reely/logger';
 
-// Fan-out helper for the per-library Promise.allSettled pattern used by
-// PlexApi.getAllFilters, PlexApi.getFilterValues, and the provider's
-// getMediaCached (audit 13 #326). Each was a hand-rolled
-// `Promise.allSettled(libraries.map(...))` followed by an
-// outcome-iterator that logged rejections and pushed fulfilled into
-// an accumulator. The three sites had identical fan-out logic with
-// different downstream accumulation; centralizing the fan-out lets
-// each caller focus on its own merge.
+// Parallel per-library fan-out that tolerates partial failure: one unreachable
+// or malformed section never sinks the whole result. `logPrefix` names the
+// caller so an operator can tell the fan-outs apart in the log.
 //
-// Tolerates per-library failures: one unreachable or malformed
-// section never sinks the whole result. Logs at warn level with the
-// caller-provided `logPrefix` so a future operator can grep for
-// which fan-out had which failure.
-// Generic over the library shape: PlexApi callers pass PlexLibrary[]
-// (raw API response shape); the provider's getMediaCached passes
-// Library[] (app-layer normalized shape). The helper only iterates;
-// the per-call fn is what reads library fields.
+// Generic over the library shape because PlexApi passes the raw PlexLibrary
+// and the provider passes the normalized Library; only `fn` reads fields.
 export const fanOutLibraries = async <L, T>(
   libraries: L[],
   logPrefix: string,
@@ -37,20 +26,15 @@ export const fanOutLibraries = async <L, T>(
   return fulfilled;
 };
 
-// Plex operator suffixes always include a trailing '='. The query-string form
-// of the filter key drops that '=' (URLSearchParams re-adds it as the
-// key/value separator):
-//   '='   -> ''   -> `key=value`     (equality)
-//   '!='  -> '!'  -> `key!=value`    (inequality)
-//   '>='  -> '>'  -> `key>=value`    (gte)
-//   '>>=' -> '>>' -> `key>>=value`   (Plex-specific)
+// Operators always end in '='; the query-string key drops it because
+// URLSearchParams re-adds it as the separator:
+//   '='   -> ''   -> `key=value`
+//   '!='  -> '!'  -> `key!=value`
+//   '>>=' -> '>>' -> `key>>=value`
 //
-// Returns one (key, value) entry per filter value, not a comma-joined string.
-// Plex's filter API treats `,` inside a value as a multi-value separator,
-// so joining `['a,b', 'c']` as `'a,b,c'` would split into three values on
-// the Plex side. Emitting each value as a repeated query-string key is the
-// correct multi-value form -- and URLSearchParams.append will URL-encode
-// each one independently, so values containing `&`, `=`, etc. survive.
+// One entry per value, never comma-joined: Plex treats `,` inside a value as a
+// multi-value separator, so `['a,b', 'c']` would arrive as three values.
+// Repeated keys also let append() encode each value independently.
 export const filterToQueryString = (
   { key, value, operator }: Filter,
 ): Array<[key: string, value: string]> => {

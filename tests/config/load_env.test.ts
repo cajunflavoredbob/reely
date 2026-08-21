@@ -1,13 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock readDockerSecret BEFORE importing load_env. The default returns
-// undefined so the env vars are the only signal; individual tests can
-// override it to exercise the secret-takes-precedence path.
-//
-// vi.hoisted is required here because vi.mock is itself hoisted above
-// imports; a plain `const dockerSecretMock = vi.fn()` at module top
-// would be in TDZ when the mock factory ran. Same root cause as the
-// loggerMockFactory closure-form pattern from audit 13 / 0.4.24.
+// Defaults to undefined so env vars are the only signal. vi.hoisted is
+// required: a plain const would be in TDZ when the hoisted mock factory runs.
 const { dockerSecretMock } = vi.hoisted(() => ({
   dockerSecretMock: vi.fn().mockResolvedValue(undefined),
 }));
@@ -43,17 +37,15 @@ describe('loadFromEnv: scalar values', () => {
     expect((await loadFromEnv())?.port).toBe(9000);
   });
 
-  // Number('abc') -> NaN; the loader rejects rather than letting NaN
-  // override the default downstream.
+  // Guards against NaN overriding the default downstream.
   it('throws on a non-numeric PORT', async () => {
     vi.stubEnv('PORT', 'abc');
     await expect(loadFromEnv()).rejects.toThrow(/PORT="abc" is not a valid number/);
   });
 
-  // Audit 12 #236: hostile env values get JSON.stringify-quoted in the
-  // error so a `PORT="<script>..."` doesn't land in container logs as
-  // raw HTML/script characters.
-  it('JSON-quotes the offending PORT value in the error message (audit 12 #236)', async () => {
+  // Hostile env values are JSON-quoted so they cannot land in container logs
+  // as raw script characters.
+  it('JSON-quotes the offending PORT value in the error message', async () => {
     vi.stubEnv('PORT', '<script>');
     await expect(loadFromEnv()).rejects.toThrow(/PORT="<script>"/);
   });
@@ -86,8 +78,8 @@ describe('loadFromEnv: EnvBool parsing', () => {
     expect((await loadFromEnv())?.exposePlexBaseUrl).toBe(expected);
   });
 
-  // Silent coercion of an invalid value to the default would HIDE the
-  // typo (EXPOSE_PLEX_BASE_URL=ture would just be "false"). Throw instead.
+  // Coercing an invalid value to the default hides the typo: `ture` would
+  // read as false.
   it('throws on an invalid boolean value (no silent coercion to default)', async () => {
     vi.stubEnv('EXPOSE_PLEX_BASE_URL', 'ture');
     await expect(loadFromEnv()).rejects.toThrow(/not a valid boolean/);
@@ -106,11 +98,9 @@ describe('loadFromEnv: EnvList parsing', () => {
   });
 });
 
-describe('loadFromEnv: PLEX_URL scheme enforcement (audit 12 #207)', () => {
-  // Prior loader silently downgraded a scheme-less PLEX_URL to http:// and
-  // logged a warning that's easy to miss in container logs. Since the Plex
-  // token rides in that URL, the scheme determines whether it travels
-  // encrypted. Forcing an explicit scheme is a deliberate UX trade.
+describe('loadFromEnv: PLEX_URL scheme enforcement', () => {
+  // The Plex token rides in this URL, so the scheme decides whether it
+  // travels encrypted. A silent downgrade to http:// is not acceptable.
   it('throws when PLEX_URL has no scheme', async () => {
     vi.stubEnv('PLEX_URL', 'plex.local:32400');
     vi.stubEnv('PLEX_TOKEN', 'tok');
@@ -132,11 +122,10 @@ describe('loadFromEnv: PLEX_URL scheme enforcement (audit 12 #207)', () => {
   });
 });
 
-describe('loadFromEnv: partial-bundle gates (audit 12 #198)', () => {
-  // Each multi-field bundle (server, basicAuth, tlsConfig) is emitted ONLY
-  // when both halves of its required pair are present. Without the gate,
-  // setting only one half emits a bundle that spreads over YAML and
-  // ERASES the partner field that was already configured there.
+describe('loadFromEnv: partial-bundle gates', () => {
+  // Each bundle (server, basicAuth, tlsConfig) is emitted only when both
+  // halves of its pair are set. A half-bundle spreads over the YAML and
+  // erases the partner field configured there.
 
   it('emits a server bundle only when BOTH PLEX_URL and PLEX_TOKEN are set', async () => {
     vi.stubEnv('PLEX_URL', 'http://plex.local');
@@ -190,10 +179,7 @@ describe('loadFromEnv: partial-bundle gates (audit 12 #198)', () => {
 });
 
 describe('loadFromEnv: docker secrets take precedence over env vars', () => {
-  // Audit 12 #209 made readDockerSecret async; loadFromEnv awaits it.
-  // The secret takes precedence when present, so an operator who's set
-  // up a secret can leave the env var unset (or even set, for migration)
-  // and the secret wins.
+  // A present secret wins, so migrating operators can leave the env var set.
   it('uses the plex_token docker secret over PLEX_TOKEN env when both are set', async () => {
     dockerSecretMock.mockImplementation((name: string) =>
       Promise.resolve(name === 'plex_token' ? 'secret-tok' : undefined),

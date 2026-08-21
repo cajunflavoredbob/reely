@@ -1,9 +1,4 @@
-/* SearchControl -- free-text tag input.
- *
- * Extracted from FilterPanel.module.css in 0.4.47 (audit 13 #321 split,
- * Option B). The classes here are byte-identical to the originals --
- * the move is purely an organizational refactor.
- */
+/* SearchControl: free-text tag input. */
 
 .searchControl {
   padding-top: 12px;

@@ -2,16 +2,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
-// Card pulls in three external deps worth thinking about:
-//   - posterSrc (utils/poster) -- reads document.body.dataset.rootPath
-//     at call time. Real impl is fine; we stub the dataset.
-//   - isIOS (utils/platform) -- module-level const computed at import.
-//     Same get-accessor proxy pattern as PlexLinks.test.tsx so tests
-//     can flip the value per case.
-//   - PlexLinks (atoms/PlexLinks) -- uses the Zustand store. Stub the
-//     whole component to a sentinel marker so Card tests don't need to
-//     re-establish the store mock; PlexLinks already has its own
-//     coverage in tests/web/components/atoms/PlexLinks.test.tsx.
+// `isIOS` is a module-level const computed at import, so it is proxied through
+// a mutable object. PlexLinks is stubbed to a sentinel: it needs the Zustand
+// store and has its own coverage in atoms/PlexLinks.test.tsx.
 const { isIOSMock } = vi.hoisted(() => ({ isIOSMock: { current: false } }));
 
 vi.mock('../../../../web/app/src/utils/platform', () => ({
@@ -21,9 +14,6 @@ vi.mock('../../../../web/app/src/utils/platform', () => ({
 }));
 
 vi.mock('../../../../web/app/src/components/atoms/PlexLinks', () => ({
-  // Sentinel marker -- if Card renders it, we'll find the data attr in
-  // the DOM. Cheaper + clearer than re-establishing the store mock just
-  // to render the real component inside a Card test.
   PlexLinks: () => <div data-testid="plex-links-stub" />,
 }));
 
@@ -49,10 +39,9 @@ const media = (over: Partial<Media> = {}): Media =>
 
 beforeEach(() => {
   isIOSMock.current = false;
-  // posterSrc reads document.body.dataset.rootPath. jsdom provides a real
-  // document; rootPath is undefined by default which posterSrc coalesces
-  // to an empty string. Don't stub the document wholesale -- replacing it
-  // with a plain object breaks createElement which RTL needs to render.
+  // posterSrc reads document.body.dataset.rootPath; jsdom's real document is
+  // enough (undefined coalesces to ''). Never stub document wholesale: a plain
+  // object breaks the createElement RTL renders through.
 });
 
 afterEach(() => {
@@ -111,11 +100,8 @@ describe('Card: info toggle (no href -> swipe card)', () => {
     expect(screen.getByRole('button', { name: 'More info' })).toBeDefined();
   });
 
-  // fireEvent.click (not Element.click) so RTL wraps the dispatch in act()
-  // and flushes React's state-update batching synchronously. Element.click
-  // dispatches a real synthetic click but the surrounding setState happens
-  // outside the test's awareness, so subsequent screen.getByText runs
-  // against the pre-update DOM.
+  // fireEvent.click, not Element.click: RTL wraps it in act() so the state
+  // update flushes before the assertions read the DOM.
   it('clicking the info button flips to the more-info view (genres + description + PlexLinks)', () => {
     render(<Card media={media()} />);
     fireEvent.click(screen.getByRole('button', { name: 'More info' }));
@@ -150,8 +136,7 @@ describe('Card: info toggle (no href -> swipe card)', () => {
   it('renders the more-info meta line with the full segment chain (year + duration + rating + contentRating)', () => {
     render(<Card media={media()} />);
     fireEvent.click(screen.getByRole('button', { name: 'More info' }));
-    // The more-info meta line concatenates all four with " · "; the
-    // surrounding test fixture has all four populated.
+    // All four segments joined with " · ".
     expect(screen.getByText('2024 · 1H 30M · ★ 8.4 · PG-13')).toBeDefined();
   });
 });
@@ -170,7 +155,7 @@ describe('Card: href variant (link card, no info toggle)', () => {
     expect(container.querySelector('a')?.getAttribute('target')).toBe('_blank');
   });
 
-  it('uses target="_self" on iOS (audit 13 #325 Safari new-tab quirk)', () => {
+  it('uses target="_self" on iOS', () => {
     isIOSMock.current = true;
     const { container } = render(<Card media={media()} href="/some/path" />);
     expect(container.querySelector('a')?.getAttribute('target')).toBe('_self');

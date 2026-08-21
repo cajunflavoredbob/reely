@@ -8,42 +8,34 @@ import { flushPendingSaves } from '../../internal/app/reely/roomStore';
 import type { Config } from '../../types/reely';
 import type { ReelyError } from '../../internal/app/reely/util/assert';
 
-// Watchdog timeout for the best-effort flushPendingSaves on
-// uncaughtException -- if the flush hangs (disk wedged, fs unmount mid-
-// write), exit anyway so the supervisor can restart us.
+// Bounds the flush below: if the disk is wedged, exit anyway so the supervisor
+// can restart us.
 const UNCAUGHT_FLUSH_TIMEOUT_MS = 1500;
 
-// Last-resort handlers for errors nothing else caught. Logging goes through
-// the redacting logger so a stray stack can't leak the Plex token.
+// Last-resort handlers. Logging goes through the redacting logger so a stray
+// stack can't leak the Plex token.
 //
-// Asymmetric policy:
-//   - uncaughtException: leaves the process in an undefined state per
-//     Node's own contract. Log fatally, best-effort flush the room-save
-//     debounce queue so a swipe in the 2s window before the crash isn't
-//     lost (audit 12 #200), then exit. A watchdog forces exit if the
-//     flush hangs. Supervisor (Docker / systemd) restarts.
-//   - unhandledRejection: log and continue. Every async path that matters
-//     in this codebase wraps its own errors (Room.media, saveRoom,
-//     applyFilters, the poster proxy, rate-limit cache, etc.), so a
-//     rejection that escapes to here indicates a bug in a non-critical
-//     path; killing the server on it does more damage than letting it
-//     surface in logs. To override (e.g. CI), set
-//     NODE_OPTIONS='--unhandled-rejections=strict' on the runtime.
+// uncaughtException leaves the process undefined per Node's contract, so flush
+// the room-save debounce queue (a swipe in the 2s window would be lost) and
+// exit for the supervisor to restart.
+//
+// unhandledRejection only logs: every async path that matters wraps its own
+// errors, so a rejection reaching here is a bug in a non-critical path and
+// killing the server does more damage. Override with
+// NODE_OPTIONS='--unhandled-rejections=strict'.
 process.on('unhandledRejection', (reason) => {
   logger.error(`Unhandled promise rejection: ${String(reason)}`);
 });
 process.on('uncaughtException', (err) => {
   logger.fatal(`Uncaught exception: ${String(err)}`);
-  // Re-entrancy guard: if the flush itself throws or the watchdog
-  // fires, the second exit() short-circuits.
+  // The flush and the watchdog race; whichever loses is a no-op.
   let exited = false;
   const exitOnce = () => {
     if (exited) return;
     exited = true;
     process.exit(1);
   };
-  // unref() so the watchdog itself doesn't keep the process alive past
-  // the natural exit when flush wins the race.
+  // unref() so the watchdog can't keep the process alive when the flush wins.
   setTimeout(exitOnce, UNCAUGHT_FLUSH_TIMEOUT_MS).unref();
   flushPendingSaves().finally(exitOnce);
 });
@@ -52,9 +44,7 @@ process.on('uncaughtException', (err) => {
   const flags = minimist(process.argv.slice(2), { alias: { v: 'version' } });
 
   if (flags.version) {
-    // CLI version output, not application logging -- needs to land on
-    // stdout for shell redirection / scripting. logger goes to pino
-    // (different sink + format); console.log is correct here.
+    // Must land on stdout for scripting; the pino logger uses another sink.
     // biome-ignore lint/suspicious/noConsole: CLI version output.
     console.log(`reely ${await getVersion()}`);
     process.exit(0);
@@ -62,11 +52,10 @@ process.on('uncaughtException', (err) => {
 
   const CONFIG_PATH: string | undefined = flags.config ?? process.env.CONFIG_PATH;
 
-  // loadConfig throws on malformed YAML / permission errors / scheme-less
-  // PLEX_URL / empty Docker secret -- catch them explicitly here and exit
-  // fatally. Without this catch they'd escape to the global
-  // unhandledRejection handler above, which only logs -- leaving the
-  // process alive without a config (audit 12 #212).
+  // loadConfig throws on malformed YAML, permission errors, a scheme-less
+  // PLEX_URL, or an empty Docker secret. Without this catch they reach the
+  // unhandledRejection handler above, which only logs, leaving the process
+  // alive with no config.
   let config: Config;
   let errors: ReelyError[];
   try {
@@ -76,16 +65,10 @@ process.on('uncaughtException', (err) => {
     process.exit(1);
   }
 
-  // Partial-error policy:
-  //   - Exactly one error AND it is ServersMustNotBeEmpty -> boot in
-  //     "unconfigured" mode (the static "set PLEX_URL + PLEX_TOKEN" notice
-  //     replaces the SPA shell). Other shapes of error are FATAL even when
-  //     ServersMustNotBeEmpty is among them -- a misconfigured config is
-  //     never silently partially started, since the bad fields could ride
-  //     into a future re-configuration step. So:
-  //       errors = [ServersMustNotBeEmpty]                   -> boot warn
-  //       errors = [PortMustBeNumber, ServersMustNotBeEmpty] -> fatal exit
-  //       errors = []                                        -> normal boot
+  // ServersMustNotBeEmpty ALONE boots unconfigured (a notice replaces the SPA
+  // shell). Any other error is fatal even alongside it: a misconfigured config
+  // must never partially start, since the bad fields would ride into a later
+  // reconfiguration.
   if (errors.length === 1 && errors[0].name === 'ServersMustNotBeEmpty') {
     logger.error(
       'reely is not configured -- no Plex server. Set the PLEX_URL and ' +
@@ -100,16 +83,11 @@ process.on('uncaughtException', (err) => {
 
   setLogLevel(config.logLevel);
   logger.info(`reely ${await getVersion()}`);
-  // Safe despite logging the full config: registerRedactions() (run in
-  // loadConfig above, extracted from the validator in 0.4.16 -- audit
-  // 12 #237 + #276) registered addRedaction() for the Plex token, URL,
-  // and basicAuth password, so the logger redacts all three. Redaction
-  // is the guard here.
+  // Dumping the whole config is only safe because registerRedactions() ran in
+  // loadConfig: the Plex token, URL, and basicAuth password are masked here.
   logger.debug(`Config: ${JSON.stringify(config, null, 2)}`);
 
-  // Graceful shutdown. SIGINT is Ctrl-C; SIGTERM is what `docker stop` sends
-  // -- both must run the abort path. Registered exactly once (the old
-  // config-reload loop re-registered SIGINT every iteration).
+  // SIGTERM is what `docker stop` sends, so both signals need the abort path.
   const abortController = new AbortController();
   const shutdown = (sig: string) => {
     logger.info(`${sig} received. Shutting down.`);

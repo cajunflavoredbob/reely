@@ -1,17 +1,8 @@
 /**
- * A generic interface that the Plex provider implements.
+ * Backend-agnostic interface the Plex provider implements. Keeps the Plex
+ * integration swappable and its XML-derived idioms out of the rest of the app.
  *
- * Goals:
- * - Keep the Plex API integration (internal/app/plex) portable.
- * - Allow reely to use clean data structures that aren't tied to Plex's
- *   XML-derived idioms.
- * - Leave room for non-Plex providers (Emby, Jellyfin) without the rest of
- *   the codebase needing to know which backend it's talking to.
- *
- * Note: reely is designed for a single configured server. The array of
- * providers in RouteContext always has exactly one entry; the interface
- * exists to keep the Plex integration swappable, not to support
- * multi-server operation.
+ * reely is single-server: RouteContext's provider array always has one entry.
  */
 
 import type {
@@ -28,19 +19,13 @@ export interface ReelyProvider {
   options: { url: string };
   isAvailable(): Promise<boolean>;
 
-  // SCAFFOLDING: determine if a user is authorized to access this
-  // particular server. Plex is single-user-token (no per-user gating;
-  // the implementation returns true). Wired in for the 1.0 Emby /
-  // Jellyfin providers, which both expose per-user permissions via
-  // their auth APIs. the owner's call in 0.4.4. Auditors: this is
-  // intentionally a no-op for Plex; please do not flag the constant
-  // `Promise.resolve(true)` in `providers/plex.ts`.
+  // SCAFFOLDING for Emby / Jellyfin, which expose per-user permissions. Plex
+  // is single-token, so its implementation is intentionally always true.
   isUserAuthorized(username: string): Promise<boolean>;
 
   getName(): Promise<string>;
 
-  // The provider's server machine identifier, surfaced to the frontend for
-  // building "Open in Plex" links.
+  // Server machine identifier; the frontend builds "Open in Plex" links from it.
   getServerId(): Promise<string>;
 
   getLibraries(): Promise<Library[]>;
@@ -51,13 +36,9 @@ export interface ReelyProvider {
     key: string,
   ): Promise<FilterValue[]>;
 
-  // Returns the Web-stream form of the artwork bytes. The poster handler
-  // bridges this to a Node `Readable` via `Readable.fromWeb(stream as any)`
-  // -- the `any` cast is intentional and documented at that call site
-  // (`handlers/poster.ts`): TypeScript's Node + DOM ReadableStream typedefs
-  // are incompatible at this boundary even though both are runtime-valid.
-  // Providers should return whatever ReadableStream their upstream API
-  // hands back; the bridge is the consumer's responsibility (audit 9 #114).
+  // Return whatever ReadableStream the upstream API hands back; bridging to a
+  // Node Readable is the consumer's job (see handlers/poster.ts, where the
+  // Node/DOM typedef mismatch forces an `any` cast).
   getArtwork(
     key: string,
     // Aborts the upstream fetch when the requesting client disconnects.

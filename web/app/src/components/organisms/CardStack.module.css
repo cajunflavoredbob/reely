@@ -7,22 +7,20 @@
   display: flex;
   justify-content: center;
   perspective: var(--card-height);
-  /* Anchor the vanishing point at the top so back-card foreshortening pulls
-     UP (exposing their top edges above the front card) instead of pulling
-     toward the stack's vertical center (the CSS default), which hid them
-     behind the front. */
+  /* Vanishing point at the top so back-card foreshortening pulls their top
+     edges UP into view; the default center origin hides them behind the
+     front card. */
   perspective-origin: 50% 0%;
   overflow: hidden;
-  /* Top padding has to clear the peek of the two back cards (~72px above
-     the front card's baseline at Y_PEEK = -36) so their tops aren't clipped. */
+  /* Clears the two back cards' peek (~72px at Y_PEEK = -36) so their tops
+     aren't clipped. */
   padding-top: 96px;
-  /* bottom padding gives room for the action buttons */
+  /* Room for the action buttons. */
   padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px));
 }
 
-/* Mobile: extra top padding (0.5.1) gives the cardstack visible
-   breathing room from the mobile top bar. Desktop is centered by
-   .desktopSwipeStage so the extra padding isn't needed there. */
+/* Mobile needs clearance from the top bar; desktop is centered by
+   .desktopSwipeStage. */
 @media (max-width: 899px) {
   .stack {
     padding-top: 120px;
@@ -81,7 +79,7 @@
   position: relative;
 }
 
-/* Front card sits on a soft shadow so it reads as lifted off the stack. */
+/* Soft shadow so the front card reads as lifted off the stack. */
 .item[data-index="0"] {
   box-shadow: 0 24px 48px -16px rgba(0, 0, 0, 0.55);
 }
@@ -189,22 +187,19 @@
   transform: scale(0.96);
 }
 
-/* 900px in px, NOT em (audit 16 #457): this must stay in lockstep with
-   Room's useIsDesktop matchMedia('(min-width: 900px)') and the 899px
-   mobile rule above. The prior 56.25em only equals 900px at a 16px root
-   font size -- a larger browser default opened a zone that got the JS
-   desktop layout with mobile CardStack styling. */
+/* px, NOT em: must stay in lockstep with Room's useIsDesktop
+   matchMedia('(min-width: 900px)') and the 899px rule above. 56.25em only
+   equals 900px at a 16px root, so a larger browser default opens a zone with
+   the desktop layout and mobile CardStack styling. */
 @media screen and (min-width: 900px) {
   .stack {
-    /* Desktop: scale with viewport height, capped by available stage width.
-       Stage width = 100vw - 300px sidebar. Card is 2:3 so height = width * 1.5.
-       Targeting ~55% of stage width → * 1.5 = 82.5% of stage as height limit. */
+    /* Stage width = 100vw - 300px sidebar. Card is 2:3, so targeting ~55% of
+       stage width gives 82.5% of it as the height cap. */
     --card-height: min(
       75dvh,
       calc((100vw - 300px) * 0.825)
     );
-    /* Extra top padding on desktop so the back-card peek isn't crowded
-       against (or partially hidden beneath) the desktop top bar. */
+    /* Keeps the back-card peek clear of the desktop top bar. */
     padding-top: 130px;
   }
 

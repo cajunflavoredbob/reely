@@ -18,20 +18,11 @@ export function getConfig(): Config {
   return cachedConfig;
 }
 
-// Config layers, in PRIORITY order (audit 12 #272):
-//   1. ENV vars (top priority) -- loadFromEnv reads PLEX_URL, AUTH_PASS,
-//      ALLOWED_ORIGINS, etc. Docker secrets are read INSIDE this layer
-//      (load_secrets.ts is a helper, not a separate layer) for the two
-//      sensitive values (plex_token, auth_pass) that can be mounted as
-//      files instead of env vars.
-//   2. YAML file (config.yaml or --config <path>) -- loadFromYaml.
-//   3. defaults (defaults.ts) -- hostname=0.0.0.0, port=8000, etc.
-// The merge is "later layers fill in gaps": env > yaml > defaults. `servers`
-// is the one exception -- if env defines a server at all, the env server
-// replaces the yaml server outright (see comment on the spread below).
+// Config layers by priority: env > YAML > defaults. Docker secrets are read
+// inside the env layer, not as a layer of their own. `servers` is the one
+// exception to the merge; see the spread below.
 //
-// Validation runs after the merge and may MUTATE the merged config in place
-// (port coercion, logLevel uppercase) -- see normalizeAndValidateConfig.
+// Validation runs after the merge and MUTATES the result in place.
 export async function loadConfig(
   path?: string,
 ): Promise<[config: Config, errors: ReelyError[]]> {
@@ -43,27 +34,21 @@ export async function loadConfig(
 
     logger.info(`Looking for config in ${yamlConfigPath}`);
 
-    // Sentinel: passing '/dev/null' as the config path skips the YAML load
-    // entirely (used by tests that want to isolate env-only / defaults-only
-    // behavior). Production callers pass a real path or omit the argument.
+    // '/dev/null' is a sentinel that skips the YAML layer, for tests isolating
+    // env-only or defaults-only behavior.
     yamlConfig = yamlConfigPath !== '/dev/null'
       ? await loadFromYaml(yamlConfigPath)
       : {};
   } catch (err) {
-    // A *missing* file is acceptable only when falling back to the default
-    // path -- the server then runs on env/defaults and shows an unconfigured
-    // warning. An explicitly-specified missing path is fatal. Any other error
-    // (malformed YAML, EACCES, EISDIR) is always fatal: swallowing it would
-    // hide a real config problem and silently start with the wrong config.
+    // A missing file is tolerable only at the default path (run on
+    // env/defaults, warn as unconfigured). An explicit path that's missing is
+    // fatal, as is any other error: swallowing it would boot the wrong config.
     if (path || !(err instanceof ConfigFileNotFoundError)) throw err;
   }
 
-  // Env config overrides YAML config wholesale. `servers` is NOT merged by
-  // index: reely is single-server, and a per-field index-merge could attach
-  // an env PLEX_TOKEN to a YAML server URL it was never meant to pair with
-  // (token sent to the wrong host). If env defines a server at all, the env
-  // server replaces the YAML one outright -- the `...envConfig` spread does
-  // exactly that.
+  // `servers` is replaced wholesale, never merged by index: an index-merge
+  // could pair an env PLEX_TOKEN with a YAML server URL, sending the token to
+  // the wrong host.
   const config: Partial<Config> = applyDefaults({
     ...yamlConfig,
     ...envConfig,
@@ -71,22 +56,16 @@ export async function loadConfig(
 
   const configErrors = normalizeAndValidateConfig(config);
 
-  // Register redactions for sensitive values BEFORE caching the config or
-  // returning -- once cached, getConfig() consumers (and main.ts's debug
-  // config dump at cmd/reely/main.ts) may log values that include these.
-  // Run unconditionally rather than gating on blockingErrors: the redact
-  // function is field-wise defensive, and a config with errors on, say,
-  // the URL but a valid token still benefits from token redaction in any
-  // boot-fail logs. (Extracted from validate.ts in 0.4.16 -- audit 12
-  // #237 + #276.)
+  // Must run before caching or returning: consumers (including main.ts's debug
+  // config dump) log values that contain these. Unconditional, so a config
+  // with a bad URL but a valid token still gets the token masked in boot-fail
+  // logs.
   registerRedactions(config);
 
-  // Only cache the config when it passes validation -- or when the only
-  // remaining error is the "no Plex server" case, which main.ts handles as
-  // a runtime warning + boot in unconfigured mode (not a fatal). A truly
-  // broken config (port: "abc", malformed YAML, etc.) leaves cachedConfig
-  // unset, so a downstream `getConfig()` call throws "called before the
-  // config was loaded" instead of returning the half-validated object.
+  // Cache only a config that validates, or one whose sole error is "no Plex
+  // server" (main.ts boots unconfigured on that). A truly broken config leaves
+  // cachedConfig unset so getConfig() throws instead of handing back a
+  // half-validated object.
   const blockingErrors = configErrors.filter(
     (e) => e.name !== 'ServersMustNotBeEmpty',
   );

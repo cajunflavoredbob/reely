@@ -14,10 +14,8 @@ export interface CardProps {
 export const Card = ({ media, href }: CardProps) => {
   const [showMoreInfo, setShowMoreInfo] = useState(false);
 
-  // The poster handler proxies Plex artwork as-is and doesn't honor a width
-  // query param. Until/unless we add real Plex transcoding, srcSet variants
-  // would just make the browser fetch the same full-size image multiple
-  // times. Use a single src.
+  // Single src, no srcSet: the poster handler proxies Plex artwork as-is and
+  // ignores a width param, so variants would refetch the same full-size image.
   const poster = posterSrc(media.posterUrl);
 
   const mediaTitle = `${media.title}${media.type === "movie" ? ` (${media.year})` : ""}`;
@@ -74,7 +72,7 @@ export const Card = ({ media, href }: CardProps) => {
         </div>
       )}
 
-      {/* Info toggle -- only shown on swipe cards; link cards navigate directly */}
+      {/* Info toggle: swipe cards only; link cards navigate directly. */}
       {!href && (
         <button
           type="button"

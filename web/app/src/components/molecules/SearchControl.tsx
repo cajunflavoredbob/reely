@@ -2,16 +2,8 @@ import { useState } from "react";
 import { CloseIcon } from "../atoms/CloseIcon";
 import styles from "./SearchControl.module.css";
 
-// SearchControl -- free-text tag input used by FilterPanel for
-// enumerated-but-not-server-supplied filter values. The user types a
-// term, hits Enter (or clicks Apply), and the value is added to a
-// tag list. Each tag has its own remove button.
-//
-// Extracted from FilterPanel.tsx in 0.4.47 (audit 13 #321, Option B
-// split: SearchControl + FieldPicker only -- FilterRow stayed in the
-// flat file because its 8-prop interface would have been uglier than
-// the inline row). Source semantics unchanged; the component is a
-// straight lift with its CSS module co-located.
+// Free-text tag input, used by FilterPanel for filter values the server does
+// not enumerate. Enter or Apply adds the term to the tag list.
 
 interface SearchControlProps {
   values: string[];

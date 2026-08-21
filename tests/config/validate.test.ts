@@ -1,10 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-// Logger mock dropped in 0.4.16: validate.ts no longer imports the
-// logger (redaction registration moved to config/redact.ts -- audit
-// 12 #237 + #276). The validator is a pure (unknown) -> ReelyError[]
-// with no transitive pino import, so the worker-thread guard the
-// mock used to provide is no longer needed here.
+// No logger mock: the validator is pure and pulls in no transitive pino.
 import { normalizeAndValidateConfig } from '../../internal/app/reely/config/validate';
 
 const errNames = (config: unknown): string[] =>
@@ -33,9 +29,8 @@ describe('normalizeAndValidateConfig', () => {
     [{ servers: [{ type: 'jellyfin', url: 'http://localhost', token: 'abc123' }] }, ['ServerTypeInvalid']],
     [{ servers: [{ libraryTitleFilter: 123, url: 'http://localhost', token: 'abc123' }] },     ['ServerLibraryTitleFilterInvalid']],
     [{ servers: [{ libraryTitleFilter: ['Movies'], url: 'http://localhost', token: 'abc123' }] }, []],
-    // libraryTypeFilter dropped in 0.4.1 (movies-only). An old config with
-    // the field is silently ignored -- the validator doesn't error on unknown
-    // server fields, so the line below must NOT produce a validation error.
+    // libraryTypeFilter is retired; unknown server fields are ignored, so an
+    // old config carrying it must still validate.
     [{ servers: [{ libraryTypeFilter: ['movie'], url: 'http://localhost', token: 'abc123' }] }, []],
     [{ rootPath: '/' },                                            ['ServerBasePathInvalid', 'ServersMustBeArray']],
     [{ rootPath: 123 },                                            ['ServerBasePathInvalid', 'ServersMustBeArray']],
@@ -43,15 +38,14 @@ describe('normalizeAndValidateConfig', () => {
     [{ basicAuth: 'luke:test' },                                   ['BasicAuthInvalid', 'ServersMustBeArray']],
     [{ basicAuth: {} },                                            ['BasicAuthPasswordInvalid', 'BasicAuthUserNameInvalid', 'ServersMustBeArray']],
     [{ basicAuth: { userName: 'luke' } },                          ['BasicAuthPasswordInvalid', 'ServersMustBeArray']],
-    // #57: an empty password used to pass (it is a string) -> silent auth bypass.
+    // An empty password is a string, and passing it is a silent auth bypass.
     [{ basicAuth: { userName: 'luke', password: '' } },            ['BasicAuthPasswordInvalid', 'ServersMustBeArray']],
     [{ basicAuth: { userName: '', password: 'test' } },            ['BasicAuthUserNameInvalid', 'ServersMustBeArray']],
     [{ basicAuth: { userName: 'luke', password: 'test' } },        ['ServersMustBeArray']],
     [{ tlsConfig: '/foo.crt' },                                    ['ServersMustBeArray', 'TlsConfigInvalid']],
     [{ tlsConfig: {} },                                            ['ServersMustBeArray', 'TlsConfigCertFileInvalid', 'TlsConfigKeyFileInvalid']],
-    // 0.4.15 EXPOSE_PLEX_BASE_URL opt-out: must be a boolean when present.
-    // The env loader coerces strings via EnvBool, so a non-boolean lands
-    // here only from YAML (`exposePlexBaseUrl: 1` parses as number).
+    // The env loader coerces via EnvBool, so a non-boolean reaches here only
+    // from YAML.
     [{ exposePlexBaseUrl: true },                                  ['ServersMustBeArray']],
     [{ exposePlexBaseUrl: false },                                 ['ServersMustBeArray']],
     [{ exposePlexBaseUrl: 'false' },                               ['ExposePlexBaseUrlInvalid', 'ServersMustBeArray']],

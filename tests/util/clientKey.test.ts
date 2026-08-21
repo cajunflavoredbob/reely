@@ -1,23 +1,22 @@
 import { describe, it, expect } from 'vitest';
 import { clientKey } from '../../internal/app/reely/util/clientKey';
 
-// Every per-source cap in the app (the WS slot limit, the shared Basic Auth
-// failure throttle, the HTTP rate limiter) keys on this. Raw IPv6 addresses
-// made all three per-connection rather than per-client.
+// The WS slot limit, the Basic Auth failure throttle and the HTTP rate
+// limiter all key on this. Raw IPv6 made every cap per-connection rather
+// than per-client.
 describe('clientKey', () => {
   it('passes IPv4 through unchanged', () => {
     expect(clientKey('203.0.113.5')).toBe('203.0.113.5');
   });
 
   it('treats an IPv4-mapped address as the IPv4 client', () => {
-    // The same host must land in one bucket however the socket reports it.
+    // One bucket per host, however the socket reports it.
     expect(clientKey('::ffff:203.0.113.5')).toBe(clientKey('203.0.113.5'));
   });
 
   it('groups every address in a /64 into one key', () => {
-    // A single subscriber is routinely handed a /64 and sources from any
-    // address in it -- privacy extensions rotate through them by default. Each
-    // one used to be its own bucket, so a 20-socket cap bounded nothing.
+    // One subscriber gets a whole /64 and privacy extensions rotate through
+    // it. Per-address buckets left the 20-socket cap bounding nothing.
     const a = clientKey('2001:db8:1234:5678:aaaa:bbbb:cccc:dddd');
     const b = clientKey('2001:db8:1234:5678:1111:2222:3333:4444');
     const c = clientKey('2001:db8:1234:5678::1');
@@ -40,7 +39,7 @@ describe('clientKey', () => {
   });
 
   it('falls back to the literal for an unparseable address', () => {
-    // Better one shared bucket than throwing on the upgrade path.
+    // One shared bucket beats throwing on the upgrade path.
     expect(clientKey('2001:db8:::::1')).toBe('2001:db8:::::1');
   });
 
@@ -49,9 +48,8 @@ describe('clientKey', () => {
   });
 
   it('falls back rather than throwing on an over-long literal', () => {
-    // Array(negative) raises RangeError. The only call sites include an HTTP
-    // upgrade listener with no try/catch, so a throw here would take the
-    // process down; the contract is to fall back to the literal.
+    // Array(negative) raises RangeError, and one call site is an upgrade
+    // listener with no try/catch, so a throw takes the process down.
     for (const addr of ['1:2:3:4:5:6:7:8::9', '1:2:3:4:5:6:7:8:9::']) {
       expect(() => clientKey(addr)).not.toThrow();
       expect(clientKey(addr)).toBe(addr);

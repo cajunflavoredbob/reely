@@ -11,19 +11,14 @@ interface FilterPanelProps {
   onClose: () => void;
   onApply: (filters: Filter[]) => void;
   isDrawer?: boolean;
-  // Whether the panel is currently visible. Used to re-sync `draft` from
-  // `room.activeFilters` on each false → true transition. Desktop keeps the
-  // panel permanently mounted, so without this the draft would stay frozen
-  // at whatever activeFilters were when the component first mounted.
-  // Mobile mounts conditionally, so isOpen=true matches mount; the re-sync
-  // is harmless in that case.
+  // Re-syncs `draft` from `room.activeFilters` on each false → true
+  // transition. Desktop keeps the panel mounted, so without this the draft
+  // freezes at whatever activeFilters were on first mount.
   isOpen?: boolean;
 }
 
-// Clone activeFilters so the draft state doesn't share references with the
-// store (a setDraft(d => d.map(...)) on a row would otherwise also mutate
-// the underlying array's filter objects). Filter is a flat shape so a shallow
-// clone per row is enough.
+// Clone so draft edits don't mutate the store's filter objects. Filter is flat,
+// so a shallow clone per row is enough.
 const cloneActiveFilters = (active: Filter[] | undefined): Filter[] =>
   (active ?? []).map((f) => ({ ...f, value: [...f.value] }));
 
@@ -33,42 +28,27 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
   const [draft, setDraft] = useState<Filter[]>(() => cloneActiveFilters(room?.activeFilters));
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState("");
-  // Keyed by `filter.key` (audit 11 #183 + #184). The prior `Set<number>`
-  // was indexed into the draft array and removeFilter had to manually
-  // shift indices to keep the set in sync. Keying on the (stable, React-
-  // key-identical) filter.key eliminates the shift dance AND the
-  // addFilter setState-updater-inside-updater pattern (#183), because we
-  // no longer need to compute the new row's index inside the setter.
+  // Keyed by `filter.key`, not draft index: keys survive reorders, so removal
+  // needs no index-shifting to stay in sync.
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
-  // Room.tsx already prefetches the filter catalog at mount so the
-  // filterChangeApplied toast can resolve titles even before the panel
-  // opens. Audit 12 #242 caught us double-dispatching on desktop (where
-  // FilterPanel is permanently mounted alongside Room): both effects
-  // fired in the same render tick, both guard checks passed, and the
-  // server saw two `requestFilters` for one room. Dropping the dispatch
-  // here is safe because Room's prefetch covers every code path that
-  // reaches FilterPanel.
+  // No requestFilters dispatch here: Room.tsx prefetches the catalog at mount,
+  // and on desktop this panel is mounted alongside it, so both would fire in
+  // the same tick and the server would see two requests for one room.
 
-  // Re-sync draft from activeFilters on every false → true transition of
-  // isOpen. While the panel is open we keep the user's in-progress edits
-  // (do NOT overwrite when activeFilters changes mid-edit -- e.g. another
-  // user applies filters). Snapping on each open means the panel reflects
-  // current room state when the user comes back to it. Also fires the
-  // requestFilterValues prefetch for any pre-populated rows so the
-  // collapsed-row summary can render real value titles ("Drama, Action")
-  // instead of raw ids.
+  // Re-sync the draft on each open, so a returning user sees current room
+  // state; edits made while open are left alone, even if another user applies
+  // filters mid-edit. Also prefetches values for pre-populated rows so the
+  // collapsed summary shows titles ("Drama, Action") rather than raw ids.
   const prevIsOpen = useRef(isOpen);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally NOT depending on room?.activeFilters / createRoom / dispatch -- mid-edit changes shouldn't blow away the user's in-progress draft; the snap only fires on the open transition.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: deliberately not depending on room?.activeFilters / createRoom / dispatch; the snap must fire only on the open transition.
   useEffect(() => {
     if (isOpen && !prevIsOpen.current) {
       const fresh = cloneActiveFilters(room?.activeFilters);
       setDraft(fresh);
       setExpandedRows(new Set());
-      // Also reset the FieldPicker (audit 16 #454): on desktop the panel
-      // stays mounted while closed, so an open picker + typed query
-      // otherwise survived the close and greeted the next open with
-      // stale state -- defeating this re-sync's purpose.
+      // Reset the FieldPicker too: on desktop the panel stays mounted while
+      // closed, so an open picker and typed query would survive to the next open.
       setPickerOpen(false);
       setPickerSearch("");
       for (const f of fresh) {
@@ -80,10 +60,9 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
     prevIsOpen.current = isOpen;
   }, [isOpen]);
 
-  // Mount-only prefetch for the initial draft (lazy-init from activeFilters).
-  // Subsequent rows added via addFilter dispatch on their own; the open-
-  // transition effect above handles the re-sync case.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only prefetch -- adding draft/createRoom/dispatch as deps would re-fire on every state change and double up the requestFilterValues dispatches.
+  // Mount-only prefetch for the initial draft; addFilter and the open-
+  // transition effect above cover every later row.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only prefetch; adding draft/createRoom/dispatch would re-fire on every state change and duplicate the requestFilterValues dispatches.
   useEffect(() => {
     for (const f of draft) {
       if (!createRoom?.filterValues?.[f.key]) {
@@ -93,22 +72,13 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
   }, []);
 
   const filters = createRoom?.availableFilters;
-  // Memoize the three computed values that recompute per keystroke
-  // (audit 13 #331): usedKeys reads `draft`, fieldsByKey reads
-  // `filters`, and availableFields reads all three (plus pickerSearch).
-  // Without memo, typing in the picker re-walked filters.filters and
-  // rebuilt the usedKeys Set on every keystroke -- modest cost today
-  // but the kind of thing that compounds with React.memo on the
-  // child rows (#334).
+  // Memoized so typing in the picker doesn't re-walk filters.filters and
+  // rebuild the key Set on every keystroke.
   const usedKeys = useMemo(
     () => new Set(draft.map((d) => d.key)),
     [draft],
   );
-  // fieldsByKey is the precomputed lookup map (audit 13 #332). The
-  // prior code did `filters?.filters.find((f) => f.key === filter.key)`
-  // per filter row per render -- O(rows * fields). With ~6 fields and
-  // a few rows it's tiny, but the find() loop scales poorly if either
-  // grows. Map lookup is O(1) per row.
+  // O(1) row lookup, versus a find() per row per render.
   const fieldsByKey = useMemo(
     () => new Map((filters?.filters ?? []).map((f) => [f.key, f])),
     [filters],
@@ -129,9 +99,6 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
     const firstOp = filters?.filterTypes[fieldDef.type]?.[0]?.key ?? "=";
     const initValue = fieldDef.type === "boolean" ? ["1"] : [];
     setDraft((d) => [...d, { key, operator: firstOp, value: initValue }]);
-    // expandedRows is now keyed by filter.key (stable across reorders),
-    // so the expand toggle is a simple Set update -- no stale-index
-    // hazard, no nested setter (audit 11 #183 / #184).
     setExpandedRows((prev) => new Set(prev).add(key));
     setPickerOpen(false);
     setPickerSearch("");
@@ -144,8 +111,7 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
     setDraft((d) => d.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
 
   const removeFilter = (i: number) => {
-    // Capture the row's key BEFORE the setDraft updater so we can prune
-    // expandedRows by key (no index-shift dance needed).
+    // Capture the key before the updater so expandedRows can be pruned by key.
     const removedKey = draft[i]?.key;
     setDraft((d) => d.filter((_, idx) => idx !== i));
     if (removedKey !== undefined) {
@@ -160,11 +126,9 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
   const toggleExpand = (i: number) => {
     const key = draft[i]?.key;
     if (key === undefined) return;
-    // Dispatch OUTSIDE the state updater (audit 16 #456): updaters must be
-    // pure -- StrictMode double-invokes them in dev, which sent a
-    // duplicate requestFilterValues WS frame per row expansion, and React
-    // reserves the right to re-invoke in production too. Mirrors the
-    // shape addFilter already uses (audit 11 #183/#184).
+    // Dispatch outside the state updater: updaters must be pure, and React
+    // re-invokes them (StrictMode always, production at will), which would
+    // duplicate the requestFilterValues frame.
     const willExpand = !expandedRows.has(key);
     if (willExpand && !createRoom?.filterValues?.[key]) {
       dispatch({ type: "requestFilterValues", payload: { key } });
@@ -202,12 +166,8 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
     );
   };
 
-  // Single source of truth for "is this filter row applicable" (audit 13
-  // #327). A boolean filter is applicable whether or not it has a value;
-  // a non-boolean filter needs at least one selected value to count. The
-  // prior code inlined this predicate twice (canApply gate + handleApply
-  // serialization) which made it easy to drift one out of sync with the
-  // other.
+  // Boolean rows always count; others need at least one selected value. Shared
+  // by the canApply gate and handleApply so the two cannot drift.
   const isFilterApplicable = (f: Filter): boolean => {
     const fd = fieldsByKey.get(f.key);
     return fd?.type === "boolean" || f.value.length > 0;
@@ -215,10 +175,8 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
 
   const canApply = draft.filter(isFilterApplicable).length > 0;
 
-  // "Clear" mode: the draft has no applicable filters but the room currently
-  // has filters applied -- submitting an empty set clears them. Without this
-  // an applied filter set could never be removed from the UI (the button was
-  // simply disabled with an empty draft).
+  // "Clear" mode: an empty draft in a filtered room submits the empty set.
+  // Without it, a disabled button leaves applied filters unremovable.
   const hasActiveFilters = (room?.activeFilters?.length ?? 0) > 0;
   const isClearing = !canApply && hasActiveFilters;
   const canSubmit = canApply || isClearing;
@@ -265,13 +223,12 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
               if (!fieldDef) return null;
               const expanded = expandedRows.has(filter.key);
               const operators = filters.filterTypes[fieldDef.type] ?? [];
-              // Server-returned enumerated values for this field. Three states:
-              //   undefined  -- request in flight (show "Loading values...")
-              //   [...]      -- has values (show pills, regardless of fieldDef.type)
-              //   []         -- confirmed no values (show free-text SearchControl)
-              // The previous gate used fieldDef.type === "tag" || "string", which
-              // missed integer-typed fields that Plex actually enumerates -- decade
-              // being the canonical case (1900s, 1910s, ...).
+              // Server-enumerated values. Three states:
+              //   undefined  request in flight
+              //   [...]      show pills, whatever fieldDef.type says
+              //   []         no values; show the free-text SearchControl
+              // Do not gate on fieldDef.type: Plex enumerates some integer
+              // fields, decade being the canonical case.
               const filterValues = createRoom?.filterValues?.[filter.key];
               const isBoolean = fieldDef.type === "boolean";
 
@@ -446,8 +403,5 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
   );
 };
 
-// SearchControl extracted to molecules/SearchControl.tsx in 0.4.47
-// (audit 13 #321, Option B split). FieldPicker extracted alongside it
-// to molecules/FieldPicker.tsx. FilterRow stayed inline -- the 8-prop
-// interface required for a useful split would have been uglier than
-// the current inline row map.
+// The filter row stays inline: splitting it out needs an 8-prop interface,
+// uglier than the row map it would replace.

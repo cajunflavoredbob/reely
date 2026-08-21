@@ -11,12 +11,9 @@ vi.mock('node:fs/promises', () => ({
 import { loggerMockFactory } from '../helpers';
 vi.mock('../../internal/app/reely/logger', () => loggerMockFactory());
 
-// Room has complex dependencies; mock the module so loadRoom tests aren't blocked
-// by ws/express imports. Only saveRoom and cleanupExpiredRooms are tested here.
-// getAllRooms / removeRoom are mocked too so the TTL sweep can iterate test
-// fixtures. Mock factories are hoisted above top-level
-// statements, so the vi.fn()s must be created inline; we recover handles via
-// vi.mocked() after the import.
+// Mocked so these tests do not drag in ws/express, and so the TTL sweep
+// iterates fixtures. The factory is hoisted, so the vi.fn()s are inline and
+// the handles come back through vi.mocked() after the import.
 vi.mock('../../internal/app/reely/room', () => ({
   Room: class {},
   getAllRooms: vi.fn().mockReturnValue([]),
@@ -25,12 +22,8 @@ vi.mock('../../internal/app/reely/room', () => ({
 }));
 
 import * as fs from 'node:fs/promises';
-// readdir has multiple overloads (with/without options + the
-// withFileTypes Dirent variant); vi.mocked can't always pick the right
-// one, which is why these mocks used to carry `as any` casts (audit
-// 13 #340). Helper hides the bypass in one place. `as never` is the
-// honest escape hatch: assignable to any overload return type and
-// signals "intentionally bypassing the type system for a test stub."
+// readdir's overloads defeat vi.mocked, so the cast lives here once. `as
+// never` is assignable to any of the overload return types.
 const mockReaddirOnce = (entries: string[]) =>
   vi.mocked(fs.readdir).mockResolvedValueOnce(entries as never);
 import {
@@ -161,8 +154,7 @@ describe('cleanupExpiredRooms', () => {
     expect(vi.mocked(fs.unlink)).not.toHaveBeenCalled();
   });
 
-  // #4: a room with clients still connected must not be expired even when
-  // its lastSwipeAt is stale -- evicting it would split-brain the room.
+  // Evicting a room that still has connected clients splits the room.
   it('keeps a stale in-memory room that still has connected clients', async () => {
     const stale = Date.now() - (ROOM_TTL_MS + 60_000);
     mockGetAllRooms.mockReturnValueOnce([
@@ -179,9 +171,8 @@ describe('cleanupExpiredRooms', () => {
     expect(vi.mocked(fs.unlink)).not.toHaveBeenCalled();
   });
 
-  // #4: the disk pass must not delete the file of a room currently in memory
-  // (that room is the in-memory pass's responsibility). The file is skipped
-  // before it's even read.
+  // An in-memory room is the in-memory pass's business, so the disk pass
+  // skips its file before reading it.
   it('skips a persisted file whose room is currently in memory', async () => {
     mockHasRoom.mockReturnValue(true);
     mockReaddirOnce(['live.json']);
@@ -192,18 +183,16 @@ describe('cleanupExpiredRooms', () => {
     expect(vi.mocked(fs.unlink)).not.toHaveBeenCalled();
   });
 
-  // The in-memory pass got this re-check in audit 16 #424; the disk pass never
-  // did. A queued join can run loadRoom -> addRoom -> saveRoom during the
-  // readFile await, so the buffer this pass holds is stale and the unlink
-  // would delete a file just written for a room people are actively swiping
-  // in -- with the in-memory pass already done for this cycle, so nothing
-  // re-persists it.
+  // A join can run loadRoom, addRoom and saveRoom during the readFile await,
+  // making this pass's buffer stale. Unlinking then deletes a file just
+  // written for a live room, and the in-memory pass is already done for this
+  // cycle, so nothing re-persists it.
   it('does not delete a file for a room that came live during the readFile await', async () => {
     const stale = Date.now() - (ROOM_TTL_MS + 60_000);
     mockReaddirOnce(['revived.json']);
     mockHasRoom.mockReturnValue(false);
     vi.mocked(fs.readFile).mockImplementationOnce((async () => {
-      // A join lands mid-await and puts the room in memory.
+      // A join lands mid-await and brings the room into memory.
       mockHasRoom.mockReturnValue(true);
       return JSON.stringify({ updatedAt: stale, lastSwipeAt: stale });
     }) as never);
@@ -230,7 +219,7 @@ describe('cleanupExpiredRooms', () => {
     const stale = Date.now() - (ROOM_TTL_MS + 60_000);
     mockReaddirOnce(['legacy.json']);
     vi.mocked(fs.readFile).mockResolvedValueOnce(
-      // No lastSwipeAt field; only updatedAt.
+      // updatedAt only.
       JSON.stringify({ updatedAt: stale }) as never,
     );
 
@@ -239,10 +228,9 @@ describe('cleanupExpiredRooms', () => {
     expect(vi.mocked(fs.unlink)).toHaveBeenCalledOnce();
   });
 
-  // Audit 12 #204: a file with neither lastSwipeAt nor updatedAt yielded
-  // `undefined < cutoff === false`, so the sweep skipped it forever.
-  // 0.4.9 treats `undefined` as ancient and sweeps the file.
-  it('sweeps a persisted file with no timestamp at all (audit 12 #204)', async () => {
+  // With no timestamp at all, `undefined < cutoff` is false and the sweep
+  // skips the file forever, so undefined counts as ancient.
+  it('sweeps a persisted file with no timestamp at all', async () => {
     mockReaddirOnce(['untimestamped.json']);
     vi.mocked(fs.readFile).mockResolvedValueOnce(
       JSON.stringify({ roomName: 'untimestamped' }) as never,
@@ -279,10 +267,9 @@ describe('cleanupExpiredRooms', () => {
   });
 });
 
-// Audit 10 #131 + #158: the debounced save queue is shared with the TTL
-// sweep + app shutdown. A save scheduled within the 2s window before either
-// would otherwise fire after the file was unlinked (re-creating it) OR
-// after the process was already exiting (silently lost).
+// The debounced save queue is shared with the TTL sweep and app shutdown. A
+// save scheduled inside the 2s window before either fires after the file was
+// unlinked, recreating it, or after the process is exiting, losing it.
 describe('scheduleSaveRoom / cancelPendingSave / flushPendingSaves', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -292,11 +279,9 @@ describe('scheduleSaveRoom / cancelPendingSave / flushPendingSaves', () => {
   });
 
   afterEach(() => {
-    // Drop any timer this block left armed BEFORE restoring real timers.
-    // pendingSaves is module state shared with the flush test below, so a
-    // leaked entry turns one regression into two failures, the second in
-    // unrelated code. Cleanup belongs here, not after an assertion that can
-    // throw first.
+    // Before real timers return: pendingSaves is module state, so a leaked
+    // entry fails an unrelated test too. Here, not after an assertion that
+    // can throw first.
     for (const name of ['debounce-write', 'coalesce', 'busy']) cancelPendingSave(name);
     vi.useRealTimers();
   });
@@ -304,7 +289,7 @@ describe('scheduleSaveRoom / cancelPendingSave / flushPendingSaves', () => {
   it('writes after the debounce window elapses', async () => {
     const room = makeRoom({ roomName: 'debounce-write' });
     scheduleSaveRoom(room);
-    // Debounce is 2s; before that no write should land.
+    // The debounce is 2s.
     await vi.advanceTimersByTimeAsync(1500);
     expect(vi.mocked(fs.writeFile)).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1000);
@@ -318,28 +303,25 @@ describe('scheduleSaveRoom / cancelPendingSave / flushPendingSaves', () => {
     scheduleSaveRoom(room);
     await vi.advanceTimersByTimeAsync(500);
     scheduleSaveRoom(room);
-    // Past the original 2s mark -- but the latest schedule reset the timer.
+    // Past the original 2s mark, but the latest schedule reset the timer.
     await vi.advanceTimersByTimeAsync(1500);
     expect(vi.mocked(fs.writeFile)).not.toHaveBeenCalled();
-    // Now finish the window from the latest schedule.
+    // Finish the window from the latest schedule.
     await vi.advanceTimersByTimeAsync(1000);
     expect(vi.mocked(fs.writeFile)).toHaveBeenCalledOnce();
   });
 
   it('still writes while activity never stops, at the max-wait ceiling', async () => {
-    // The case a trailing-edge-only debounce gets exactly backwards. Two
-    // people swiping produce a rating roughly every second, which is inside
-    // SAVE_DEBOUNCE_MS, so every schedule cleared and re-armed the timer and
-    // the quiet window never arrived: a busy room wrote NOTHING, while an
-    // idle one persisted fine. A crash then lost the entire session -- the
-    // opposite of the "at most one debounce window of swipes" the comment
-    // promised. The max-wait bounds it at 10s from the first unsaved change.
+    // Two people swiping produce a rating about every second, inside the
+    // debounce window, so a trailing-edge-only timer re-arms forever and a
+    // busy room writes nothing while an idle one persists. The max-wait
+    // bounds it at 10s from the first unsaved change.
     const room = makeRoom({ roomName: 'busy' });
     for (let elapsed = 0; elapsed < 11_000; elapsed += 1000) {
       scheduleSaveRoom(room);
       await vi.advanceTimersByTimeAsync(1000);
     }
-    // Exactly one: bounded, not a write per swipe.
+    // Bounded, not a write per swipe.
     expect(vi.mocked(fs.writeFile)).toHaveBeenCalledOnce();
   });
 
@@ -357,27 +339,22 @@ describe('scheduleSaveRoom / cancelPendingSave / flushPendingSaves', () => {
     expect(vi.mocked(fs.writeFile)).not.toHaveBeenCalled();
     await flushPendingSaves();
     expect(vi.mocked(fs.writeFile)).toHaveBeenCalledTimes(2);
-    // After flush, the timers should be cancelled -- advancing time must
-    // not produce additional writes.
+    // Flush cancels the timers, so time produces no further writes.
     vi.mocked(fs.writeFile).mockClear();
     await vi.advanceTimersByTimeAsync(5000);
     expect(vi.mocked(fs.writeFile)).not.toHaveBeenCalled();
   });
 
-  // #131: a save scheduled within the 2s window before cleanupExpiredRooms
-  // unlinks the file would otherwise fire afterward and recreate it.
-  // cleanupExpiredRooms must cancel the pending save first.
-  it('cleanupExpiredRooms cancels a pending save for an expiring room (audit 10 #131)', async () => {
+  // An uncancelled save fires after the unlink and recreates the file.
+  it('cleanupExpiredRooms cancels a pending save for an expiring room', async () => {
     const stale = Date.now() - (ROOM_TTL_MS + 60_000);
     const room = makeRoom({ roomName: 'expiring', lastSwipeAt: stale });
     mockGetAllRooms.mockReturnValue([room]);
     scheduleSaveRoom(room);
     await cleanupExpiredRooms(ROOM_TTL_MS);
-    // The sweep should have removed the room AND unlinked the file.
     expect(mockRemoveRoom).toHaveBeenCalledWith('expiring');
     expect(vi.mocked(fs.unlink)).toHaveBeenCalled();
-    // Now advance past the debounce window -- the cancelled timer must NOT
-    // fire a saveRoom that would recreate the unlinked file.
+    // Past the debounce window, with the timer cancelled.
     vi.mocked(fs.writeFile).mockClear();
     await vi.advanceTimersByTimeAsync(5000);
     expect(vi.mocked(fs.writeFile)).not.toHaveBeenCalled();
@@ -392,11 +369,11 @@ describe('loadRoom', () => {
     expect(await loadRoom('broken', {} as never)).toBeNull();
   });
 
-  // #22: JSON.parse succeeds but the object isn't a PersistedRoom -- loadRoom
-  // must reject it rather than feed half-undefined fields into a Room.
+  // Parseable JSON that is not a PersistedRoom must be rejected, not fed
+  // into a Room as half-undefined fields.
   it('returns null for valid JSON with the wrong shape', async () => {
     vi.mocked(fs.readFile).mockResolvedValueOnce(
-      JSON.stringify({ roomName: 'r' }) as never, // missing ratings/userProgress/createdAt
+      JSON.stringify({ roomName: 'r' }) as never, // no ratings/userProgress/createdAt
     );
     expect(await loadRoom('wrong-shape', {} as never)).toBeNull();
     expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
@@ -404,9 +381,8 @@ describe('loadRoom', () => {
     );
   });
 
-  // Audit 12 #205: per-field shape check covers every required PersistedRoom
-  // field + types every optional field. Each branch's reject message names
-  // the offending field so an operator hand-editing the file gets a clue.
+  // Every required and optional PersistedRoom field is type-checked, and the
+  // reject message names the offending field for anyone hand-editing a file.
   it.each([
     {
       name: 'updatedAt missing',
@@ -428,9 +404,8 @@ describe('loadRoom', () => {
       body: { roomName: 'r', ratings: [], userProgress: [], createdAt: 1, updatedAt: 2, lastSwipeAt: 'soon' },
       reason: /lastSwipeAt/,
     },
-    // Only the outer Array.isArray was checked here, so a string count was
-    // accepted: storeRating then did ("12" + 1) === "121" and re-persisted it,
-    // compounding on disk while the display clamped to a permanent 100%.
+    // A string count reaches storeRating as ("12" + 1) === "121", which is
+    // re-persisted and compounds while the display sticks at 100%.
     {
       name: 'a userProgress count that is not a number',
       body: { roomName: 'r', ratings: [], userProgress: [['alice', '12']], createdAt: 1, updatedAt: 2 },
@@ -446,7 +421,7 @@ describe('loadRoom', () => {
       body: { roomName: 'r', ratings: [], userProgress: [['alice']], createdAt: 1, updatedAt: 2 },
       reason: /userProgress/,
     },
-  ])('rejects a room file with $name (audit 12 #205)', async ({ body, reason }) => {
+  ])('rejects a room file with $name', async ({ body, reason }) => {
     vi.mocked(fs.readFile).mockResolvedValueOnce(JSON.stringify(body) as never);
     expect(await loadRoom('bad', {} as never)).toBeNull();
     expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
@@ -477,9 +452,9 @@ describe('loadRoom filter sanitisation', () => {
       providers: [{ getMedia: async () => [{ id: 'm1', type: 'movie', title: 'Film' }] }],
     } as never);
 
-    // The invalid filter must not reach the Plex query, but discarding the
-    // whole file would take every rating and match with it: loadRoom returning
-    // null makes the join path build an empty room and overwrite the file.
+    // The filter must not reach the Plex query, but a null return makes the
+    // join path build an empty room and overwrite the file, losing every
+    // rating and match in it.
     expect(room).not.toBeNull();
     expect(room?.filters).toBeUndefined();
     expect(room?.ratings.get('m1')).toHaveLength(1);

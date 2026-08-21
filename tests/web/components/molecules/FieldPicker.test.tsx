@@ -1,15 +1,13 @@
 // @vitest-environment jsdom
 //
-// biome-ignore-all lint/style/noNonNullAssertion: `screen.getByText('...').closest('button')!` on SUT-rendered structure; a missing ancestor would surface a TypeError that's no less actionable than a Vitest assertion failure.
+// biome-ignore-all lint/style/noNonNullAssertion: a missing ancestor throws a TypeError, as actionable as an assertion failure.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { FieldPicker } from '../../../../web/app/src/components/molecules/FieldPicker';
 import type { Filters } from '../../../../types/reely';
 
-// FieldPicker is the searchable list of available filter fields, extracted
-// from FilterPanel in 0.4.47 (audit 13 #321 split, Option B). Pure
-// presentation -- no internal state, no store, no timers. The parent
-// (FilterPanel) owns the open/closed flag + the search term.
+// Searchable list of available filter fields. Pure presentation: no state, no
+// store, no timers. FilterPanel owns the open flag and the search term.
 
 type FieldDef = Filters['filters'][number];
 
@@ -110,8 +108,6 @@ describe('FieldPicker', () => {
         onClose={vi.fn()}
       />,
     );
-    // The "Genre" button has the title text inside; clicking it dispatches
-    // onSelect('genre'). Find via the title text.
     fireEvent.click(screen.getByText('Genre').closest('button')!);
     expect(onSelect).toHaveBeenCalledWith('genre');
   });
@@ -130,16 +126,7 @@ describe('FieldPicker', () => {
   });
 
   it('renders the first letter of the title in the picker-item icon', () => {
-    render(
-      <FieldPicker
-        availableFields={[{ key: 'year', title: 'Year', type: 'integer' }]}
-        search=""
-        onSearchChange={vi.fn()}
-        onSelect={vi.fn()}
-        onClose={vi.fn()}
-      />,
-    );
-    // Title charAt(0) -> "Y" in the icon span.
+    // Icon span holds title.charAt(0).
     const { container } = render(
       <FieldPicker
         availableFields={[{ key: 'year', title: 'Year', type: 'integer' }]}

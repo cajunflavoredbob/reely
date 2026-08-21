@@ -17,11 +17,8 @@ import { createStore, useSelector, useDispatch } from "./store";
 // Initialize the WS client and wire up the Zustand store before rendering
 createStore();
 
-// Route-to-component table. Hoisted out of the component body so it isn't
-// reconstructed every render. `Record<Routes, ...>` guarantees a key for
-// every Routes union member, so the lookup `ROUTES[route]` is total -- the
-// fallback `<p>No route for ...</p>` branch the prior code carried was
-// unreachable per the type system (audit 9 #119).
+// Hoisted so it is not rebuilt every render. `Record<Routes, ...>` makes the
+// lookup total, so no fallback branch is needed.
 const ROUTES: Record<Routes, () => JSX.Element> = {
   loading: Loading,
   login: LoginScreen,
@@ -62,14 +59,8 @@ createRoot(document.getElementById("app")!).render(
   </StrictMode>,
 );
 
-// `--vh` JS shim removed in 0.4.6 (audit 10 #171). CSS `dvh` (dynamic
-// viewport height) is supported across every browser reely targets
-// (Safari 15.4+, Chrome 108+, Firefox 101+; all 3+ years old) and
-// updates automatically as the mobile address bar collapses / expands,
-// which is exactly what the JS was emulating with a resize listener +
-// `setProperty('--vh', ...)`. Consumers in CSS now use `100dvh` / `Nvh`
-// directly (see main.css, Layout.module.css, Card.module.css,
-// CardStack.module.css).
+// No `--vh` shim: CSS `dvh` tracks the collapsing mobile address bar on its
+// own and is supported by every browser reely targets.
 
 window.addEventListener("keyup", (e) => {
   if (e.key === "Tab") {

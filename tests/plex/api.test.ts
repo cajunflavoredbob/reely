@@ -1,16 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
-// PlexApi's constructor calls addRedaction (audit 9 #162) for
-// defense-in-depth; the factory's shape covers it.
+// The factory covers addRedaction, which PlexApi's constructor calls.
 import { loggerMockFactory } from '../helpers';
 vi.mock('../../internal/app/reely/logger', () => loggerMockFactory());
 
 import { PlexApi } from '../../internal/app/plex/api';
 
-// Route-by-URL fetch stub. The handler receives the parsed request URL and
-// returns the MediaContainer payload for it (PlexApi.fetch unwraps
-// `{ MediaContainer: ... }`). Returning undefined produces a 404 so an
-// unexpected request fails loudly instead of hanging the merge.
+// Routes by URL to a MediaContainer payload. Returning undefined yields a
+// 404, so an unexpected request fails loudly instead of hanging the merge.
 const stubFetch = (handler: (url: URL) => unknown) => {
   const mock = vi.fn(async (href: string) => {
     const url = new URL(href);
@@ -42,9 +39,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-// #59: getFilterValues interpolates the key into a Plex API URL path. A key
-// with path separators or `..` could redirect the token-bearing request to a
-// different Plex endpoint. The API layer must reject it regardless of any
+// The key is interpolated into a Plex API URL path, so separators or `..`
+// would redirect the token-bearing request. Rejected here regardless of any
 // caller-side validation.
 describe('PlexApi.getFilterValues key validation (#59)', () => {
   const api = new PlexApi('http://localhost:32400', 'test-token', {});
@@ -57,9 +53,8 @@ describe('PlexApi.getFilterValues key validation (#59)', () => {
   );
 });
 
-// Audit 13 #295: getLibraryItems has the same path-traversal exposure as
-// getFilterValues. Mirrors the validation surface.
-describe('PlexApi.getLibraryItems key validation (audit 13 #295)', () => {
+// Same path-traversal exposure as getFilterValues.
+describe('PlexApi.getLibraryItems key validation', () => {
   const api = new PlexApi('http://localhost:32400', 'test-token', {});
 
   it.each(['../system', '1/../..', 'a/b', 'has space', '.', ''])(
@@ -70,13 +65,10 @@ describe('PlexApi.getLibraryItems key validation (audit 13 #295)', () => {
   );
 });
 
-// Audit 16 #436: regression coverage for the 0.5.23 production filter-picker
-// bug. Plex returns 200 OK with the Directory field OMITTED (not []) when a
-// section has no values for a filter; the pre-0.5.23 merge spread
-// `next.Directory` unguarded and threw, which surfaced UI-side as every
-// filter rendering as a free-text input. The fix also restricted the
-// fan-out to movie libraries. Neither behavior had a test until now.
-describe('PlexApi.getFilterValues 0.5.23 regression (audit 16 #436)', () => {
+// Plex returns 200 with Directory omitted, not [], when a section has no
+// values for a filter. Spreading it unguarded threw, and every filter
+// rendered as a free-text input. The fan-out is movie libraries only.
+describe('PlexApi.getFilterValues 0.5.23 regression', () => {
   const valuesPath = (lib: string) => `/library/sections/${lib}/genre`;
 
   it('fans out only to movie libraries', async () => {
@@ -107,7 +99,7 @@ describe('PlexApi.getFilterValues 0.5.23 regression (audit 16 #436)', () => {
       if (url.pathname === valuesPath('1')) {
         return { size: 2, Directory: [{ key: '9', title: 'Action' }, { key: '10', title: 'Drama' }] };
       }
-      // Anime 4K: 200 OK, Directory omitted entirely (the production shape).
+      // 200 OK with Directory omitted entirely: the production shape.
       if (url.pathname === valuesPath('4')) return { size: 0 };
       return undefined;
     });
@@ -148,12 +140,10 @@ describe('PlexApi.getFilterValues 0.5.23 regression (audit 16 #436)', () => {
   });
 });
 
-// Audit 16 #427: getAllFilters only consumes the Meta block, so it must ask
-// Plex for a zero-item container instead of downloading every movie in every
-// section, and must skip non-movie sections entirely (its consumer only
-// reads the movie Type bucket). The fallback covers a hypothetical PMS that
-// withholds Meta under a zero-size container.
-describe('PlexApi.getAllFilters meta-only fan-out (audit 16 #427)', () => {
+// getAllFilters consumes only the Meta block, so it asks for a zero-item
+// container rather than downloading every movie, and skips non-movie
+// sections. The fallback covers a PMS that withholds Meta at size zero.
+describe('PlexApi.getAllFilters meta-only fan-out', () => {
   const META = {
     Type: [{ type: 'movie', Filter: [{ filter: 'genre', title: 'Genre', filterType: 'tag' }] }],
     FieldType: [{ type: 'tag', Operator: [{ key: '=', title: 'is' }] }],
@@ -189,7 +179,6 @@ describe('PlexApi.getAllFilters meta-only fan-out (audit 16 #427)', () => {
         return { Directory: [{ key: '1', title: 'Movies', type: 'movie' }] };
       }
       if (url.pathname === '/library/sections/1/all') {
-        // A PMS that withholds Meta when the container is zero-sized.
         if (url.searchParams.get('X-Plex-Container-Size') === '0') return { size: 0 };
         return { size: 2, Meta: META };
       }
@@ -208,13 +197,9 @@ describe('PlexApi.getAllFilters meta-only fan-out (audit 16 #427)', () => {
   });
 });
 
-// Audit 13 #294: the constructor must reject non-http(s) Plex URLs. A
-// `file:` or `gopher:` URL would otherwise be a valid "Plex server"
-// from the constructor's standpoint and every derived request would
-// route to a local file or alternate protocol (SSRF). The env loader
-// already requires a scheme (audit 12 #207); this is defense-in-depth
-// at the API-layer boundary.
-describe('PlexApi constructor URL scheme allowlist (audit 13 #294)', () => {
+// A `file:` or `gopher:` URL would pass as a Plex server and route every
+// derived request to a local file or another protocol (SSRF).
+describe('PlexApi constructor URL scheme allowlist', () => {
   it.each(['http://localhost:32400', 'https://plex.example.com'])(
     'accepts the http/https scheme %j',
     (url) => {

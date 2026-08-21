@@ -12,21 +12,18 @@ import type { ReelyProvider } from '../../internal/app/reely/providers/types';
 
 // ─── Stubs ──────────────────────────────────────────────────────────────
 
-// Express-shaped Request stub: only `params` is read by the handler.
+// Only `params` is read by the handler.
 const makeReq = (
   params: { providerIndex?: string; metadataId?: string; thumbId?: string },
 ): Request<PosterParams> =>
   ({ params } as unknown as Request<PosterParams>);
 
-// Express-shaped Response stub: status/send/setHeader spies, a captured
-// headers map, an EventEmitter for `on('close')`, a destroy spy, and a
-// `pipe`-target shim so `nodeStream.pipe(res)` doesn't throw. `locals`
-// carries the providers array (the route normally injects it via
-// middleware -- see app.ts).
+// Response stub. The EventEmitter serves `on('close')` and the write/end
+// shims keep `nodeStream.pipe(res)` from throwing. `locals.providers` is
+// what app.ts injects via middleware at runtime.
 const makeRes = (providers: ReelyProvider[]) => {
   const emitter = new EventEmitter();
   const headers: Record<string, string> = {};
-  // Track piped chunks for the success-path tests.
   const chunks: Buffer[] = [];
   const r = Object.assign(emitter, {
     statusCode: 200,
@@ -51,13 +48,11 @@ const makeRes = (providers: ReelyProvider[]) => {
     headers,
     chunks,
   });
-  // Cast lets the handler treat this as a Response while tests can read
-  // the captured spies/headers/chunks directly.
+  // Cast so the handler sees a Response while tests read the spies directly.
   return r as unknown as Response & typeof r;
 };
 
-// Provider factory: getArtwork returns a [ReadableStream, Headers] tuple.
-// Tests can override the resolved value or make it reject.
+// getArtwork returns a [ReadableStream, Headers] tuple; tests override it.
 const makeProvider = (overrides: Partial<ReelyProvider> = {}): ReelyProvider =>
   ({
     type: 'plex',
@@ -74,9 +69,8 @@ const makeProvider = (overrides: Partial<ReelyProvider> = {}): ReelyProvider =>
     ...overrides,
   } as unknown as ReelyProvider);
 
-// Build a one-shot Web ReadableStream from a Buffer. Mirrors what
-// PlexApi.getRawThumb returns at runtime (a Web-API ReadableStream that
-// Readable.fromWeb consumes inside the handler).
+// Mirrors PlexApi.getRawThumb: a Web ReadableStream that Readable.fromWeb
+// consumes inside the handler.
 const makeStream = (buf: Buffer): ReadableStream<Uint8Array> =>
   new ReadableStream({
     start(controller) {
@@ -93,8 +87,8 @@ describe('poster handler: param validation', () => {
     provider = makeProvider();
   });
 
-  // audit 12 #225: `+providerIndex` accepts Infinity / NaN / whitespace
-  // strings. Explicit /^\d+$/ rejects them BEFORE coercion.
+  // `+providerIndex` accepts Infinity, NaN and whitespace strings, so an
+  // explicit /^\d+$/ has to run before the coercion.
   it.each(['', 'abc', 'Infinity', 'NaN', '-1', '1.5', ' 0', '0 '])(
     'rejects non-numeric providerIndex %j with 404',
     async (providerIndex) => {
@@ -108,8 +102,7 @@ describe('poster handler: param validation', () => {
   );
 
   it('rejects out-of-bounds providerIndex with 404', async () => {
-    // Single provider at index 0; "1" is out-of-bounds (`providers[1]`
-    // is undefined).
+    // One provider, at index 0.
     const req = makeReq({ providerIndex: '1', metadataId: '1', thumbId: '2' });
     const res = makeRes([provider]);
     await posterHandler(req, res);
@@ -118,8 +111,8 @@ describe('poster handler: param validation', () => {
     expect(provider.getArtwork).not.toHaveBeenCalled();
   });
 
-  // Path-traversal defense: any non-numeric id (including
-  // url-encoded `..`) gets rejected before the upstream fetch.
+  // Path traversal: any non-numeric id must be rejected before the upstream
+  // fetch interpolates it.
   it.each([
     ['../system', '2'],
     ['1', '../system'],
@@ -155,8 +148,7 @@ describe('poster handler: upstream forward', () => {
     const res = makeRes([provider]);
 
     await posterHandler(req, res);
-    // The pipe runs asynchronously after handler returns; wait a tick
-    // for the stream to drain into res.write.
+    // The pipe runs after the handler returns; let it drain into res.write.
     await new Promise((r) => setImmediate(r));
 
     expect(provider.getArtwork).toHaveBeenCalledWith('12/34', expect.any(AbortSignal));
@@ -195,9 +187,8 @@ describe('poster handler: upstream forward', () => {
   });
 
   it('does not write a status code if headers were already sent before rejection', async () => {
-    // Simulates the path where headers got forwarded + the stream
-    // started, then the stream threw downstream. headersSent is true so
-    // the catch branch skips res.status(502).
+    // Headers already forwarded and the stream started before it threw, so
+    // the catch branch must skip res.status(502).
     const provider = makeProvider({
       getArtwork: vi.fn().mockImplementation(async () => {
         throw new Error('post-headers boom');
@@ -209,7 +200,7 @@ describe('poster handler: upstream forward', () => {
 
     await posterHandler(req, res);
 
-    // Status was NOT overridden to 502 (the headersSent guard kicked in).
+    // The headersSent guard kept the status at 200.
     expect(res.statusCode).toBe(200);
     expect(res.send).not.toHaveBeenCalled();
   });

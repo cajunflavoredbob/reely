@@ -3,24 +3,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { loggerMockFactory } from '../helpers';
 vi.mock('../../internal/app/reely/logger', () => loggerMockFactory());
 
-// loadFromYaml is mocked per-test via vi.mock(...) below; each test can
-// override the return via the helper.
 const mockLoadFromYaml = vi.fn();
 vi.mock('../../internal/app/reely/config/load_yaml', () => ({
   loadFromYaml: mockLoadFromYaml,
 }));
 
 describe('loadConfig env/yaml merge', () => {
-  // Tests share env-var pollution; reset on each run.
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
     vi.resetModules();
     mockLoadFromYaml.mockReset();
-    // Strip every env key the loader looks at so individual tests start clean.
-    // `LIBRARY_TYPE_FILTER` + `MOVIE_LINK_TYPE` (which the loader hasn't read
-    // since 0.4.1's movies-only scope collapse and earlier) were retired here
-    // in 0.4.8 #179 to stop inviting confusion about which env vars are live.
+    // Every env key the loader reads, so each test starts clean.
     for (const k of [
       'PLEX_URL', 'PLEX_TOKEN', 'LIBRARY_TITLE_FILTER',
       'AUTH_USER', 'AUTH_PASS', 'TLS_CERT', 'TLS_KEY',
@@ -52,7 +46,6 @@ describe('loadConfig env/yaml merge', () => {
     expect(config.logLevel).toBe('INFO');
   });
 
-  // #54: ALLOWED_ORIGINS is comma-split into config.allowedOrigins.
   it('parses ALLOWED_ORIGINS into config.allowedOrigins', async () => {
     process.env.PLEX_URL = 'http://env.host:32400';
     process.env.PLEX_TOKEN = 'tok';
@@ -88,9 +81,8 @@ describe('loadConfig env/yaml merge', () => {
     expect(config.servers[0].token).toBe('env-tok');
   });
 
-  // #65: env config no longer index-merges into the yaml server. If env
-  // defines a server at all, it replaces the yaml server wholesale -- a
-  // per-field merge could pair an env token with a yaml URL.
+  // An env server replaces the yaml server wholesale: a per-field merge could
+  // pair an env token with a yaml URL.
   it('replaces the yaml server outright when env defines a server (#65)', async () => {
     mockLoadFromYaml.mockResolvedValue({
       servers: [
@@ -106,7 +98,7 @@ describe('loadConfig env/yaml merge', () => {
     expect(config.servers).toHaveLength(1);
     expect(config.servers[0].url).toBe('http://env.host:32400');
     expect(config.servers[0].token).toBe('env-tok');
-    // The yaml-only libraryTitleFilter is NOT carried over.
+    // The yaml-only libraryTitleFilter is not carried over.
     expect(config.servers[0].libraryTitleFilter).toBeUndefined();
   });
 
@@ -134,7 +126,7 @@ describe('loadConfig env/yaml merge', () => {
   });
 
   it('rethrows when an explicit path is missing on disk', async () => {
-    // With an explicit path, any load error is fatal regardless of type.
+    // With an explicit path, any load error is fatal.
     mockLoadFromYaml.mockRejectedValue(new Error('/explicit/path.yaml does not exist'));
 
     const { loadConfig } = await import('../../internal/app/reely/config/main');
@@ -142,11 +134,8 @@ describe('loadConfig env/yaml merge', () => {
   });
 
   it('tolerates a missing default config file', async () => {
-    // No path argument -> falls back to cwd/config.yaml. A genuine
-    // file-not-found there is acceptable: loadConfig returns env+defaults.
-    // ConfigFileNotFoundError is imported here (not at module scope) so it's
-    // the same class instance the freshly-imported loadConfig sees -- the
-    // beforeEach vi.resetModules() would otherwise break the instanceof check.
+    // Imported here, not at module scope: vi.resetModules() would otherwise
+    // give loadConfig a different class and break the instanceof check.
     const { ConfigFileNotFoundError } = await import('../../internal/app/reely/config/errors');
     mockLoadFromYaml.mockRejectedValue(new ConfigFileNotFoundError('default path absent'));
     process.env.PLEX_URL = 'http://env.host:32400';
@@ -159,8 +148,8 @@ describe('loadConfig env/yaml merge', () => {
     expect(config.port).toBe(8000); // default
   });
 
-  // #42: a malformed or unreadable default config file is NOT a missing file;
-  // swallowing it would silently start the server with the wrong config.
+  // A malformed default config file is not a missing one; swallowing it
+  // starts the server with the wrong config.
   it('rethrows a malformed default config file rather than swallowing it (#42)', async () => {
     mockLoadFromYaml.mockRejectedValue(new Error('bad YAML indentation'));
 
@@ -168,10 +157,9 @@ describe('loadConfig env/yaml merge', () => {
     await expect(loadConfig()).rejects.toThrow(/bad YAML/);
   });
 
-  // Audit 12 #207: scheme-less PLEX_URL used to silently downgrade to
-  // http:// with a log warning. 0.4.8 forces an explicit scheme so the
-  // operator can't accidentally ship the Plex token in cleartext.
-  it('throws when PLEX_URL has no scheme (audit 12 #207)', async () => {
+  // A scheme-less PLEX_URL must not silently downgrade to http://: the Plex
+  // token would ship in cleartext.
+  it('throws when PLEX_URL has no scheme', async () => {
     process.env.PLEX_URL = '192.168.1.10:32400';
     process.env.PLEX_TOKEN = 'tok';
     mockLoadFromYaml.mockResolvedValue({});
@@ -180,12 +168,9 @@ describe('loadConfig env/yaml merge', () => {
     await expect(loadConfig('/dev/null')).rejects.toThrow(/no scheme/);
   });
 
-  // Audit 12 #198: a partial env config (only LIBRARY_TITLE_FILTER, only
-  // AUTH_USER, only TLS_CERT) used to emit a half-bundle that spread over
-  // the YAML and erased the partner field. The fix gates each bundle on
-  // having both required halves; without them, the env contribution to
-  // that bundle is dropped and the YAML value survives.
-  describe('partial env bundles preserve YAML (audit 12 #198)', () => {
+  // Guards against a half-set env bundle spreading over the YAML and erasing
+  // the partner field. Each bundle needs both halves or it is dropped.
+  describe('partial env bundles preserve YAML', () => {
     it('LIBRARY_TITLE_FILTER alone preserves YAML server credentials', async () => {
       mockLoadFromYaml.mockResolvedValue({
         servers: [{ url: 'http://yaml:32400', token: 'yaml-tok' }],
@@ -195,8 +180,7 @@ describe('loadConfig env/yaml merge', () => {
       const { loadConfig } = await import('../../internal/app/reely/config/main');
       const [config] = await loadConfig('/tmp/fake.yaml');
 
-      // YAML's url + token survive; the env LIBRARY_TITLE_FILTER does
-      // NOT bleed into the server entry on its own (no url + token).
+      // Without a url and token, the env filter cannot enter the server entry.
       expect(config.servers[0].url).toBe('http://yaml:32400');
       expect(config.servers[0].token).toBe('yaml-tok');
       expect(config.servers[0].libraryTitleFilter).toBeUndefined();
@@ -246,9 +230,6 @@ describe('loadConfig env/yaml merge', () => {
     });
   });
 
-  // 0.4.15: EXPOSE_PLEX_BASE_URL opt-out for the WS-frame Plex URL exposure
-  // (closes audit 10 #165 / audit 12 #226). Default true preserves the
-  // 0.3.20 behavior; false makes sendConfig() withhold the field.
   describe('EXPOSE_PLEX_BASE_URL (audits 10 #165 + 12 #226)', () => {
     const baseEnv = () => {
       process.env.PLEX_URL = 'http://env.host:32400';

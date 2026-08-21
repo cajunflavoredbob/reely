@@ -4,10 +4,8 @@ import {
   sanitizeRoomNameDisplay,
 } from '../../web/app/src/utils/sanitize';
 
-// Audit 9 #104: the prior implementation relied solely on the input
-// element's maxLength attribute to bound length. 0.4.3 added an optional
-// maxLength function parameter so the bound holds even if the JSX
-// maxLength ever drops out.
+// The optional maxLength parameter keeps the bound even if the JSX maxLength
+// attribute ever drops out.
 
 describe('sanitizeUserInput', () => {
   it('strips control / null bytes and path-traversal characters', () => {
@@ -18,12 +16,12 @@ describe('sanitizeUserInput', () => {
     expect(sanitizeUserInput('a'.repeat(200))).toHaveLength(200);
   });
 
-  it('caps the cleaned string at maxLength when provided (audit 9 #104)', () => {
+  it('caps the cleaned string at maxLength when provided', () => {
     expect(sanitizeUserInput('a'.repeat(200), 64)).toHaveLength(64);
   });
 
   it('caps AFTER stripping, so the cap reflects the visible length', () => {
-    // '..abcdef' -> strip '..' -> 'abcdef'; cap 4 -> 'abcd'
+    // '..abcdef' -> 'abcdef' -> cap 4 -> 'abcd'.
     expect(sanitizeUserInput('..abcdef', 4)).toBe('abcd');
   });
 });
@@ -34,15 +32,14 @@ describe('sanitizeRoomNameDisplay', () => {
     expect(sanitizeRoomNameDisplay('foo/bar*baz')).toBe('foobarbaz');
   });
 
-  it('caps the cleaned string at maxLength when provided (audit 9 #104)', () => {
+  it('caps the cleaned string at maxLength when provided', () => {
     expect(sanitizeRoomNameDisplay('a'.repeat(200), 48)).toHaveLength(48);
   });
 });
 
-// Audit 16 #440: same fixpoint-strip regression coverage as the server
-// wrapper (tests/util/sanitize.test.ts) -- both sides strip through the
-// shared stripDangerous helper and must not reconstruct '..'.
-describe('sanitizeUserInput strip idempotency (audit 16 #440)', () => {
+// A single strip pass can reconstruct '..' out of the surviving characters.
+// Mirrors the server-side coverage in tests/util/sanitize.test.ts.
+describe('sanitizeUserInput strip idempotency', () => {
   it.each([
     ['./.', ''],
     ['.\x00.', ''],

@@ -1,13 +1,11 @@
 // @vitest-environment jsdom
 //
-// biome-ignore-all lint/style/noNonNullAssertion: indexing into SUT-rendered queryAll results; a missing element would surface a TypeError that's no less actionable than a Vitest assertion failure.
+// biome-ignore-all lint/style/noNonNullAssertion: a missing element throws a TypeError, as actionable as an assertion failure.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { SearchControl } from '../../../../web/app/src/components/molecules/SearchControl';
 
-// SearchControl is the free-text tag input extracted from FilterPanel
-// in 0.4.47 (audit 13 #321 split, Option B). Pure presentation +
-// internal `q` state for the input draft. No store, no timers.
+// Free-text tag input. Internal `q` state holds the input draft; no store.
 
 afterEach(() => {
   cleanup();
@@ -47,9 +45,7 @@ describe('SearchControl', () => {
     expect(onChange).toHaveBeenCalledWith(['enter-value']);
   });
 
-  // Don't double-add a value that's already in the tags. Applies even
-  // with leading/trailing whitespace -- the trim happens before the
-  // includes check.
+  // Trim runs before the includes check, so padded duplicates are caught too.
   it('does NOT add a duplicate value (compare after trim)', () => {
     const onChange = vi.fn();
     render(<SearchControl values={['drama']} placeholder="x" onChange={onChange} />);
@@ -85,19 +81,16 @@ describe('SearchControl', () => {
 
   it('omits the tag list when values is empty', () => {
     const { container } = render(<SearchControl values={[]} placeholder="x" onChange={vi.fn()} />);
-    // searchTags class is applied to the tag container; absent when values=[]
+    // The tag container carries searchTags; absent when values is empty.
     expect(container.querySelector('[class*="searchTags"]')).toBeNull();
   });
 
-  // Tag-remove buttons fire onChange with the value filtered out.
   it('clicking a tag\'s remove button fires onChange with that value filtered out', () => {
     const onChange = vi.fn();
-    render(<SearchControl values={['drama', 'action', 'comedy']} placeholder="x" onChange={onChange} />);
-    // Each tag-remove button is unlabeled (just the CloseIcon); find
-    // the buttons inside the tag list.
+    // Remove buttons are unlabeled (CloseIcon only), so query by class.
     const { container } = render(<SearchControl values={['drama', 'action', 'comedy']} placeholder="x" onChange={onChange} />);
     const removeBtns = container.querySelectorAll('[class*="searchTagRemove"]');
-    // Click the second tag's remove button ("action").
+    // Second tag: "action".
     fireEvent.click(removeBtns[1]!);
     expect(onChange).toHaveBeenCalledWith(['drama', 'comedy']);
   });

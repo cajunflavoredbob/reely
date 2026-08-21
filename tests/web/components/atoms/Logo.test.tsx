@@ -10,27 +10,12 @@ import {
   MARK_VIEWBOX,
 } from '../../../../web/app/src/components/atoms/markGeometry';
 
-// Smoke test for the jsdom + @testing-library/react harness (audit 13
-// #338 web-layer setup batch). Pins three things:
-//   1. The jsdom environment override works via the
-//      `// @vitest-environment jsdom` directive at the top of the file
-//      (no global vitest config change needed).
-//   2. CSS modules import cleanly under vitest's default transform
-//      (vitest stubs CSS files to proxy objects -- `styles.root`
-//      becomes the string "root" -- no extra config required).
-//   3. React's `useId` works in the jsdom environment (it would
-//      throw or duplicate ids without a real React DOM render).
-//
-// Logo was chosen as the target because it exercises useId (the
-// per-render gradient id that audit 12 #195 pinned), React.memo (audit
-// 14 #334), conditional render of the wordmark, and prop variations
-// (size, withWord). Other Atoms (CloseIcon, ProviderIcon, etc.) get
-// their own coverage in follow-up batches now that the harness is
-// proven.
+// jsdom + RTL harness smoke test. Pins the @vitest-environment directive,
+// CSS-module stubbing, and useId under jsdom. Logo is the target because it
+// exercises all three plus React.memo and prop variations.
 
 afterEach(() => {
-  // RTL's `cleanup` isn't auto-wired without vitest globals; call
-  // explicitly so each test starts with a fresh DOM.
+  // RTL's `cleanup` isn't auto-wired without vitest globals.
   cleanup();
 });
 
@@ -58,11 +43,9 @@ describe('Logo (jsdom + RTL smoke test)', () => {
     expect(svg?.getAttribute('height')).toBe('64');
   });
 
-  // Audit 12 #195: SVG ids are global; without useId per Logo, two
-  // Logos on the same page would collide on the linearGradient id and
-  // the second one would render with the first's gradient (or break
-  // when the first unmounted). Pin the uniqueness here.
-  it('gives each rendered Logo a unique gradient id (audit 12 #195)', () => {
+  // SVG ids are global: two Logos sharing a linearGradient id means the second
+  // renders with the first's gradient, or breaks when the first unmounts.
+  it('gives each rendered Logo a unique gradient id', () => {
     const { container: a } = render(<Logo />);
     const { container: b } = render(<Logo />);
     const idA = a.querySelector('linearGradient')?.getAttribute('id');
@@ -72,9 +55,7 @@ describe('Logo (jsdom + RTL smoke test)', () => {
     expect(idA).not.toBe(idB);
   });
 
-  // Everything above this line passes even if the artwork is replaced
-  // wholesale -- which is exactly what happened in 1.1.4, and why an
-  // off-centre mark and a sheared gradient shipped with a green suite. These
+  // Everything above passes even if the artwork is replaced wholesale. These
   // pin the drawing itself against the generated geometry.
   it('draws the mark from the generated geometry', () => {
     const { container } = render(<Logo />);
@@ -85,10 +66,8 @@ describe('Logo (jsdom + RTL smoke test)', () => {
   });
 
   it('points the top card at a gradient that actually exists', () => {
-    // A renamed id, a dropped <defs>, or a stray copy/paste leaves the rect
-    // referencing a paint server that is not there. SVG renders that as an
-    // unfilled shape rather than throwing, so only an explicit check catches
-    // it -- and the top card is the whole mark.
+    // A rect pointing at a missing paint server renders unfilled instead of
+    // throwing, and the top card is the whole mark.
     const { container } = render(<Logo />);
     const rects = [...container.querySelectorAll('rect')];
     const top = rects.at(-1);
@@ -108,16 +87,14 @@ describe('Logo (jsdom + RTL smoke test)', () => {
   });
 
   it('leaves the gradient in objectBoundingBox units, as the assets declare', () => {
-    // 1.1.4 shipped this component with gradientUnits="userSpaceOnUse" and the
-    // same endpoint numbers as the master SVG, which is not equivalent: the
-    // bounding-box form shears the axis by the card's 300x420 aspect, so the
-    // in-app mark ran its gradient ~19 degrees off the favicon beside it.
+    // userSpaceOnUse with the master's endpoint numbers is not equivalent:
+    // bounding-box shears the axis by the card's 300x420 aspect, running the
+    // in-app mark ~19 degrees off the favicon beside it.
     const { container } = render(<Logo />);
     const grad = container.querySelector('linearGradient');
     expect(grad?.getAttribute('gradientUnits')).toBeNull();
-    // Compared against the generated values, not hardcoded literals: pinning
-    // '100%' here would just restate what Logo.tsx says and could not detect
-    // the master changing its gradient direction.
+    // Against the generated values, not literals: '100%' here would restate
+    // Logo.tsx and miss the master changing its gradient direction.
     expect(grad?.getAttribute('x1')).toBe(GRADIENT.x1);
     expect(grad?.getAttribute('y1')).toBe(GRADIENT.y1);
     expect(grad?.getAttribute('x2')).toBe(GRADIENT.x2);
@@ -127,8 +104,7 @@ describe('Logo (jsdom + RTL smoke test)', () => {
   it('scales the wordmark with the size prop (90% of size)', () => {
     render(<Logo size={100} />);
     const word = screen.getByText('reely');
-    // React inlines style as a CSS string; check via the rendered style
-    // attribute. Logo sets fontSize = size * 0.9 -> 90px.
+    // React inlines style as a CSS string. fontSize = size * 0.9 -> 90px.
     expect(word.getAttribute('style')).toContain('font-size: 90px');
   });
 });

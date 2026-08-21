@@ -18,16 +18,12 @@ describe('UserPill', () => {
     expect(container.querySelector('span')?.getAttribute('title')).toBe('alice');
   });
 
-  // Layout cap: pills longer than 14 chars get truncated to 13 + "…",
-  // with the full name preserved in title=. UsersPopup still has the
-  // full name visible.
+  // Layout cap. The full name stays recoverable via title=.
   it('truncates names longer than 14 chars (TRUNCATE_AT) with an ellipsis', () => {
-    render(<UserPill userName="taylor-swift-13-fan" />);
-    expect(screen.queryByText('taylor-swift-13-fan')).toBeNull();
-    // slice(0, TRUNCATE_AT - 1) = first 13 chars, then '…'.
-    expect(screen.getByText('taylor-swift-…')).toBeDefined();
-    // Full name still recoverable via title.
     const { container } = render(<UserPill userName="taylor-swift-13-fan" />);
+    expect(screen.queryByText('taylor-swift-13-fan')).toBeNull();
+    // slice(0, TRUNCATE_AT - 1) = 13 chars, then '…'.
+    expect(screen.getByText('taylor-swift-…')).toBeDefined();
     expect(container.querySelector('span[title="taylor-swift-13-fan"]')).not.toBeNull();
   });
 
@@ -36,15 +32,13 @@ describe('UserPill', () => {
     expect(screen.getByText('abcdefghijklmn')).toBeDefined();
   });
 
-  // CSS-var-keyed type (audit 9 #117): inline style sets --hue (hash 0-359)
-  // and --progress (% string), consumed by the stylesheet. Type intersection
-  // catches typos like `--huee` at compile time; the test pins the runtime
-  // values land in the style attribute.
+  // The stylesheet reads --hue (0-359) and --progress (% string) off the inline
+  // style; typing catches `--huee` at compile time, this pins the values.
   it('injects --hue and --progress as inline CSS variables', () => {
     const { container } = render(<UserPill userName="alice" progress={42} />);
     const pill = container.querySelector('span');
     const style = pill?.getAttribute('style') ?? '';
-    // userHue('alice') = 29 (locked in tests/web/userHue.test.ts).
+    // userHue('alice') = 29, locked in tests/web/userHue.test.ts.
     expect(style).toContain('--hue: 29');
     expect(style).toContain('--progress: 42%');
   });

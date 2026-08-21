@@ -10,20 +10,12 @@ import {
   recordAuthFailure,
 } from '../middleware/authFailureThrottle';
 
-// Cross-Site WebSocket Hijacking guard. A browser always sends an Origin
-// header on a WS handshake; a non-browser client (no CSWSH risk) sends none.
-// Accept a connection when: there's no Origin (non-browser), the Origin's host
-// matches the request's Host (same-origin), or the exact Origin is listed in
-// config.allowedOrigins (reverse-proxy escape hatch).
-//
-// Note: the same-origin check compares against the request Host, not a
-// server-configured hostname -- reely has no served-hostname config (it binds
-// 0.0.0.0). This stops standard CSWSH (an attacker cannot forge a browser's
-// Origin). It does NOT stop DNS rebinding, where the attacker's own domain is
-// also the request Host; that is an accepted residual for this LAN app -- no
-// browser-exposed secret (the Plex token never reaches the client), and an
-// operator wanting stricter control fronts reely with a proxy. ALLOWED_ORIGINS
-// is the lever for known external origins.
+// Cross-Site WebSocket Hijacking guard. Browsers always send Origin on a WS
+// handshake; non-browser clients (no CSWSH risk) send none. Allowed when Origin
+// is absent, matches the request Host, or is listed in ALLOWED_ORIGINS.
+// Compares against the request Host because reely has no configured hostname.
+// That stops CSWSH, not DNS rebinding: accepted here, since no secret reaches
+// the browser and a proxy is the answer for stricter control.
 export const isOriginAllowed = (req: IncomingMessage): boolean => {
   const origin = req.headers.origin;
   if (!origin) return true;
@@ -33,10 +25,8 @@ export const isOriginAllowed = (req: IncomingMessage): boolean => {
   } catch {
     return false;
   }
-  // Host header comparison is case-insensitive per RFC 7230. A browser
-  // typically lowercases both, but normalize defensively so a proxy that
-  // forwards a mixed-case Host doesn't 403 a legitimate same-origin WS
-  // upgrade.
+  // Host comparison is case-insensitive per RFC 7230; a proxy may forward
+  // mixed case.
   const reqHost = req.headers.host;
   if (
     typeof reqHost === 'string' &&
@@ -46,38 +36,19 @@ export const isOriginAllowed = (req: IncomingMessage): boolean => {
   return Array.isArray(allowed) && allowed.includes(origin);
 };
 
-// Per-IP concurrent-WS cap (audit 12 #232). The existing per-connection
-// WS message rate limit (0.3.5) caps message volume per socket, but a
-// single IP could otherwise open hundreds of sockets and multiply the
-// per-conn limit. Keyed on socket.remoteAddress (the real TCP peer; the
-// rateLimit middleware keys on req.socket.remoteAddress for the same
-// reason -- can't be spoofed via X-Forwarded-For). Generous so a normal
-// household behind NAT (multiple browser tabs, a phone, a laptop)
-// doesn't hit the cap.
+// The per-connection WS message limit caps volume per socket, so without this
+// one IP could open hundreds of sockets and multiply it. Generous enough for a
+// household behind NAT.
 const MAX_WS_PER_IP = 20;
-// Upper bound on the wsConnectionsByIp Map itself (audit 13 #291). The
-// per-IP cap above bounds connections PER source IP, but the Map's
-// SIZE was previously unbounded -- a flood of distinct source IPs
-// (IPv6 spoofing, legitimate-but-large user base, etc.) could grow the
-// Map without limit. Entries with count == 0 auto-delete (releaseSlot
-// below); the cap only matters under sustained pressure of many
-// concurrent active IPs. Set well above any realistic deployment: 1000
-// distinct IPs at the per-IP cap of 20 = 20,000 concurrent sockets,
-// which is far past anything a movie-pick app would see. When the cap
-// is reached and a new IP wants in, we refuse the upgrade rather than
-// evict (eviction would drop the slot accounting for active sockets).
+// Bounds the tracking Map itself: a flood of distinct source addresses would
+// otherwise grow it without limit. Far above any realistic deployment.
 const MAX_WS_IPS = 1000;
 const wsConnectionsByIp = new Map<string, number>();
 
 export const createWsUpgradeHandler = (wss: WebSocketServer) =>
   (req: IncomingMessage, socket: Socket, head: Buffer): void => {
-    // Cheap pathname extraction (audit 14 #367). The previous
-    // `new URL(req.url ?? '', 'http://localhost').pathname` allocated a
-    // full URL object purely to read pathname; this fires once per
-    // WS upgrade (including failed handshakes), so the allocation
-    // matters under flood. `split('?')` peels the query string + any
-    // fragment fragment in one pass; the leading-slash invariant on
-    // req.url is the same as URL would enforce.
+    // split, not `new URL`: this runs on every upgrade including failed
+    // handshakes, so the allocation matters under flood.
     const pathname = (req.url ?? '').split('?')[0];
     if (pathname !== '/api/ws') {
       socket.write('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
@@ -95,17 +66,15 @@ export const createWsUpgradeHandler = (wss: WebSocketServer) =>
       return;
     }
 
-    // Grouped, not raw: see util/clientKey. On IPv6 the raw address made both
-    // the per-IP socket cap and the shared auth throttle trivially bypassable,
-    // and filling the tracking Map turned its size cap into a lockout for
-    // every source not already in it.
+    // Grouped, not raw (see util/clientKey): a raw IPv6 address makes the
+    // per-IP cap and the auth throttle trivially bypassable, and floods the
+    // tracking Map until its size cap locks out every untracked source.
     const ip = clientKey(socket.remoteAddress);
     const config = getConfig();
     if (config.basicAuth) {
-      // Failed-attempt throttle (audit 16 #425). Shares its budget with the
-      // HTTP middleware so switching vectors doesn't reset the counter, and
-      // runs BEFORE the credential compare so a throttled IP can't keep
-      // guessing at line rate through unmetered upgrade handshakes.
+      // Shares a budget with the HTTP middleware so switching vectors doesn't
+      // reset the counter. Runs before the credential compare so a throttled IP
+      // can't keep guessing through unmetered handshakes.
       const retryAfter = authFailureRetryAfter(ip);
       if (retryAfter > 0) {
         logger.warn(
@@ -126,16 +95,11 @@ export const createWsUpgradeHandler = (wss: WebSocketServer) =>
       }
     }
 
-    // Per-IP cap check: reject the upgrade if this IP already has
-    // MAX_WS_PER_IP active sockets. Reserve the slot eagerly so two
-    // concurrent upgrades from the same IP can't both pass the check
-    // and overshoot the cap by 1.
+    // Slot is reserved eagerly so two concurrent upgrades from one IP can't
+    // both pass the check and overshoot the cap.
     const current = wsConnectionsByIp.get(ip) ?? 0;
-    // Map size cap (audit 13 #291): refuse upgrades from a NEW IP once
-    // the tracking Map is full. Existing tracked IPs can still
-    // increment their counts (up to MAX_WS_PER_IP) -- we only refuse
-    // when the IP isn't yet in the Map. Eviction would lose slot
-    // accounting for active sockets; refusal is the correct response.
+    // Only new IPs are refused when the Map is full; tracked ones still
+    // increment. Evicting would lose slot accounting for live sockets.
     if (current === 0 && wsConnectionsByIp.size >= MAX_WS_IPS) {
       logger.warn(
         `WebSocket upgrade rejected: tracking Map at cap ${MAX_WS_IPS}; ` +
@@ -164,22 +128,15 @@ export const createWsUpgradeHandler = (wss: WebSocketServer) =>
       else wsConnectionsByIp.set(ip, next);
     };
 
-    // Register cleanup on the raw socket BEFORE handleUpgrade (audit 14
-    // #350). If the handshake rejects -- malformed Sec-WebSocket-Key,
-    // protocol mismatch, etc. -- the upgrade callback never fires, so
-    // the `ws.on('close')` registrations below never run, and the slot
-    // we just reserved at line 96 stays burned permanently. Without
-    // this listener, a buggy proxy or a crafted attacker can burn the
-    // per-IP cap with no recovery short of process restart. The
-    // `slotReleased` guard above makes the listener idempotent, so
-    // it's safe to register on both the raw socket here AND the
-    // upgraded ws below.
+    // Must be registered before handleUpgrade: a rejected handshake never fires
+    // the upgrade callback, so the ws listeners below never run and the
+    // reserved slot stays burned until restart. slotReleased makes it
+    // idempotent across both registrations.
     socket.on('close', releaseSlot);
 
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.on('close', releaseSlot);
-      // `close` should fire even on error paths, but listen to `error`
-      // too so a synchronous teardown can't leak the slot.
+      // `close` should cover error paths, but a synchronous teardown might not.
       ws.on('error', releaseSlot);
       wss.emit('connection', ws, req);
     });

@@ -1,12 +1,6 @@
-// Platform detection helpers (audit 13 #325). Extracted from inline
-// duplicates in Card.tsx and PlexLinks.tsx. Module-level constants
-// (not functions) so the userAgent test runs once at import time.
+// Module-level constant, not a function, so the userAgent test runs once.
 
-// iOS Safari requires `target="_self"` on external links to actually
-// navigate; `target="_blank"` opens a blank tab that never loads (a
-// long-running Safari quirk). Other platforms get the standard new-tab
-// behavior. Detects iPhone + iPad. iPadOS 13+ reports as "MacIntel" in
-// userAgent so this regex misses those; the practical impact is
-// limited (links open in a new tab on iPadOS, which is the standard
-// behavior elsewhere -- not a regression).
+// iOS Safari needs target="_self" on external links; target="_blank" opens a
+// tab that never loads. iPadOS 13+ reports as "MacIntel" and misses this
+// check, which only costs it the _self workaround.
 export const isIOS = /(iPhone|iPad)/.test(navigator.userAgent);

@@ -13,14 +13,10 @@ interface MatchesListProps {
 
 export const MatchesList = ({ onClose }: MatchesListProps) => {
   const [{ room, config }] = useStore(["room", "config"]);
-  // Escape closes, matching every sibling overlay (audit 16 #455) -- the
-  // convention UsersPopup documents so users don't have to remember
-  // which overlays support it. This was the only one that didn't.
+  // Escape closes, matching every sibling overlay.
   useEscape(onClose);
-  // Same local-Plex probe Room.tsx uses for its desktop sidebar -- without
-  // this MatchesList always built app.plex.tv links even on LAN-only
-  // deployments where the local Plex web UI is reachable. Regression vs.
-  // 0.3.20; flagged by audit 9 #102 and audit 10 #132 independently.
+  // Same local-Plex probe Room.tsx uses; without it, LAN-only deployments get
+  // app.plex.tv links even though the local web UI is reachable.
   const localPlexReachable = useLocalPlexReachable(config?.plexBaseUrl);
   const matches = room?.matches ?? [];
   const sorted = useMemo(
@@ -63,8 +59,6 @@ export const MatchesList = ({ onClose }: MatchesListProps) => {
         <div className={styles.body}>
           {sorted.map((match, i) => {
             const m = match.media;
-            // Cache the link locally -- previously called twice per row
-            // (once to gate, once to read .webUrl). Audit 10 #132.
             const plexLink = buildPlexLinks(
               m,
               config?.plexServerId,

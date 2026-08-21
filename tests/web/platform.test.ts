@@ -1,9 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// `isIOS` is computed at module-import time from `navigator.userAgent`
-// (a module-level const, not a function). Each test stubs navigator
-// + calls vi.resetModules() so the re-import re-runs the IIFE-style
-// regex test against the new userAgent.
+// `isIOS` is a module-level const computed at import from navigator.userAgent,
+// so each test stubs navigator then re-imports after vi.resetModules().
 const loadIsIOS = async () => {
   const mod = await import('../../web/app/src/utils/platform');
   return mod.isIOS;
@@ -42,9 +40,8 @@ describe('isIOS', () => {
     expect(await loadIsIOS()).toBe(false);
   });
 
-  // Documented quirk: iPadOS 13+ reports as "MacIntel" / Mac userAgent so
-  // this regex misses those devices. Pinning the behavior here so future
-  // edits don't quietly "fix" it without a behavior decision.
+  // iPadOS 13+ reports a Mac userAgent, so the regex misses those devices.
+  // Pinned so nobody quietly "fixes" it without deciding to.
   it('is false for the iPadOS 13+ Mac-disguised userAgent (known false negative)', async () => {
     vi.stubGlobal('navigator', {
       userAgent:

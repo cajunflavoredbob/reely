@@ -4,11 +4,9 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { UsersPopup } from '../../../../web/app/src/components/organisms/UsersPopup';
 import type { UserProgress } from '../../../../types/reely';
 
-// UsersPopup is the room-roster overlay shown when the user taps the
-// UserPillRow. Pure presentation + a couple of dismiss paths -- no store,
-// no timers. Sorts users by "me first, then descending progress" (audit
-// 14 #333), wraps the dialog in a click-outside-dismissable backdrop,
-// and exposes a Leave button that fires both onLeave + onClose.
+// Room-roster overlay behind UserPillRow. Pure presentation: sorts me first
+// then by descending progress, dismisses on backdrop click, and its Leave
+// button fires onLeave plus onClose.
 
 const u = (userName: string, progress = 0): UserProgress => ({
   user: { userName },
@@ -24,8 +22,7 @@ describe('UsersPopup', () => {
     render(
       <UsersPopup users={[u('a'), u('b'), u('c')]} onClose={vi.fn()} onLeave={vi.fn()} />,
     );
-    // Title splits "In this room " + "(3)" across two elements; assert via
-    // the heading's full textContent rather than getByText.
+    // The title spans two elements, so assert on the heading's textContent.
     const title = screen.getByRole('heading', { level: 2 });
     expect(title.textContent).toContain('In this room');
     expect(title.textContent).toContain('(3)');
@@ -41,14 +38,13 @@ describe('UsersPopup', () => {
     );
     const rows = container.querySelectorAll('li');
     expect(rows.length).toBe(2);
-    // Progress text: Math.round(progress * 100) + "%".
+    // Math.round(progress * 100) + "%".
     expect(container.textContent).toContain('40%');
     expect(container.textContent).toContain('75%');
   });
 
-  // "Me first, then descending progress." The current user is pinned to
-  // the top regardless of their own progress so they always have a stable
-  // anchor for finding themselves in a crowded room.
+  // Pinning me regardless of my own progress keeps a stable anchor in a
+  // crowded room.
   it('pins the current user to the top and sorts the rest by descending progress', () => {
     const { container } = render(
       <UsersPopup
@@ -66,7 +62,7 @@ describe('UsersPopup', () => {
     const names = Array.from(container.querySelectorAll('li > span[title]')).map(
       (s) => s.getAttribute('title'),
     );
-    // 'me' pinned first; rest in descending progress order (alice .9, carol .6, bob .1).
+    // 'me' first, then alice .9, carol .6, bob .1.
     expect(names).toEqual(['me', 'alice', 'carol', 'bob']);
   });
 
@@ -92,27 +88,22 @@ describe('UsersPopup', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  // Backdrop click closes; dialog click does NOT (the dialog has a
-  // stopPropagation handler so clicks inside don't bubble up to the
-  // backdrop's onClick).
+  // The dialog stopPropagation()s, so clicks inside never reach the backdrop's
+  // onClick.
   it('clicking the backdrop fires onClose; clicking the dialog does not', () => {
     const onClose = vi.fn();
     const { container } = render(
       <UsersPopup users={[u('a')]} onClose={onClose} onLeave={vi.fn()} />,
     );
-    // The dialog is inside the backdrop; clicking the dialog should NOT
-    // dismiss.
     fireEvent.click(screen.getByRole('dialog'));
     expect(onClose).not.toHaveBeenCalled();
-    // Clicking the backdrop directly should dismiss. The backdrop is the
-    // outermost div (the root of the rendered tree).
+    // The backdrop is the root of the rendered tree.
     const backdrop = container.firstChild as HTMLElement;
     fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  // Leave fires onLeave THEN onClose -- the popup self-dismisses so the
-  // parent doesn't have to coordinate. Both must be called once.
+  // The popup self-dismisses so the parent has nothing to coordinate.
   it('clicking the Leave button fires onLeave AND onClose (popup self-dismisses)', () => {
     const onClose = vi.fn();
     const onLeave = vi.fn();
@@ -122,8 +113,6 @@ describe('UsersPopup', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  // useEscape: shared keyboard dismissal pattern across FilterPanel +
-  // MatchMoment + UsersPopup. Pressing Esc on the document fires onClose.
   it('pressing Escape fires onClose (useEscape hook)', () => {
     const onClose = vi.fn();
     render(<UsersPopup users={[u('a')]} onClose={onClose} onLeave={vi.fn()} />);
@@ -131,12 +120,9 @@ describe('UsersPopup', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  // 0.5.4: version label rendered from document.body.dataset.version
-  // (substituted at request time by the server from <body
-  // data-version="${version}">). APP_VERSION is read at module load --
-  // resetModules + dynamic re-import forces a fresh read AFTER setting
-  // body.dataset.version, which is how this test simulates the production
-  // template substitution.
+  // The server substitutes data-version into <body> at request time, and
+  // APP_VERSION reads it at module load. resetModules + dynamic re-import is
+  // the only way to get a fresh read after setting body.dataset.version.
   it('renders the version label from document.body.dataset.version', async () => {
     document.body.dataset.version = '0.5.4';
     vi.resetModules();
@@ -144,12 +130,8 @@ describe('UsersPopup', () => {
       '../../../../web/app/src/components/organisms/UsersPopup'
     );
     render(<Fresh users={[u('a')]} onClose={vi.fn()} onLeave={vi.fn()} />);
-    // getByText throws if not found; toBeDefined matches the rest of
-    // this file (no jest-dom matchers imported here).
     expect(screen.getByText('v0.5.4')).toBeDefined();
-    // Clean up so the next test's module load sees no version (matches
-    // jsdom default + ensures the conditional-render branch is also
-    // exercised across the suite).
+    // Leave the next module load seeing no version, exercising the other branch.
     delete document.body.dataset.version;
   });
 });

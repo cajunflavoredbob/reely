@@ -3,13 +3,10 @@ import { Readable } from 'node:stream';
 import { logger } from '../logger';
 import type { ReelyProvider } from '../providers/types';
 
-// Route: GET /api/poster/:providerIndex/:metadataId/:thumbId
-// Proxies and transcodes artwork from Plex, streaming the response body directly.
-// The Request generic pins each param to `string`: express 5 types the
-// default params dictionary as `string | string[]` (arrays arrive from
-// repeating wildcards), but this route's three named params are always
-// single segments. Exported so the handler's tests type their request
-// stub against the same shape.
+// GET /api/poster/:providerIndex/:metadataId/:thumbId, streaming Plex artwork.
+// Pins each param to `string`: express 5 types params as `string | string[]`
+// for repeating wildcards, but these three are always single segments.
+// Exported so the tests type their request stub the same way.
 export type PosterParams = { providerIndex: string; metadataId: string; thumbId: string };
 
 export const handler = async (
@@ -19,14 +16,8 @@ export const handler = async (
   const { providerIndex, metadataId, thumbId } = req.params;
   const providers = res.locals.providers as ReelyProvider[];
 
-  // Validate providerIndex as a non-negative integer string BEFORE coercion
-  // (audit 12 #225). `+providerIndex` accepts `Infinity`/`NaN`/whitespace
-  // strings, all of which would then index out-of-bounds into `providers`
-  // and hit the !provider guard below -- but only by accident. Explicit
-  // /^\d+$/ matches the same pattern used for metadataId / thumbId. A
-  // failed regex short-circuits to `undefined`, which the same guard
-  // catches alongside out-of-bounds indices (audit 15 #379 collapsed the
-  // two near-identical guard bodies into one).
+  // Validate before coercion: `+providerIndex` accepts Infinity, NaN, and
+  // whitespace strings, which only hit the guard below by accident.
   const provider = /^\d+$/.test(providerIndex) ? providers[+providerIndex] : undefined;
   if (!provider) {
     logger.warn(`poster handler: invalid providerIndex ${providerIndex}`);
@@ -34,9 +25,8 @@ export const handler = async (
     return;
   }
 
-  // Plex metadata and thumb ids are integers. Reject anything else so a request
-  // like /api/poster/0/..%2Fsystem/thumb/1 can't traverse to a different Plex
-  // API endpoint via URL pathname normalization.
+  // Plex ids are integers. Anything else could traverse to a different Plex
+  // endpoint once the URL pathname is normalized (/api/poster/0/..%2Fsystem/...).
   if (!/^\d+$/.test(metadataId) || !/^\d+$/.test(thumbId)) {
     logger.warn(
       `poster handler: rejected non-numeric ids metadataId=${metadataId} thumbId=${thumbId}`,
@@ -45,10 +35,8 @@ export const handler = async (
     return;
   }
 
-  // Abort the upstream Plex fetch if the browser disconnects before the
-  // stream finishes -- otherwise the proxy keeps pulling bytes into a dead
-  // response. On normal completion this fires too, but aborting a settled
-  // fetch is a harmless no-op.
+  // Without this the proxy keeps pulling bytes into a dead response after the
+  // browser disconnects. Also fires on normal completion, where it is a no-op.
   const abort = new AbortController();
   res.on('close', () => abort.abort());
 
@@ -58,21 +46,17 @@ export const handler = async (
       abort.signal,
     );
 
-    // Forward content-type and content-length from Plex if present.
     const contentType = headers.get('content-type');
     if (contentType) res.setHeader('content-type', contentType);
     const contentLength = headers.get('content-length');
     if (contentLength) res.setHeader('content-length', contentLength);
 
-    // Web API ReadableStream -> Node.js Readable -> Express response pipe.
-    // as any: TypeScript's Node.js and DOM ReadableStream typedefs are
-    // structurally compatible at runtime but their declared shapes disagree
-    // at the boundary -- the cast is the documented contract here, also
-    // noted on the ReelyProvider.getArtwork return type (audit 9 #114).
-    // biome-ignore lint/suspicious/noExplicitAny: documented contract per comment above (ReadableStream vs Web ReadableStream shape mismatch at the Node/web boundary; audit 9 #114).
+    // Node and DOM ReadableStream typedefs are compatible at runtime but their
+    // declared shapes disagree. Also noted on ReelyProvider.getArtwork.
+    // biome-ignore lint/suspicious/noExplicitAny: Node vs Web ReadableStream shape mismatch.
     const nodeStream = Readable.fromWeb(readableStream as any);
-    // A mid-stream upstream error (including the abort above) must not surface
-    // as an unhandled 'error' event. Log it and tear down the response.
+    // A mid-stream error (including the abort above) would otherwise be an
+    // unhandled 'error' event.
     nodeStream.on('error', (err: Error) => {
       logger.warn(`poster stream interrupted: ${err.message}`);
       res.destroy();

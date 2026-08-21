@@ -9,85 +9,47 @@ import type { Libraries, PlexLibrary } from './types/libraries_list';
 import type { LibraryItems, Meta } from './types/library_items';
 import { fanOutLibraries } from './util';
 
-// `language` was a PlexApiOptions field but was never wired through to
-// any caller (audit 13 #278). PlexApi was always constructed with no
-// language, so the Accept-Language header always fell to `'en'`. The
-// premise was wrong in two ways: (1) `language` is per-client (each WS
-// connection has its own locale via the setLocale message) but
-// PlexApi is shared across all connections in the provider, so a
-// single field can't represent it; (2) Plex Media Server returns media
-// metadata in the metadata-agent's configured language regardless of
-// Accept-Language. The header is mostly cosmetic. Dropped the field +
-// header entirely rather than maintain dead scaffolding. reely's UI
-// strings are translated locally via the i18n module.
+// No `language` field: locale is per-connection but PlexApi is shared, and Plex
+// serves metadata in the metadata agent's language regardless of
+// Accept-Language. UI strings are translated locally by i18n.
 export interface PlexApiOptions {
   libraryTitleFilter?: string[];
 }
 
-// Upper bound on any single Plex HTTP request. Without it, a hung or
-// unreachable Plex server would leave fetch() pending forever, stalling every
-// caller (and poisoning the shared cached promises). Generous enough not to
-// false-trip on a large library scan over a LAN.
+// A hung Plex would otherwise leave fetch() pending forever, stalling callers
+// and poisoning the cached promises. Long enough for a large LAN library scan.
 const PLEX_FETCH_TIMEOUT_MS = 30_000;
 
-// Retry tuning for transient Plex errors (audit 14 #330). GETs are
-// idempotent, so retrying on a network blip / brief 5xx is safe. Two
-// attempts total (one initial + one retry) keeps a real outage from
-// blocking the caller for too long; the exponential backoff bounds
-// the worst-case wait. Connect errors (TypeError from fetch) and
-// 500-599 responses both qualify; 4xx is a real error and isn't
-// retried.
+// GETs are idempotent, so retrying a blip or 5xx is safe. Two attempts keeps a
+// real outage from stalling the caller. 4xx is never retried.
 const PLEX_RETRY_ATTEMPTS = 2;
 const PLEX_RETRY_BACKOFF_MS = 300;
 
 const isRetryableStatus = (status: number): boolean => status >= 500 && status < 600;
 
-// Allowlist for the configured Plex URL scheme. Without this the
-// constructor's `new URL(plexUrl)` would accept `file:`,
-// `gopher:`, or any URL the WHATWG parser allows, opening a SSRF
-// vector if PLEX_URL is operator-controlled but the value isn't
-// scrutinized: a `file:///etc/passwd` would otherwise be a valid
-// "Plex server" from the constructor's standpoint, and any
-// derived request would read local files (audit 13 #294). Bound
-// to http and https only; PLEX_URL's audit-12 #207 scheme-required
-// check is the env-loader layer; this is defense-in-depth at the
-// API-layer boundary.
+// `new URL` otherwise accepts any scheme, so `file:///etc/passwd` would be a
+// valid "Plex server" and requests would read local files. Defense-in-depth:
+// the env loader also requires a scheme.
 const ALLOWED_PLEX_SCHEMES = new Set(['http:', 'https:']);
 
 export class PlexApi {
   plexUrl: URL;
   options: PlexApiOptions;
   private plexToken: string;
-  // Stable, deterministic client identifier for X-Plex-Client-Identifier
-  // (audit 13 #337). Plex Media Server uses this to recognize "the same
-  // client" across requests (mostly for activity logs + per-client
-  // settings; reely doesn't use sync). Deterministic-by-URL means: same
-  // reely install pointed at the same Plex always reports the same id;
-  // pointed at a different Plex, a different id. No file persistence
-  // needed. The hash is sha256 over the configured URL, truncated to
-  // 32 hex chars -- plenty of entropy for a Plex identifier, much
-  // shorter than the full 64.
+  // X-Plex-Client-Identifier: sha256(plexUrl)[:32]. Derived, not persisted, so
+  // the id is stable per Plex server with no state to store.
   private clientIdentifier: string;
-  // Capabilities is stable for the lifetime of a Plex instance.
-  // Cache the Promise so concurrent first-callers share one fetch;
-  // failures clear the slot so a transient outage can recover on the
-  // next call. No TTL (per-process lifetime).
+  // Stable for the process lifetime. Caching the promise makes concurrent
+  // first-callers share one fetch; failure clears the slot so an outage recovers.
   private capabilitiesCache = cachePromise<Capabilities>(() => this.fetch<Capabilities>('/'));
-  // serverIdCache pipes through capabilitiesCache (audit 13 #315 /
-  // audit 14 #352): both / and /identity return machineIdentifier, so
-  // hitting /identity separately was a wasted round-trip. The folded
-  // path saves one HTTP request per cold cache cycle and aligns the
-  // two values to the same source.
+  // Piped through capabilitiesCache: / and /identity both return
+  // machineIdentifier, so /identity would be a wasted round-trip.
   private serverIdCache = cachePromise<string>(
     () => this.getCapabilities().then((c) => c.machineIdentifier),
   );
-  // Short-TTL section-list cache (audit 16 #447). The 0.5.23 fix made
-  // getFilterValues call getLibraries per invocation (and #427 did the
-  // same for getAllFilters), costing a redundant GET /library/sections
-  // round-trip per uncached filter key -- the provider layer's 1-hour
-  // librariesCache sits ABOVE this API and isn't visible here. 60s
-  // bounds staleness tightly while killing the per-click refetch;
-  // cachePromise clears the slot on failure so an outage recovers.
+  // getFilterValues and getAllFilters call getLibraries per invocation, and the
+  // provider's librariesCache sits above this layer, so without a cache here
+  // every uncached filter key costs a GET /library/sections.
   private sectionsCache = cachePromise<PlexLibrary[]>(
     () => this.fetchLibraries(),
     60_000,
@@ -103,32 +65,16 @@ export class PlexApi {
     this.plexUrl = parsed;
     this.plexToken = plexToken;
     this.options = options;
-    // sha256(plexUrl)[:32] -- see clientIdentifier docstring above.
     this.clientIdentifier = createHash('sha256').update(plexUrl).digest('hex').slice(0, 32);
-    // Defense-in-depth: register URL + token redactions here too. The
-    // primary registration happens in config/redact.ts during loadConfig
-    // (audit 12 #237 + #276; extracted from the validator in 0.4.16),
-    // but a test or future code path that constructs PlexApi directly
-    // would otherwise log this.plexUrl.href without a redaction entry.
-    // addRedaction is idempotent and the cost is one Set check
-    // (audit 9 #162).
+    // Defense-in-depth: loadConfig registers these, but a caller constructing
+    // PlexApi directly would log them unredacted. addRedaction is idempotent.
     addRedaction(plexUrl);
     addRedaction(plexToken);
   }
 
-  // Builds the standard X-Plex-* header set every Plex API request should
-  // carry (audit 13 #282 + #337). Token is in the header now, NOT in the
-  // URL query string -- the prior pattern leaked the token into every
-  // logger.debug('Fetching: ${url.href}') line and into every error body
-  // echoed back by Plex. Token redaction in logs is still in place as
-  // defense-in-depth (constructor's addRedaction), but the header form
-  // means there's nothing to redact in the first place. Plex Media
-  // Server accepts the header form on every endpoint reely hits
-  // (verified against python-plexapi's reference implementation, which
-  // uses the header form as its primary auth path). The
-  // X-Plex-Client-Identifier / Product / Version triple closes the
-  // "Plex may rate-limit or refuse anonymous clients" concern from
-  // #337 by identifying reely to the server.
+  // Token goes in a header, never the query string: the query form leaks it
+  // into log lines and Plex-echoed error bodies. Client-Identifier / Product /
+  // Version identify reely so Plex doesn't treat it as an anonymous client.
   private async buildPlexHeaders(): Promise<Record<string, string>> {
     return {
       'X-Plex-Token': this.plexToken,
@@ -141,10 +87,8 @@ export class PlexApi {
   private async fetch<T>(
     key: string,
     { searchParams }: {
-      // URLSearchParams (not Record<string,string>) so callers can pass
-      // multi-value query params with repeated keys -- needed by the
-      // filter-as-query-string path where a single Plex filter can carry
-      // multiple selected values (genre=Action&genre=Drama).
+      // Not a Record: repeated keys carry multi-value filters
+      // (genre=Action&genre=Drama).
       searchParams?: URLSearchParams;
     } = {},
   ): Promise<T> {
@@ -157,19 +101,10 @@ export class PlexApi {
       }
     }
 
-    // Path only, not the full url.href (audit 13 #329). url.href would
-    // include every filter searchParam, padding the log line with a
-    // verbose query string that the caller's stack trace doesn't help
-    // debug. The token rides in headers now (0.4.20 #282), but path-
-    // only also keeps debug logs from echoing other operator-supplied
-    // filter values (genre, year) verbatim.
+    // Path only: href would echo every filter value into the log.
     logger.debug(`Plex fetch: ${url.pathname}`);
 
-    // Retry idempotent GETs on transient errors (audit 14 #330). Plex
-    // is generally reliable on the LAN but a brief 503 mid-scan
-    // shouldn't poison the cached promise -- the next call would just
-    // observe the same failure. Built the headers once; reused per
-    // attempt so the X-Plex-Version is consistent.
+    // Built once, reused per attempt.
     const headers = {
       accept: 'application/json',
       ...(await this.buildPlexHeaders()),
@@ -178,9 +113,7 @@ export class PlexApi {
     let lastError: unknown;
     for (let attempt = 0; attempt < PLEX_RETRY_ATTEMPTS; attempt++) {
       if (attempt > 0) {
-        // Exponential backoff: 300ms, 600ms, ... The total wait stays
-        // bounded by PLEX_RETRY_ATTEMPTS so a real outage surfaces
-        // quickly.
+        // Exponential backoff: 300ms, 600ms, ...
         await new Promise((r) => setTimeout(r, PLEX_RETRY_BACKOFF_MS * 2 ** (attempt - 1)));
         logger.debug(`Plex fetch retry ${attempt}: ${url.pathname}`);
       }
@@ -189,16 +122,15 @@ export class PlexApi {
           headers,
           signal: AbortSignal.timeout(PLEX_FETCH_TIMEOUT_MS),
         });
-        // Retry on 5xx; 4xx is a real error (or our bug) -- don't retry.
+        // 4xx is a real error (or our bug): don't retry.
         if (req.ok || !isRetryableStatus(req.status)) break;
         lastError = new Error(`Plex API ${req.status} (retryable)`);
       } catch (err) {
-        // Network-level failure (fetch threw): retry.
         lastError = err;
       }
     }
     if (!req) {
-      // Every attempt threw at the network layer (no Response object).
+      // Every attempt threw at the network layer: no Response to inspect.
       throw new Error(
         `Plex fetch failed after ${PLEX_RETRY_ATTEMPTS} attempts`,
         { cause: lastError },
@@ -206,11 +138,7 @@ export class PlexApi {
     }
 
     if (!req.ok) {
-      // Truncate the error body (audit 12 #261). Plex error responses can
-      // be HTML pages echoing the request URL; with the token now in the
-      // header (audit 13 #282) it doesn't ride in url.href, but the
-      // truncation still bounds payload size and keeps a multi-KB error
-      // page from hijacking a log line.
+      // Plex errors can be multi-KB HTML pages; don't let one hijack a log line.
       const body = (await req.text()).slice(0, 200);
       throw new Error(`Plex API error ${req.status}: ${body}`);
     }
@@ -219,25 +147,16 @@ export class PlexApi {
       const data: PlexMediaContainer<T> = await req.json();
       return data.MediaContainer;
     } catch (err) {
-      // Preserve the original error as `cause` so the logger sees the
-      // underlying JSON / stream error message + stack, not just the
-      // generic wrapper (audit 9 #157).
+      // `cause` keeps the underlying JSON error visible, not just the wrapper.
       throw new Error('Failed to parse Plex API response', { cause: err });
     }
   }
 
   async isAvailable(): Promise<boolean> {
-    // Don't gate on .size -- that's the count of returned capability records
-    // and is legitimately 0 on a Plex server with no libraries yet. Use the
-    // presence of `machineIdentifier` instead, which every Plex response
-    // root carries regardless of library count.
+    // Not .size: legitimately 0 on a server with no libraries.
+    // machineIdentifier is on every Plex response root.
     return typeof (await this.getCapabilities()).machineIdentifier === 'string';
   }
-
-  // getIdentity() was dropped in 0.4.20 (audit 13 #315 / audit 14 #352):
-  // both / (capabilities) and /identity return machineIdentifier, so the
-  // separate endpoint was a wasted round-trip. serverIdCache now pipes
-  // through capabilitiesCache for both values.
 
   getCapabilities(): Promise<Capabilities> {
     return this.capabilitiesCache.get();
@@ -257,10 +176,7 @@ export class PlexApi {
 
   private async fetchLibraries(): Promise<PlexLibrary[]> {
     const sections = await this.fetch<Libraries>('/library/sections');
-    // Guard the omit-empty shape (audit 16 #443): a zero-section server
-    // plausibly omits Directory entirely, and the unguarded .length read
-    // threw a TypeError that sank the libraries cache and preempted the
-    // designed "No movie libraries available" error downstream.
+    // Plex omits Directory entirely on a zero-section server.
     const dirs = sections.Directory ?? [];
     if (dirs.length === 0) {
       return [];
@@ -270,8 +186,6 @@ export class PlexApi {
 
     if (this.options.libraryTitleFilter?.length) {
       filteredLibraries = filteredLibraries.filter(({ title }) =>
-        // Non-null narrowing across the .length check above; biome doesn't
-        // follow the closure capture so we assert the narrowing explicitly.
         // biome-ignore lint/style/noNonNullAssertion: narrowed by enclosing .length check.
         this.options.libraryTitleFilter!.includes(title),
       );
@@ -280,27 +194,17 @@ export class PlexApi {
     return filteredLibraries;
   }
 
-  // No api-layer cache here: the provider wraps this in `getFiltersCached`
-  // (via `memo`), so every legitimate caller already hits the provider's
-  // cache. A future direct caller of `api.getAllFilters` would refetch --
-  // intentional (it's an escape hatch); just be aware.
+  // Uncached: the provider's `getFiltersCached` wraps this. A direct caller refetches.
   async getAllFilters(): Promise<Required<Meta>> {
-    // Movie libraries only (audit 16 #427), consistent with the 0.5.23
-    // getFilterValues fix below -- reely is movies-only by design, and the
-    // consumer (getFiltersCached) reads only the movie Type bucket anyway.
+    // Movies-only by design; the consumer reads only the movie Type bucket.
     const libraries = (await this.getLibraries()).filter(
       (lib) => lib.type === 'movie',
     );
 
-    // Only the Meta block is consumed from these responses. Without a
-    // container cap, Plex returns the FULL item payload of every section
-    // just to carry that block -- the same megabytes-per-fetch cost
-    // getLibraryItems documents (audit 13 #296), paid on the first
-    // requestFilters of every process (and EVERY one in dev, where memo is
-    // a passthrough). X-Plex-Container-Size=0 asks for the container --
-    // including Meta -- with zero Metadata items. Plex's own web client
-    // uses the same form for count-only queries; the fallback below covers
-    // any server version that disagrees. (audit 16 #427)
+    // Only Meta is used, but without a container cap Plex ships every section's
+    // full item payload to carry it: megabytes per fetch. Container-Size=0
+    // returns the container with zero Metadata items. Not every PMS build
+    // honours that, hence the fallback below.
     const fetchMeta = (metaOnly: boolean) =>
       fanOutLibraries(libraries, 'getAllFilters', ({ key }) =>
         this.fetch<LibraryItems>(`/library/sections/${key}/all`, {
@@ -317,12 +221,8 @@ export class PlexApi {
         }),
       );
 
-    // Guarded merge (audit 16 #444): Meta's arrays are omit-empty-prone
-    // like every other Plex array field, and this merge runs AFTER
-    // fanOutLibraries' per-library error tolerance -- an unguarded read
-    // here would sink the entire filter response even when other
-    // libraries returned good data. Returns Required<Meta> so consumers
-    // keep concrete arrays.
+    // Meta's arrays are omit-empty like every Plex array field. Guarded so one
+    // bare library can't sink a response the others filled.
     const merge = (fulfilled: LibraryItems[]): Required<Meta> => {
       const results: Required<Meta> = { Type: [], FieldType: [] };
       for (const result of fulfilled) {
@@ -340,9 +240,8 @@ export class PlexApi {
     if (libraries.length === 0 || metaOnly.Type.length || metaOnly.FieldType.length) {
       return metaOnly;
     }
-    // Safety net: a PMS build that withholds Meta under a zero-size
-    // container would leave the filter list empty. Retry once with the
-    // pre-#427 unpaged form rather than silently shipping no filters.
+    // This build withholds Meta under a zero-size container; refetch unpaged
+    // rather than ship an empty filter list.
     logger.warn(
       'getAllFilters: zero-size container returned no Meta; retrying with full fetch',
     );
@@ -350,36 +249,21 @@ export class PlexApi {
   }
 
   async getFilterValues(key: string): Promise<FilterValues & { Directory: FilterValue[] }> {
-    // Defense in depth: `key` is interpolated into a Plex API URL path. The
-    // WS handler already allowlists it, but the API layer must not trust its
-    // caller -- a key with path separators or `..` could redirect this
-    // token-bearing request to a different Plex endpoint (SSRF). A key
-    // matching this charset cannot contain `/` or `.`, so no traversal.
+    // `key` reaches a Plex URL path: `/` or `..` would redirect this
+    // token-bearing request to another endpoint. Never trust the caller here.
     if (!/^[a-z0-9_-]+$/i.test(key)) {
       throw new Error(`Invalid filter key: ${JSON.stringify(key)}`);
     }
-    // Audit 17 / 0.5.23 production bug: pre-fix this fanned out to EVERY
-    // library section (movies + TV + music + audiobooks). Plex returns
-    // 200 OK with an OMITTED Directory field when a non-applicable
-    // library has no values for the requested filter (Audiobooks for
-    // 'genre', Anime 4K for 'genre' when empty, etc.) -- the subsequent
-    // merge hit `merged.Directory.push(...next.Directory)` with
-    // `next.Directory === undefined`, throwing TypeError. The throw
-    // surfaced as requestFilterValuesError to the client, which set
-    // filterValues[key] to [] and rendered free-text SearchControl
-    // instead of the picker. Reely is movies-only by design (audit 8
-    // #127) so filter to movie libraries here; also defensively guard
-    // the Directory merge against Plex omitting the field even on a
-    // movie library that legitimately has no values.
+    // Movie libraries only. A library the filter doesn't apply to (Audiobooks
+    // for 'genre') answers 200 OK with Directory omitted, so the merge below
+    // stays guarded too: a movie library with no values omits it as well.
     const allLibraries = await this.getLibraries();
     const libraries = allLibraries.filter((lib) => lib.type === 'movie');
     if (libraries.length === 0) {
       throw new Error(`No movie libraries available to fetch filter values for "${key}"`);
     }
 
-    // Per-library fan-out via shared helper (audit 13 #326). First
-    // fulfilled response seeds the metadata; the rest contribute
-    // Directory entries.
+    // First fulfilled response seeds the metadata; the rest add Directory entries.
     const fulfilled = await fanOutLibraries(
       libraries,
       `getFilterValues("${key}")`,
@@ -390,9 +274,8 @@ export class PlexApi {
     }
 
     const [first, ...rest] = fulfilled;
-    // Build the merged Directory as a concrete local so the return shape
-    // can guarantee it even now that the wire type marks it optional
-    // (audit 16 #445 -- the compiler enforces the omit-empty guards).
+    // Concrete local so the return type can guarantee Directory, which the wire
+    // type marks optional.
     const directory: FilterValue[] = first.Directory ? [...first.Directory] : [];
     for (const next of rest) {
       if (next.Directory) {
@@ -406,37 +289,15 @@ export class PlexApi {
     key: string,
     { filters }: { filters?: URLSearchParams } = {},
   ): Promise<LibraryItems> {
-    // Defense in depth: `key` is interpolated into a Plex API URL path
-    // (audit 13 #295). Mirrors the validation in `getFilterValues`. Real
-    // library keys from `getLibraries()` are short digit-ish identifiers
-    // (e.g. "1", "2"); the WS / handler layer doesn't surface keys to
-    // user input today, but rejecting `..` / `/` / control chars at the
-    // API boundary is the right place to enforce it so a future caller
-    // can't accidentally route a Plex-token-bearing request to an
-    // unintended endpoint. `async` so the throw surfaces as a rejected
-    // promise -- consistent with how `getFilterValues` surfaces the
-    // same error class.
+    // Same guard as getFilterValues: `key` reaches a Plex URL path, so `..` and
+    // `/` must not pass even though no user input feeds keys today.
     if (!/^[a-z0-9_-]+$/i.test(key)) {
       throw new Error(`Invalid library key: ${JSON.stringify(key)}`);
     }
-    // Page through the library section (audit 13 #296). Without paging,
-    // Plex returns the entire library in one response: on the owner's
-    // ~4000-movie library that's megabytes per fetch held in memory
-    // during the JSON parse + the transform pass in the provider.
-    // Plex supports X-Plex-Container-Start / X-Plex-Container-Size
-    // either as headers or as query params; using query params keeps
-    // the call shape consistent with the existing filter-as-searchParams
-    // pattern.
-    //
-    // PAGE_SIZE 1000 picks a middle ground: 4 round-trips for ~4000
-    // movies (vs 1 today) but each ~500KB instead of ~2MB. Each round-
-    // trip is its own retry-able fetch (audit 14 #330) so a brief 5xx
-    // mid-pagination doesn't sink the whole library load.
-    //
-    // Returns a single accumulated LibraryItems: the consumer
-    // (providers/plex.ts getMediaCached) doesn't care that we paged,
-    // it just wants the full Metadata array + the metadata fields the
-    // first page carries.
+    // Unpaged, Plex returns the whole library in one response: megabytes on a
+    // ~4000-movie library. Each page is its own retryable fetch. Accumulated
+    // into one LibraryItems; the consumer wants the full Metadata array plus
+    // the fields the first page carries.
     const PAGE_SIZE = 1000;
     let allMetadata: LibraryItems['Metadata'] = [];
     let firstPage: LibraryItems | undefined;
@@ -455,37 +316,25 @@ export class PlexApi {
       if (items.length < PAGE_SIZE) break;
       start += PAGE_SIZE;
     }
-    // firstPage is guaranteed non-undefined: the while loop above runs
-    // at least once (the first fetch happens unconditionally), and
-    // every successful fetch assigns firstPage. The non-null assertion
-    // matches that invariant without a redundant runtime check.
-    // biome-ignore lint/style/noNonNullAssertion: invariant from while loop above.
+    // biome-ignore lint/style/noNonNullAssertion: the loop always runs once and assigns firstPage.
     return { ...firstPage!, Metadata: allMetadata, size: allMetadata.length };
   }
 
-  // `signal` lets the caller (the poster handler) abort the upstream fetch
-  // when the browser disconnects. It is combined with an independent request
-  // timeout so a hung Plex server is still bounded even if the client stays.
+  // `signal` aborts upstream when the browser disconnects. Combined with an
+  // independent timeout so a hung Plex is bounded even if the client stays.
   async getRawThumb(
     key: string,
     signal?: AbortSignal,
   ): Promise<[ReadableStream<Uint8Array>, Headers]> {
     const [metadataId, thumbId] = key.split('/');
     const url = new URL(this.plexUrl.href);
-    // Concatenate onto the configured pathname the same way fetch<T> does
-    // (audit 16 #448). The prior pathname ASSIGNMENT discarded any path
-    // prefix on PLEX_URL (e.g. http://host/plex behind a path-routing
-    // reverse proxy), so every JSON endpoint worked while every poster
-    // 404'd -- a confusing partial failure.
+    // Concatenate, don't assign: assigning drops a path prefix on PLEX_URL
+    // (host/plex behind a path-routing proxy) and every poster 404s.
     url.pathname = `${url.pathname}/library/metadata/${metadataId}/thumb/${thumbId}`
       .replace(/\/+/g, '/');
 
     const timeout = AbortSignal.timeout(PLEX_FETCH_TIMEOUT_MS);
-    // Token is in the header (audit 13 #282), not the URL. Same headers
-    // bundle as the JSON fetch path -- Plex's thumb endpoint accepts
-    // the header form (verified via python-plexapi's reference pattern
-    // for binary content like /art and /thumb). Accept header omitted:
-    // the response is binary (image/jpeg, image/png), not JSON.
+    // No Accept header: the response is binary, not JSON.
     const response = await fetch(url.href, {
       headers: await this.buildPlexHeaders(),
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
@@ -494,10 +343,8 @@ export class PlexApi {
     if (response.ok && response.body) {
       return [response.body, response.headers];
     } else {
-      // Truncate the upstream body like fetch<T> does (audit 12 #261 /
-      // audit 16 #442): the poster handler logs this error, and a proxy
-      // or outage page can be multi-KB of HTML -- multiplied by the
-      // poster route's per-IP allowance during an outage.
+      // The poster handler logs this; a multi-KB outage page would be logged
+      // once per request across the route's per-IP allowance.
       const body = (await response.text()).slice(0, 200);
       throw new Error(`${response.status}: ${body}`);
     }

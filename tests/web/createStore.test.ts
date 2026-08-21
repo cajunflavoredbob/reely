@@ -1,19 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// ReelyClient is mocked out wholesale: the store's WS dispatch / event
-// wiring is what we want to assert here, not the underlying socket
-// behavior (already covered by tests/web/reelyClient.test.ts). The mock
-// is an EventTarget so the store's addEventListener calls work, and each
-// method is a vi.fn so we can assert the routing in dispatchToClient.
+// ReelyClient is mocked wholesale; the socket itself is covered by
+// tests/web/reelyClient.test.ts. An EventTarget so the store's
+// addEventListener calls work, with vi.fn methods to assert dispatch routing.
 const makeClientMock = () => {
   const client = new EventTarget() as EventTarget & Record<string, ReturnType<typeof vi.fn>>;
   for (const name of [
     'login', 'logout', 'createRoom', 'joinRoom', 'joinOrCreateRoom', 'leaveRoom',
     'rate', 'setLocale', 'requestFilters', 'requestFilterValues', 'applyFilters',
   ] as const) {
-    // Default: every method returns a resolved Promise. Individual tests
-    // can replace a method (e.g. with vi.fn().mockRejectedValue(...)) to
-    // exercise the dispatch-catch path.
+    // Resolved by default; a test swaps in mockRejectedValue to reach the
+    // dispatch-catch path.
     client[name] = vi.fn().mockResolvedValue(undefined);
   }
   return client;
@@ -21,23 +18,17 @@ const makeClientMock = () => {
 
 let clientMock: ReturnType<typeof makeClientMock>;
 vi.mock('../../web/app/src/api/reely', () => ({
-  // Constructor returns the shared mock so the test can assert against the
-  // same instance the store binds its listeners to. When `new` calls a
-  // function that returns an object, JS uses that object instead of the
-  // freshly-allocated `this` (a legitimate constructor pattern). Note: must
-  // be a function expression, not an arrow -- arrows can't be called with
-  // `new`. The closure over `clientMock` is resolved at construction time,
-  // not factory time, so beforeEach's re-assignment of clientMock is in
-  // effect by the time createStore() runs.
-  // biome-ignore lint/complexity/useArrowFunction: arrow functions can't be called with `new`, but createStore does `new ReelyClient()`. Function expression is required here.
+  // Returning an object from a constructor makes `new` yield that object, so
+  // tests assert against the same instance the store binds listeners to. The
+  // closure resolves at construction time, after beforeEach reassigns it.
+  // biome-ignore lint/complexity/useArrowFunction: createStore calls `new ReelyClient()`, and arrows can't be constructed.
   ReelyClient: function () {
     return clientMock;
   },
 }));
 
-// localStorage / location / history / navigator / document don't exist in
-// the node test env. Each test sets them via stubs; the store reads them
-// at module-load and inside the createStore() call.
+// None of these exist in the node test env, and the store reads them at module
+// load and inside createStore().
 const setupDomGlobals = (opts: {
   href?: string;
   userName?: string | null;
@@ -83,9 +74,8 @@ describe('createStore initial state', () => {
   it('applies "connecting" status as the first state update', async () => {
     const mod = await loadCreateStore();
     mod.createStore();
-    // useZustandStore is a `let` export reassigned inside createStore;
-    // destructuring would capture the pre-init `undefined`. Read it
-    // through the module namespace instead so it's a live lookup.
+    // Live lookup: useZustandStore is a `let` reassigned inside createStore,
+    // so destructuring captures the pre-init undefined.
     const useZustandStore = mod.useZustandStore;
     expect(useZustandStore.getState().connectionStatus).toBe('connecting');
   });
@@ -94,9 +84,8 @@ describe('createStore initial state', () => {
     setupDomGlobals({ href: 'https://reely.example.com/?roomName=movie-night' });
     const mod = await loadCreateStore();
     mod.createStore();
-    // useZustandStore is a `let` export reassigned inside createStore;
-    // destructuring would capture the pre-init `undefined`. Read it
-    // through the module namespace instead so it's a live lookup.
+    // Live lookup: useZustandStore is a `let` reassigned inside createStore,
+    // so destructuring captures the pre-init undefined.
     const useZustandStore = mod.useZustandStore;
     expect(useZustandStore.getState().route).toBe('login');
   });
@@ -108,21 +97,17 @@ describe('createStore initial state', () => {
     });
     const mod = await loadCreateStore();
     mod.createStore();
-    // useZustandStore is a `let` export reassigned inside createStore;
-    // destructuring would capture the pre-init `undefined`. Read it
-    // through the module namespace instead so it's a live lookup.
+    // Live lookup: useZustandStore is a `let` reassigned inside createStore,
+    // so destructuring captures the pre-init undefined.
     const useZustandStore = mod.useZustandStore;
-    // Stays on the loading route while the WS connects -- the auto-join
-    // happens on loginSuccess, not synchronously here.
+    // Stays on loading while the WS connects; auto-join waits for loginSuccess.
     expect(useZustandStore.getState().route).toBe('loading');
   });
 });
 
 describe('dispatchToClient routing', () => {
-  // One smoke test per ClientActions variant -- the switch's `default: never`
-  // enforces exhaustiveness at compile time, but a routing typo (e.g. login
-  // -> client.logout()) wouldn't fail typecheck. These tests pin the actual
-  // method getting called per action type.
+  // `default: never` enforces exhaustiveness at compile time, but a routing
+  // typo (login calling client.logout()) still typechecks.
   const cases = [
     ['login', { userName: 'a' }],
     ['createRoom', { roomName: 'r' }],
@@ -148,9 +133,8 @@ describe('dispatchToClient routing', () => {
   it('routes "logout" / "leaveRoom" / "requestFilters" as no-arg calls', async () => {
     const mod = await loadCreateStore();
     mod.createStore();
-    // useZustandStore is a `let` export reassigned inside createStore;
-    // destructuring would capture the pre-init `undefined`. Read it
-    // through the module namespace instead so it's a live lookup.
+    // Live lookup: useZustandStore is a `let` reassigned inside createStore,
+    // so destructuring captures the pre-init undefined.
     const useZustandStore = mod.useZustandStore;
     const { dispatch } = useZustandStore.getState();
     dispatch({ type: 'logout' });
@@ -164,16 +148,14 @@ describe('dispatchToClient routing', () => {
   it('does not forward UI-only actions (addToast / navigate) to the WS client', async () => {
     const mod = await loadCreateStore();
     mod.createStore();
-    // useZustandStore is a `let` export reassigned inside createStore;
-    // destructuring would capture the pre-init `undefined`. Read it
-    // through the module namespace instead so it's a live lookup.
+    // Live lookup: useZustandStore is a `let` reassigned inside createStore,
+    // so destructuring captures the pre-init undefined.
     const useZustandStore = mod.useZustandStore;
     const { dispatch } = useZustandStore.getState();
     // biome-ignore lint/suspicious/noExplicitAny: test action shape.
     dispatch({ type: 'addToast', payload: { id: 't', message: 'x', appearance: 'Success', showTimeMs: 1000 } } as any);
     // biome-ignore lint/suspicious/noExplicitAny: test action shape.
     dispatch({ type: 'navigate', payload: { route: 'login' } } as any);
-    // No WS method should fire for either.
     for (const name of Object.keys(clientMock).filter((k) => typeof clientMock[k] === 'function')) {
       expect(clientMock[name]).not.toHaveBeenCalled();
     }
@@ -183,9 +165,8 @@ describe('dispatchToClient routing', () => {
     setupDomGlobals({ userName: 'alice' });
     const mod = await loadCreateStore();
     mod.createStore();
-    // useZustandStore is a `let` export reassigned inside createStore;
-    // destructuring would capture the pre-init `undefined`. Read it
-    // through the module namespace instead so it's a live lookup.
+    // Live lookup: useZustandStore is a `let` reassigned inside createStore,
+    // so destructuring captures the pre-init undefined.
     const useZustandStore = mod.useZustandStore;
     expect(localStorage.getItem('userName')).toBe('alice');
     useZustandStore.getState().dispatch({ type: 'logout' });
@@ -193,20 +174,18 @@ describe('dispatchToClient routing', () => {
   });
 });
 
-describe('dispatch promise-rejection toast (audit 12 #246)', () => {
-  // A request method's rejection (REQUEST_TIMEOUT_MS in api/reely.ts, or a
-  // mid-wait close) must surface as a toast instead of leaving the UI hung
-  // on an unhandled rejection.
+describe('dispatch promise-rejection toast', () => {
+  // A request rejection (timeout, or a mid-wait close) must surface as a toast
+  // instead of hanging the UI on an unhandled rejection.
   it('adds a "server isn\'t responding" toast when a dispatched request rejects', async () => {
     clientMock.login = vi.fn().mockRejectedValue(new Error('timeout'));
     const mod = await loadCreateStore();
     mod.createStore();
-    // useZustandStore is a `let` export reassigned inside createStore;
-    // destructuring would capture the pre-init `undefined`. Read it
-    // through the module namespace instead so it's a live lookup.
+    // Live lookup: useZustandStore is a `let` reassigned inside createStore,
+    // so destructuring captures the pre-init undefined.
     const useZustandStore = mod.useZustandStore;
     useZustandStore.getState().dispatch({ type: 'login', payload: { userName: 'a' } });
-    // Let the rejection microtask settle.
+    // Let the rejection settle.
     await new Promise((r) => setTimeout(r, 0));
     const toasts = useZustandStore.getState().toasts ?? [];
     expect(toasts.some((t) => t.message.includes("isn't responding"))).toBe(true);
@@ -215,9 +194,8 @@ describe('dispatch promise-rejection toast (audit 12 #246)', () => {
   it('does NOT add a toast when fire-and-forget dispatches resolve cleanly', async () => {
     const mod = await loadCreateStore();
     mod.createStore();
-    // useZustandStore is a `let` export reassigned inside createStore;
-    // destructuring would capture the pre-init `undefined`. Read it
-    // through the module namespace instead so it's a live lookup.
+    // Live lookup: useZustandStore is a `let` reassigned inside createStore,
+    // so destructuring captures the pre-init undefined.
     const useZustandStore = mod.useZustandStore;
     useZustandStore.getState().dispatch({ type: 'rate', payload: { mediaId: 'm', rating: 'like' } });
     await new Promise((r) => setTimeout(r, 0));
@@ -226,14 +204,13 @@ describe('dispatch promise-rejection toast (audit 12 #246)', () => {
   });
 });
 
-describe('loading-escape timer (audit 13 #303)', () => {
+describe('loading-escape timer', () => {
   it('navigates to login if still on the loading route 5s after createStore', async () => {
     vi.useFakeTimers();
     const mod = await loadCreateStore();
     mod.createStore();
-    // useZustandStore is a `let` export reassigned inside createStore;
-    // destructuring would capture the pre-init `undefined`. Read it
-    // through the module namespace instead so it's a live lookup.
+    // Live lookup: useZustandStore is a `let` reassigned inside createStore,
+    // so destructuring captures the pre-init undefined.
     const useZustandStore = mod.useZustandStore;
     expect(useZustandStore.getState().route).toBe('loading');
     vi.advanceTimersByTime(5_001);
@@ -244,12 +221,10 @@ describe('loading-escape timer (audit 13 #303)', () => {
     vi.useFakeTimers();
     const mod = await loadCreateStore();
     mod.createStore();
-    // useZustandStore is a `let` export reassigned inside createStore;
-    // destructuring would capture the pre-init `undefined`. Read it
-    // through the module namespace instead so it's a live lookup.
+    // Live lookup: useZustandStore is a `let` reassigned inside createStore,
+    // so destructuring captures the pre-init undefined.
     const useZustandStore = mod.useZustandStore;
-    // Simulate something having navigated away first (the connected handler,
-    // the user, etc.). The timer's check guards on `route === 'loading'`.
+    // The timer guards on `route === 'loading'`, so move off it first.
     // biome-ignore lint/suspicious/noExplicitAny: test action shape.
     useZustandStore.getState().dispatch({ type: 'navigate', payload: { route: 'room' } } as any);
     vi.advanceTimersByTime(5_001);
@@ -260,26 +235,22 @@ describe('loading-escape timer (audit 13 #303)', () => {
     vi.useFakeTimers();
     const mod = await loadCreateStore();
     mod.createStore();
-    // Capture the FIRST store's handle BEFORE the re-call swaps the
-    // exported binding. Without this, we'd be observing the second
-    // store (whose own timer fires at 5s) and couldn't tell whether
-    // the first's timer was actually cleared.
+    // Grab the first store before the re-call swaps the export, or the second
+    // store's own 5s timer masks whether the first's was cleared.
     const firstStore = mod.useZustandStore;
     mod.createStore();
     vi.advanceTimersByTime(5_001);
-    // Without abort + clearTimeout, the first store's timer would have
-    // navigated firstStore to 'login'. With it, firstStore stays put.
+    // Without abort + clearTimeout, the first timer navigates it to 'login'.
     expect(firstStore.getState().route).toBe('loading');
   });
 });
 
-describe('AbortController teardown across HMR (audit 13 #302 / audit 14 #365)', () => {
+describe('AbortController teardown across HMR', () => {
   it("removes the first call's listeners when createStore is invoked a second time", async () => {
     const mod = await loadCreateStore();
     mod.createStore();
-    // EventTarget has no public listener-count API; observe behaviour
-    // instead. Dispatch "connected" after a second createStore and
-    // assert setLocale is called exactly once (one bind), not twice.
+    // EventTarget exposes no listener count, so count the calls one event
+    // produces: one bind means one setLocale.
     mod.createStore();
     clientMock.dispatchEvent(new Event('connected'));
     expect(clientMock.setLocale).toHaveBeenCalledTimes(1);

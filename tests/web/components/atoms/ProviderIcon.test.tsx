@@ -25,8 +25,6 @@ describe('ProviderIcon', () => {
     expect(svg?.getAttribute('height')).toBe('48');
   });
 
-  // Future Emby/Jellyfin providers fall into the placeholder branch:
-  // amber circle + the type's first character uppercased.
   it('falls back to a letter-on-amber-circle for unknown types (Emby/JF placeholder)', () => {
     const { container } = render(<ProviderIcon type="emby" />);
     const text = container.querySelector('text');
@@ -39,7 +37,6 @@ describe('ProviderIcon', () => {
     expect(container.querySelector('text')?.textContent).toBe('J');
   });
 
-  // Decorative -- the provider identity is in surrounding text.
   it('is marked aria-hidden (decorative)', () => {
     const { container } = render(<ProviderIcon />);
     expect(container.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');

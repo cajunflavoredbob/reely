@@ -23,17 +23,15 @@ export interface Config {
     certFile: string;
     keyFile: string;
   };
-  // Extra WebSocket Origin values to accept beyond same-origin. Needed when a
-  // reverse proxy serves reely under an external origin that differs from the
-  // internal Host header. Env: ALLOWED_ORIGINS (comma-separated).
+  // Extra WebSocket Origins to accept beyond same-origin, for a proxy serving
+  // reely under an origin that differs from the internal Host.
+  // Env: ALLOWED_ORIGINS (comma-separated).
   allowedOrigins?: string[];
-  // When false, the server's Plex `baseUrl` is withheld from the WS `config`
-  // frame. The browser then falls back to building "Open in Plex" links
-  // through app.plex.tv instead of probing the local Plex directly.
-  // Defaults to true (preserves 0.3.20 behavior). Set false on deployments
-  // where leaking the internal Plex address to anyone with WS access is
-  // unwanted -- e.g. WAN-exposed reely without basicAuth. (audit 10 #165 /
-  // audit 12 #226.) Env: EXPOSE_PLEX_BASE_URL.
+  // False withholds the Plex baseUrl from the WS config frame, so the browser
+  // builds "Open in Plex" links via app.plex.tv instead of probing the local
+  // Plex. Set it on deployments where the internal Plex address shouldn't
+  // reach anyone with WS access (WAN-exposed, no basicAuth).
+  // Env: EXPOSE_PLEX_BASE_URL.
   exposePlexBaseUrl?: boolean;
 }
 
@@ -87,23 +85,18 @@ export type TranslationKey =
 
 // Configure message
 
-// Provider types implemented in this codebase. Extend the union whenever a
-// new ReelyProvider is added (e.g. 'emby', 'jellyfin'). Frontend code that
-// renders provider-specific UI should narrow on this type.
+// Extend when a new ReelyProvider lands; provider-specific UI narrows on this.
 export type ProviderType = "plex";
 
 export interface AppConfig {
   requiresConfiguration: boolean;
   serverName?: string;
   providerType?: ProviderType;
-  // The Plex server's machine identifier. The frontend needs it to build
-  // "Open in Plex" links (both the app.plex.tv web URL and the plex://
-  // deep link). Not sensitive -- it appears in every such link anyway.
+  // Machine identifier, for building "Open in Plex" web and deep links. Not
+  // sensitive: it appears in every such link anyway.
   plexServerId?: string;
-  // The Plex server's base URL (no token), exactly as the server has it
-  // configured. The frontend probes it at runtime to decide whether to
-  // build a direct "Open in Plex" link to the local server (LAN) or to
-  // fall back to app.plex.tv (WAN / mixed-content / Plex unreachable).
+  // Base URL as configured, no token. The frontend probes it to choose between
+  // a direct local link and the app.plex.tv fallback.
   plexBaseUrl?: string;
 }
 
@@ -131,13 +124,9 @@ export interface LogoutError {
 
 export interface User {
   userName: string;
-  // SCAFFOLDING: kept deliberately for the 1.0 Emby/Jellyfin provider
-  // work. Plex auth is anonymous (no per-user avatars in the swipe
-  // session); Emby and Jellyfin both surface a per-user avatar via
-  // their auth APIs. When those providers land, the field gets wired
-  // through `Avatar.tsx`'s `avatarUrl` branch (also marked SCAFFOLDING).
-  // the owner's call in 0.4.4. Auditors: this is intentionally unused
-  // today; please do not flag.
+  // SCAFFOLDING for Emby / Jellyfin, which expose per-user avatars. Plex auth
+  // is anonymous, so this is intentionally unused today; the consumer is
+  // Avatar.tsx's avatarUrl branch, also marked SCAFFOLDING.
   avatarImage?: string;
 }
 
@@ -150,12 +139,10 @@ export interface Filter {
 }
 
 export interface CreateRoomRequest {
-  // Canonical (lowercased, allowlist-stripped) room name. Used as Map key,
-  // filename, and URL parameter value.
+  // Canonical (lowercased, allowlist-stripped): Map key, filename, URL param.
   roomName: string;
-  // Display form -- preserves case for UI rendering. The server keeps this
-  // alongside the canonical name. Optional for pre-0.2.19 protocol clients;
-  // when absent, the canonical name is used for display too.
+  // Case-preserving form for the UI. Older clients omit it; fall back to
+  // roomName.
   displayName?: string;
   filters?: Filter[];
 }
@@ -181,14 +168,11 @@ export interface JoinRoomRequest {
 export interface JoinRoomError {
   name:
     | "RoomNotFoundError"
-    // RoomLimitError can reach the join path via joinOrCreateRoom's
-    // disk-load branch (addRoom past MAX_ROOMS). Surfacing it as its
-    // own variant lets the UI show "room limit reached" instead of the
-    // generic "unexpected error" copy (audit 11 #177).
+    // Reaches the join path via joinOrCreateRoom's disk-load branch. Its own
+    // variant so the UI can say "room limit reached", not "unexpected error".
     | "RoomLimitError"
-    // The requested userName is in use by another live connection in
-    // this room (audit 16 / 0.5.22). The UI shows the message verbatim
-    // so the user can pick a different name.
+    // userName is in use by another live connection in this room. The UI shows
+    // the message verbatim so the user can pick another name.
     | "UsernameTakenError"
     | "NotLoggedInError"
     | "UnknownError";
@@ -196,14 +180,11 @@ export interface JoinRoomError {
 }
 
 export interface JoinRoomSuccess {
-  // The server-sanitized canonical room name. Clients should adopt this as
-  // the authoritative name rather than relying on the user-typed input,
-  // which may have leading/trailing whitespace or characters the server
-  // strips. Optional for backward-compat with the pre-0.2.10 protocol.
+  // Server-sanitized canonical name. Clients must adopt this over the typed
+  // input, which may carry whitespace or characters the server strips.
+  // Optional for older protocol clients.
   roomName?: string;
-  // Display form of the room name (case preserved). Optional for backward-
-  // compat with the pre-0.2.19 protocol; clients should fall back to
-  // roomName when absent.
+  // Case-preserving form; fall back to roomName when absent.
   displayName?: string;
   previousMatches: Match[];
   media: Media[];
@@ -221,25 +202,19 @@ export interface LeaveRoomError {
 
 export interface Media {
   id: string;
-  // reely is movie-only by design (0.4.1). The field is kept on the wire so
-  // a future provider could narrow the literal -- today it is always "movie".
+  // Movie-only by design; kept on the wire for a future provider to widen.
   type: "movie";
   title: string;
   description: string;
   tagline?: string;
   year?: number;
   posterUrl?: string;
-  // Raw Plex metadata key (e.g. "/library/metadata/12345"). The frontend
-  // builds the "Open in Plex" web + app links from this plus the server id
-  // in AppConfig.
+  // Raw Plex metadata key ("/library/metadata/12345"). Combined with the
+  // AppConfig server id to build "Open in Plex" links.
   plexKey: string;
   genres: string[];
-  // duration + rating are optional because a Plex item can legitimately
-  // ship without them (rare but it happens -- newly-imported, no agent
-  // match yet). Prior to 0.4.3 the provider coerced an undefined Plex
-  // field with Number(undefined) -> NaN and shipped NaN on the wire; UI
-  // consumers truthy-gate, so NaN's falsiness hid it -- but the wire
-  // type was lying. Optional matches the actual contract.
+  // Optional because a Plex item can ship without them (newly imported, no
+  // agent match yet).
   duration?: number;
   rating?: number;
   contentRating?: string;
@@ -261,7 +236,7 @@ export interface Rate {
 export interface Library {
   title: string;
   key: string;
-  // Same rationale as Media.type -- movie-only by design (0.4.1).
+  // Movie-only by design, same as Media.type.
   type: "movie";
 }
 
@@ -273,7 +248,7 @@ export interface Filters {
   }>;
 
   // e.g. { integer: [{ key: '=', title: 'is' }, { key: '!=', title: 'is not' }] }
-  // Note, the meanings of certain keys (e.g. '=') can be different depending on the type
+  // A key like '=' can mean different things per type.
   filterTypes: Record<
     string,
     Array<{
@@ -294,6 +269,6 @@ export interface FilterValueRequest {
 
 export interface UserProgress {
   user: User;
-  // A percentage of the way through the room the user is
+  // Percentage of the way through the room.
   progress: number;
 }

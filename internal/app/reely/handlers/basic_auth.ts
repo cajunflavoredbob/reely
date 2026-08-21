@@ -13,29 +13,23 @@ import { clientKey } from '../util/clientKey';
 const encodeBasic = (user: string, pass: string): string =>
   Buffer.from(`${user}:${pass}`).toString('base64');
 
-// Hash both sides to fixed-length buffers before comparing so the comparison
-// itself can't leak credential length via timing (timingSafeEqual throws on
-// unequal-length inputs, and an attacker controls the actual-token length).
-// SHA-256 is a length-normalizer here, not an integrity primitive -- there's
-// no secret involved. Audit 15 #397 swapped the prior createHmac form for
-// createHash since the HMAC key was hardcoded and never used as a secret;
-// one fewer crypto op per auth request, same constant-time compare.
+// Normalizes both sides to a fixed length so the compare can't leak credential
+// length: timingSafeEqual throws on unequal lengths and the attacker controls
+// the token's. SHA-256 is a length-normalizer here, not an integrity primitive.
 const hashForCompare = (s: string): Buffer =>
   createHash('sha256').update(s).digest();
 
-// Accepts the raw Authorization header value so this can be called from both
-// the Express middleware and the WebSocket upgrade handler.
+// Takes the raw header so both the Express middleware and the WS upgrade
+// handler can call it.
 //
-// RFC 7617: the auth-scheme token ("Basic") is case-insensitive and may be
-// followed by varying whitespace. Parse the scheme and credentials out of the
-// header rather than byte-comparing the whole string, so a proxy that
-// lowercases the scheme or adjusts whitespace doesn't break auth. The
-// constant-time compare still covers the base64 credentials token.
+// Per RFC 7617 the scheme token is case-insensitive with variable whitespace,
+// so parse it out instead of byte-comparing the whole header: a proxy that
+// lowercases or respaces it must not break auth. The constant-time compare
+// still covers the base64 credentials.
 export const checkBasicAuth = (basicAuth: BasicAuth, authHeader: string | string[] | undefined): boolean => {
   const { userName, password } = basicAuth;
-  // Fail closed if either configured credential is empty. The validator
-  // already rejects empty credentials at config load; this is defense in
-  // depth so empty creds can never authenticate even if one slips through.
+  // Defense in depth: the config validator rejects empty credentials, but
+  // empty creds must never authenticate if one slips through.
   if (!userName || !password) return false;
   const raw = typeof authHeader === 'string' ? authHeader : '';
   const parsed = raw.match(/^\s*([A-Za-z]+)\s+(\S+)\s*$/);
@@ -58,13 +52,10 @@ export const handler = (req: Request, res: Response, next: NextFunction): void =
     return;
   }
 
-  // Failed-attempt throttle (audit 16 #425): an IP that has exhausted its
-  // failure budget gets 429 BEFORE the credential compare, so an online
-  // brute force of the only access gate can't guess at line rate. Checked
-  // ahead of isAuthorized -- once throttled, even correct credentials wait
-  // out the window (that's the lockout, and it's at most 60s).
-  // Must use the SAME key as the WS upgrade path: the failure budget is
-  // deliberately shared so switching vectors doesn't reset the counter.
+  // 429 before the credential compare, so a brute force of the only access
+  // gate can't guess at line rate. Once throttled even correct credentials
+  // wait out the window: that is the lockout, and it is at most 60s. Must use
+  // the same key as the WS upgrade path, which shares this budget.
   const ip = clientKey(req.socket.remoteAddress);
   const retryAfter = authFailureRetryAfter(ip);
   if (retryAfter > 0) {
@@ -79,8 +70,7 @@ export const handler = (req: Request, res: Response, next: NextFunction): void =
   }
 
   recordAuthFailure(ip);
-  // The WS upgrade path already warns on rejection; mirror it here so
-  // failed HTTP attempts are visible in the log too.
+  // Mirrors the WS upgrade path's warning so HTTP failures are visible too.
   logger.warn(`Basic Auth failure from ${ip} on ${req.method} ${req.path}`);
   res.setHeader('WWW-Authenticate', 'Basic realm="reely", charset="UTF-8"');
   res.status(401).end();

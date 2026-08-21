@@ -16,26 +16,13 @@ import type {
   User,
 } from "../../../../types/reely";
 
-// Action vocabulary (audit 12 #214 documentation):
+// ClientActions: what the UI dispatches. The local-only toast/navigate
+// variants plus the whole ServerMessage union the WS layer forwards.
+// `Dispatch` accepts only these.
 //
-//   ClientActions ............... actions dispatched FROM the UI (a button
-//                                 click, a setLocale, a leaveRoom). Includes
-//                                 the local-only `addToast`/`removeToast`/
-//                                 `navigate` and the full `ServerMessage`
-//                                 union (which the WS layer forwards to the
-//                                 server). `Dispatch` -- the function `useDispatch`
-//                                 hands out -- only accepts these.
-//
-//   Actions ..................... the wider union the REDUCER handles. Adds
-//                                 the WS-driven server pushes (`ClientMessage`,
-//                                 i.e. `loginSuccess`, `match`, ...) plus the
-//                                 store's own internal transitions
-//                                 (`updateConnectionStatus`, `setUser`) that
-//                                 createStore.ts's `apply()` helper drives.
-//
-// In short: components dispatch ClientActions; the reducer processes Actions.
-// `apply()` is internal-only and bridges WS messages + connection state into
-// the reducer without exposing them on the public `Dispatch`.
+// Actions: the wider union the reducer handles, adding server pushes
+// (ClientMessage) and internal transitions. createStore's `apply()` drives
+// those without exposing them on the public `Dispatch`.
 export type ClientActions =
   | { type: "addToast"; payload: Toast }
   | { type: "removeToast"; payload: Toast }
@@ -66,11 +53,10 @@ export interface Store {
     filterValues?: Record<string, FilterValue[]>;
   };
   room?: {
-    // Canonical (lowercased, allowlist-stripped). Used for URL parameter,
-    // share link, Map key on server.
+    // Canonical (lowercased, allowlist-stripped): URL param, share link,
+    // server Map key.
     name: string;
-    // Display form (case preserved). Used for UI rendering. Falls back to
-    // `name` when undefined (e.g. before the success message lands).
+    // Display form (case preserved); falls back to `name` when undefined.
     displayName?: string;
     joined: boolean;
     media?: Media[];
@@ -80,14 +66,10 @@ export interface Store {
     activeFilters?: Filter[];
   };
 
-  // Per-Store monotonic counters (audit 13 #328, landed 0.4.46). Move
-  // toastCounter + mediaVersionCounter from module-scope to state so the
-  // reducer is pure and each Store instance keeps its own counters.
-  // INVARIANT: never reset within a Store's lifetime -- mediaVersion is
-  // used as React's `key` on the CardStack mount; a reset would collide
-  // with a prior CardStack and React would reuse the stale one. The
-  // pre-#328 module-scope counters had the same invariant; it just
-  // lived implicitly in the module.
+  // Per-Store counters, on state rather than module scope so the reducer stays
+  // pure. INVARIANT: never reset within a Store's lifetime. mediaVersion is
+  // React's `key` on the CardStack mount, so a reset collides with a prior
+  // stack and React reuses it.
   toastCounter: number;
   mediaVersionCounter: number;
 }

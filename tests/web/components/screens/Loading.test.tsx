@@ -3,8 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { Loading } from '../../../../web/app/src/components/screens/Loading';
 
-// Loading is a full-viewport branded loader -- the "reely" wordmark
-// pulses on opacity + scale. Pure presentation; no props, no deps.
+// Full-viewport branded loader. Pure presentation: no props, no deps.
 
 afterEach(() => {
   cleanup();
@@ -16,9 +15,8 @@ describe('Loading', () => {
     expect(screen.getByText('reely')).toBeDefined();
   });
 
-  // role=status so assistive tech announces the loading state without
-  // shifting focus; aria-label gives the spoken description because the
-  // wordmark itself is decorative (aria-hidden).
+  // status announces without stealing focus, and the aria-label carries the
+  // description because the wordmark is aria-hidden.
   it('exposes a status role with the "Loading reely" label', () => {
     const { container } = render(<Loading />);
     const root = container.firstChild as HTMLElement;

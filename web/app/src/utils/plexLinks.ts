@@ -10,28 +10,17 @@ export interface PlexLinkSet {
 /**
  * Build the "Open in Plex" link for a media item.
  *
- * Returns undefined when the Plex server id isn't known yet (config message
- * not received, or a non-Plex provider) -- callers should render nothing in
- * that case.
+ * Undefined when the Plex server id isn't known yet; callers render nothing.
  *
- * When `preferLocal` is true AND a `plexBaseUrl` is known, builds a link
- * directly to the local Plex server's web UI (no plex.tv round-trip,
- * works without internet). Otherwise falls back to the app.plex.tv web
- * URL, which works from anywhere with internet.
+ * `preferLocal` plus a known `plexBaseUrl` links straight to the local server
+ * (no plex.tv round-trip, works offline); otherwise app.plex.tv.
  *
- * The plex:// app deep link was dropped in 0.3.1 after device testing: on
- * both iOS and Android it opens the Plex app but never navigates to the
- * item -- the Plex apps don't route the metadataKey, regardless of scheme
- * (preplay/play) or key encoding. The web URLs reliably land on the movie
- * page; Plex's own page surfaces an "open in app" affordance from there.
+ * No plex:// deep link: the Plex apps open but never route the metadataKey,
+ * under any scheme or key encoding. The web page offers "open in app" anyway.
  */
-// Scheme allowlist for the server-provided plexBaseUrl (audit 13 #306).
-// The value arrives via the WS `config` frame from a server we trust,
-// but defense-in-depth: a future server bug or man-in-the-middle could
-// supply `javascript:foo` or `data:text/html,...` and our concatenation
-// would build a clickable link with that scheme. Filter to http/https
-// only -- anything else falls back to the app.plex.tv URL, which is
-// always safe.
+// Scheme allowlist for the server-supplied plexBaseUrl: a `javascript:` or
+// `data:` value would otherwise be concatenated into a clickable link.
+// Anything but http/https falls back to app.plex.tv.
 const isSafePlexBaseUrl = (raw: string): boolean => {
   try {
     const u = new URL(raw);
@@ -60,11 +49,8 @@ export const buildPlexLinks = (
   };
 };
 
-// Probe singleton: one probe per page session. Network topology doesn't
-// change mid-session, so a single result is cached and shared by every
-// caller. Returns true if the local Plex base URL appears reachable from
-// the browser (the LAN case), false otherwise (WAN, mixed-content blocked,
-// Plex down).
+// One probe per page session: network topology doesn't change mid-session, so
+// the result is cached and shared by every caller.
 const PROBE_TIMEOUT_MS = 1500;
 let probe: Promise<boolean> | undefined;
 let probeBaseUrl: string | undefined;
@@ -73,15 +59,13 @@ export const probeLocalPlexReachable = (
   baseUrl: string | undefined,
 ): Promise<boolean> => {
   if (!baseUrl) return Promise.resolve(false);
-  // Cache by baseUrl: if the server's config changes (unlikely mid-session
-  // but possible), re-probe.
+  // Keyed by baseUrl so a config change mid-session re-probes.
   if (probe && probeBaseUrl === baseUrl) return probe;
   probeBaseUrl = baseUrl;
   probe = (async () => {
     try {
-      // mode: no-cors so we don't fail on Plex not sending CORS headers --
-      // we only need to know whether the request succeeded at the network
-      // level. /identity is unauthenticated and replies quickly.
+      // no-cors: only network-level success matters, and Plex sends no CORS
+      // headers. /identity is unauthenticated and fast.
       await fetch(`${baseUrl.replace(/\/$/, "")}/identity`, {
         method: "GET",
         mode: "no-cors",
@@ -89,21 +73,14 @@ export const probeLocalPlexReachable = (
       });
       return true;
     } catch {
-      // Timeout, network error, or mixed-content block (reely over https +
-      // Plex over http). Either way the local URL is unusable from this
-      // browser; fall back to app.plex.tv.
+      // Timeout, network error, or mixed-content block: unusable either way.
       return false;
     }
   })();
   return probe;
 };
 
-/**
- * React hook for the local-Plex reachability probe. Returns:
- *   - undefined while detecting (use the web URL as a safe default),
- *   - true when the local Plex base URL is reachable,
- *   - false when it isn't.
- */
+/** Reachability probe as a hook; undefined while still detecting. */
 export const useLocalPlexReachable = (
   baseUrl: string | undefined,
 ): boolean | undefined => {

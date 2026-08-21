@@ -10,41 +10,31 @@ export const LoginScreen = () => {
   const [{ user, error, room, config, connectionStatus }, dispatch] =
     useStore(["user", "error", "room", "config", "connectionStatus"]);
 
-  // useState lazy initializers (audit 13 #308): URLSearchParams + localStorage
-  // are read ONCE on mount, not on every render. The prior pattern parsed
-  // `location.search` and called `localStorage.getItem` synchronously inside
-  // the component body, which re-ran on every render even though the result
-  // is mount-time-stable (subsequent renders ignore the value anyway because
-  // useState only honors its initial-value arg on first run). The lazy form
-  // passes a function that React only invokes the first time.
+  // Lazy initializers so localStorage and URLSearchParams are read once, on
+  // mount, rather than on every render.
   const [userName, setUserName] = useState(() => localStorage.getItem("userName") ?? "");
   const [nameEditing, setNameEditing] = useState(() => (localStorage.getItem("userName") ?? "") === "");
   const [userNameError, setUserNameError] = useState<string | undefined>();
   const [roomName, setRoomName] = useState(() => new URLSearchParams(location.search).get("roomName") ?? "");
   const [roomNameError, setRoomNameError] = useState<string | undefined>();
 
-  // String | null instead of boolean (audit 12 #216): captures the room
-  // name AT the submit moment so a user who keeps typing between submit
-  // and the deferred-join firing can't ship a stale roomName. The input
-  // isn't disabled until the room exists, so per-render ref updates
-  // (the prior 0.4.6 #115 fix) still reflected the latest input value
-  // instead of the value the user clicked "join" with.
+  // Holds the room name as of the submit click. The input stays editable until
+  // the room exists, so anything read later reflects continued typing rather
+  // than what the user submitted.
   const pendingJoinRoom = useRef<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const roomInputRef = useRef<HTMLInputElement>(null);
 
-  // Chip→edit transition: track that the user opened the input via the chip,
-  // so the layout effect can select-all on the next render. Also remember the
-  // pre-edit value so ESC can restore it.
+  // Chip→edit: flags that the layout effect should select-all next render, and
+  // keeps the pre-edit value for ESC to restore.
   const selectOnEditMount = useRef(false);
   const preEditName = useRef("");
 
   const trimmedUser = userName.trim();
   const trimmedRoom = roomName.trim();
 
-  // Once login resolves, fire the deferred join/create with the room name
-  // captured AT submit (pendingJoinRoom.current is set in handleSubmit).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: dispatch is stable; the join only fires on the user transition, not on dispatch identity changes.
+  // Once login resolves, fire the deferred join with the name captured at submit.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: dispatch is stable; the join must fire on the user transition, not on dispatch identity changes.
   useEffect(() => {
     if (!user || pendingJoinRoom.current === null) return;
     const roomName = pendingJoinRoom.current;
@@ -55,16 +45,14 @@ export const LoginScreen = () => {
     });
   }, [user]);
 
-  // Clear the deferred-join slot on any login/join error so a later auto-set
-  // of `user` (e.g., WS reconnect populating the cached session) doesn't
-  // silently fire a stale joinOrCreateRoom on the user's behalf.
+  // Clear the deferred-join slot on error, so a later auto-set of `user` (a WS
+  // reconnect restoring the cached session) can't fire a stale join.
   useEffect(() => {
     if (error) pendingJoinRoom.current = null;
   }, [error]);
 
-  // When the user transitions from chip → input, focus and select the text
-  // synchronously after the input renders. useLayoutEffect avoids the visible
-  // flash of an unfocused, unselected field that setTimeout(0) leaves behind.
+  // useLayoutEffect, not an effect or setTimeout(0): selecting after paint
+  // flashes an unfocused, unselected field.
   useLayoutEffect(() => {
     if (nameEditing && selectOnEditMount.current) {
       selectOnEditMount.current = false;
@@ -90,15 +78,11 @@ export const LoginScreen = () => {
     if (nameEditing && trimmedUser) setNameEditing(false);
     if (!validate()) return;
     if (!user || trimmedUser !== user.userName) {
-      // Not logged in yet, OR the cached username was edited via the name
-      // chip. Either way (re-)login under the current name first so the
-      // server identity matches before joining -- otherwise an edited name
-      // would join the room under the stale server-side username.
+      // Not logged in, or the cached username was edited via the chip.
+      // (Re-)login first, or the join lands under the stale server-side name.
       //
-      // Snapshot the room name at THIS moment (audit 12 #216) -- the user
-      // can keep typing while the login round-trip completes, and the
-      // deferred-join effect must dispatch the name they clicked with,
-      // not whatever the input shows by the time the user-set lands.
+      // Snapshot the room name now: the user can keep typing during the login
+      // round-trip, and the deferred join must use what they clicked with.
       pendingJoinRoom.current = trimmedRoom;
       dispatch({ type: "login", payload: { userName: trimmedUser } });
     } else {
@@ -178,23 +162,16 @@ export const LoginScreen = () => {
                   aria-label="Your name"
                   placeholder="what should we call you?"
                   autoComplete="given-name"
-                  // userName is seeded from localStorage at mount; an empty
-                  // userName at mount means no stored session, so autoFocus
-                  // the field. Subsequent renders' value doesn't affect the
-                  // DOM autofocus behavior anyway -- it's consulted at
-                  // element insertion only. This is the login screen's
-                  // primary input on a no-stored-session boot; auto-focusing
-                  // matches the user's clear next action.
+                  // Empty userName at mount means no stored session, so this is
+                  // the screen's primary input and the user's next action.
                   // biome-ignore lint/a11y/noAutofocus: primary input on first boot.
                   autoFocus={!userName}
-                  // Mirror the server's 64-char sanitizeInput slice so a
-                  // longer name isn't silently truncated server-side.
+                  // Mirrors the server's 64-char sanitizeInput slice, so longer
+                  // names aren't silently truncated server-side.
                   maxLength={64}
                   value={userName}
                   onChange={(e) => {
-                    // Pass the same 64-char cap to the sanitizer so the
-                    // length bound holds even if the JSX maxLength above
-                    // ever drops out.
+                    // Same cap here so the bound holds if maxLength is dropped.
                     setUserName(sanitizeUserInput(e.target.value, 64));
                     setUserNameError(undefined);
                   }}
@@ -235,8 +212,7 @@ export const LoginScreen = () => {
                 maxLength={48}
                 value={roomName}
                 onChange={(e) => {
-                  // Same belt-and-suspenders length bound as the userName
-                  // input -- mirrors server's ROOM_NAME_MAX_LEN.
+                  // Same cap here so the bound holds if maxLength is dropped.
                   setRoomName(sanitizeRoomNameDisplay(e.target.value, 48));
                   setRoomNameError(undefined);
                 }}

@@ -69,7 +69,7 @@
   50% { opacity: 0.35; }
 }
 
-/* Spacer -- pushes headline to lower half */
+/* Spacer: pushes the headline to the lower half */
 .spacer {
   flex: 1;
   min-height: 24px;

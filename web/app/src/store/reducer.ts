@@ -1,32 +1,19 @@
 import type { Toast } from "../components/atoms/Toast";
 import type { Actions, Store } from "./types";
 
-// Auto-dismiss delay for error toasts (audit 12 #241). Without an explicit
-// showTimeMs the toast persists until the user manually dismisses it,
-// which piles up failure messages forever on a flaky connection. The
-// connection-failure toast is intentionally NOT given a TTL -- it's
-// cleared explicitly when the WS reconnects.
+// Auto-dismiss delay for error toasts; without it failure messages pile up
+// forever on a flaky connection. The connection-failure toast is exempt: it
+// clears when the WS reconnects.
 const ERROR_TOAST_MS = 5000;
 
-// crypto.randomUUID() is only defined in secure contexts (https/localhost).
-// reely's intended LAN deployment is plain http://192.168.x.x:8000, where
-// the call throws TypeError. Use a per-Store counter + random suffix as a
-// safe fallback: uniqueness only matters within the React tree, not
-// cross-session.
-//
-// 0.4.46 (audit 13 #328): moved from a module-scope `let` to a counter on
-// the Store. The reducer is now pure -- each Store instance keeps its own
-// counters. The mintToastId helper is a pure function of the counter.
+// crypto.randomUUID() throws outside secure contexts, and reely deploys on
+// plain http over a LAN. A per-Store counter plus a random suffix suffices:
+// uniqueness only has to hold within the React tree.
 const mintToastId = (counter: number): string =>
   `toast-${counter}-${Math.random().toString(36).slice(2, 8)}`;
 
-// Shared toast-counter-bump + push-with-Failure-appearance helper.
-// Audit 15 #389 consolidated four error cases (filterChangeError,
-// leaveRoomError, logoutError, requestFiltersError) that all shared
-// the same 9-line return. Returns the two state slices that change
-// so each caller can splat them into its return value alongside any
-// case-specific state (requestFiltersError also resets
-// availableFilters; the helper doesn't touch that).
+// Bumps the toast counter and pushes a Failure toast. Returns only the two
+// changed slices so callers can splat in their own case-specific state.
 const addErrorToast = (state: Store, message: string): Pick<Store, "toastCounter" | "toasts"> => {
   const toastCounter = state.toastCounter + 1;
   return {
@@ -38,12 +25,9 @@ const addErrorToast = (state: Store, message: string): Pick<Store, "toastCounter
   };
 };
 
-// mediaVersionCounter / toastCounter are fields on Store now (see
-// `web/app/src/store/types.ts`). INVARIANT for both: monotonic within
-// a Store's lifetime, never reset. mediaVersion is used as React's
-// `key` on the CardStack mount; a reset would collide with a prior
-// CardStack and React would reuse the stale one. Pre-#328 had the
-// same invariant; it just lived implicitly in the module-scope `let`.
+// INVARIANT for mediaVersionCounter and toastCounter: monotonic within a
+// Store's lifetime, never reset. mediaVersion is React's `key` on the
+// CardStack mount, so a reset collides with a prior stack and React reuses it.
 
 export const initialState: Store = {
   connectionStatus: "disconnected",
@@ -56,11 +40,8 @@ export const initialState: Store = {
 export const reducer = (state: Store = initialState, action: Actions): Store => {
   switch (action.type) {
     case "updateConnectionStatus": {
-      // Helper split out of the prior nested ternary, which read as one
-      // unbroken array literal and forced the reader to mentally
-      // disambiguate which branch handled the disconnected case (audit 9
-      // #151). Logic: when disconnected, ensure a "connection-failure"
-      // toast exists (idempotent); when connected/connecting, clear it.
+      // Idempotently add a connection-failure toast when disconnected; clear
+      // it otherwise.
       const updateConnectionToasts = (toasts: Toast[]): Toast[] => {
         if (action.payload === "disconnected") {
           const alreadyShown = toasts.some((t) => t.id === "connection-failure");
@@ -93,10 +74,8 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
     case "addToast":
       return { ...state, toasts: [...state.toasts, action.payload] };
     case "removeToast":
-      // Filter by id, not by object identity. A dispatched payload that
-      // isn't reference-equal to the stored toast (e.g. a fresh object
-      // built from { id, message, ... }) would otherwise silently no-op
-      // the removal.
+      // By id, not object identity: a rebuilt payload isn't reference-equal
+      // and the removal would silently no-op.
       return {
         ...state,
         toasts: state.toasts.filter((toast) => toast.id !== action.payload.id),
@@ -108,10 +87,8 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
         return {
           ...state,
           user: action.payload,
-          // Initial load: go to login screen.
-          // Reconnect while in a room: the server session is gone, so clear room
-          // state and send the user back to login to re-join.
-          // Reconnect from login/config: no navigation needed.
+          // An in-room reconnect means the server session is gone, so clear
+          // the room and go back to login. From login/config, stay put.
           ...(state.route === "loading"
             ? { route: "login" }
             : state.route === "room"
@@ -144,13 +121,10 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
           error: undefined,
           room: {
             ...state.room,
-            // Prefer the server's sanitized canonical name when provided so
-            // local state (and the URL bar) match what the server stores.
-            // Pre-0.2.10 servers don't send roomName; fall back to the
-            // pre-dispatch name in that case.
+            // Prefer the server's canonical name so local state and the URL
+            // match what it stores. Older servers omit it.
             name: action.payload.roomName ?? state.room.name,
-            // Display form for UI. Pre-0.2.19 servers omit this; fall back
-            // to the canonical name so the UI still has something to show.
+            // Display form; older servers omit it.
             displayName: action.payload.displayName ?? state.room.displayName,
             joined: true,
             matches: action.payload.previousMatches,
@@ -169,8 +143,7 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
       const { appliedBy, media, filters } = action.payload;
       const isOtherUser = !!appliedBy && appliedBy !== state.user?.userName;
       const mv = state.mediaVersionCounter + 1;
-      // toastCounter only bumps on the isOtherUser branch -- the self-apply
-      // case doesn't surface a toast (no need to announce your own action).
+      // No toast for your own apply, so the counter only bumps for others.
       let toasts = state.toasts;
       let toastCounter = state.toastCounter;
       if (isOtherUser) {
@@ -201,10 +174,8 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
         },
       };
     }
-    // Filter-apply failures (cooldown throttle, no media for the filter set)
-    // had no case and fell through silently -- the FilterPanel closes on
-    // send, so the apply just appeared to do nothing. Surface the server's
-    // message as a toast.
+    // The FilterPanel closes on send, so a silent failure looks like nothing
+    // happened. Surface the server's message.
     case "filterChangeError":
       return { ...state, ...addErrorToast(state, action.payload.message) };
     case "logoutSuccess":
@@ -215,16 +186,10 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
       return { ...state, error: action.payload, route: "login", room: undefined };
     case "leaveRoomSuccess":
       return { ...state, room: undefined, route: "login" };
-    // leaveRoomError / logoutError previously had no case and fell through,
-    // so a failed leave/logout gave the user no feedback at all. Surface a
-    // toast. Both are edge cases (NOT_JOINED / NotLoggedIn).
     case "leaveRoomError":
-      // NOT_JOINED means the server already considers us out of any room
-      // (audit 16 #452): treat it as a successful leave instead of only
-      // toasting. Before this, a failed silent rejoin left the user on a
-      // room screen with no server-side membership -- swipes were
-      // silently dropped and Leave dead-ended on this very error, a hard
-      // trap only a page refresh escaped.
+      // NOT_JOINED means the server already has us out, so treat it as a
+      // successful leave. Toasting alone traps the user on a room screen with
+      // no membership: swipes drop and Leave dead-ends on this same error.
       if (action.payload?.errorType === "NOT_JOINED") {
         return { ...state, room: undefined, route: "login" };
       }
@@ -250,9 +215,8 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
         },
       };
     case "requestFiltersError":
-      // The FilterPanel shows "Loading filters..." until availableFilters is
-      // set. The server failed to fetch them, so set an empty filter set to
-      // drop the spinner and raise a toast -- otherwise the panel hangs forever.
+      // The panel spins until availableFilters is set, so an empty set is what
+      // stops it hanging forever.
       return {
         ...state,
         ...addErrorToast(state, "Couldn't load filters"),
@@ -262,10 +226,8 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
         },
       };
     case "requestFilterValuesError":
-      // Mark the key as resolved-with-no-values so the FilterPanel can drop
-      // its "Loading..." state and fall back to the free-text SearchControl.
-      // The error is already logged server-side; the user just sees the
-      // filter row become editable instead of stuck loading.
+      // Resolved-with-no-values, so the panel drops its loading state and
+      // falls back to the free-text SearchControl.
       return {
         ...state,
         createRoom: {
@@ -276,11 +238,8 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
           },
         },
       };
-    // Room events only fire to clients joined to a room, so the server
-    // contract guarantees state.room is set when these arrive. Even so,
-    // the cases guard with `if (!state.room) return state;` rather than
-    // spread `state.room!` -- a runtime invariant violation now becomes a
-    // safe no-op instead of a thrown TypeError (audit 9 #120).
+    // The server contract guarantees state.room here, but the cases guard
+    // anyway so a violated invariant no-ops instead of throwing.
     case "match":
       if (!state.room) return state;
       return {
@@ -296,9 +255,8 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
         },
       };
     case "userJoinedRoom":
-      // Idempotent on userName: a reconnecting/rejoining user broadcasts
-      // userJoinedRoom again, and a blind append would show that user twice
-      // in everyone else's list. Drop any existing entry first.
+      // Idempotent on userName: a rejoining user broadcasts again, and a blind
+      // append would list them twice.
       if (!state.room) return state;
       return {
         ...state,
@@ -336,23 +294,14 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
           ),
         },
       };
-    // The ServerMessage variants are dispatched by the UI and forwarded
-    // to the WS client by createStore's dispatch wrapper. The reducer
-    // doesn't react to them locally -- it waits for the server's reply
-    // (the matching *Success / *Error / *Applied ClientMessage) which
-    // IS handled above. Enumerating them as no-ops here lets the
-    // `never` check below catch any future variant that gets added to
-    // the Actions union without a deliberate decision (audit 13 #305).
+    // ServerMessage variants go to the WS client; the reducer waits for the
+    // server's reply instead. Listed as explicit no-ops so the `never` check
+    // below catches any new variant.
     case "rate": {
-      // Forwarded to the WS client like the other ServerMessage variants
-      // below, but ALSO pruned from room.media locally (audit 16 #430).
-      // The mounted CardStack ignores prop changes (memo () => true), so
-      // this doesn't disturb the live deck -- but a desktop/mobile layout
-      // flip across the 900px breakpoint remounts CardStack, and its
-      // initializer re-slices room.media. Without the prune, every card
-      // swiped since the last join/filter-apply resurrected into the deck
-      // as dead swipes (the server silently drops re-rates). Mirrors the
-      // server's getMediaForUser filtering on the rejoin path.
+      // Also pruned from room.media locally. The mounted CardStack ignores
+      // prop changes, but a layout flip across the breakpoint remounts it and
+      // re-slices room.media; without the prune every card swiped since the
+      // last join resurrects into the deck as a dead swipe.
       // mediaVersion deliberately NOT bumped: no remount is wanted here.
       if (!state.room?.media) return state;
       return {
@@ -372,10 +321,8 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
     case "applyFilters":
       return state;
     default: {
-      // Exhaustive-check via `never`. A new variant added to the
-      // Actions union without a case (or no-op above) errors at
-      // typecheck. The `void _exhaustive` swallows the value so the
-      // linter doesn't flag it as unused.
+      // Exhaustive check: an uncased Actions variant errors at typecheck.
+      // `void` keeps the linter from flagging the unused binding.
       const _exhaustive: never = action;
       void _exhaustive;
       return state;

@@ -9,12 +9,8 @@ import styles from "./MatchMoment.module.css";
 
 const CONFETTI_COLORS = ["#FF4E7E", "#FF6A4D", "#FFB347", "#4ADE9E"];
 
-// Module-scope precomputation: 20 style objects allocated once at
-// load instead of once per overlay render. Values are pure functions
-// of the iteration index, so they never depend on props/state. The
-// big-overlay variant re-renders this list on every state change
-// (Esc gating, etc.) and on every match remount, so per-render
-// allocation was pure waste. (Audit 15 #388.)
+// Module scope: the values depend only on the index, and the overlay
+// re-renders this list on every state change.
 const CONFETTI_PIECES = Array.from({ length: 20 }, (_, i) => ({
   left: `${(i * 37) % 100}%`,
   top: -20,
@@ -24,25 +20,17 @@ const CONFETTI_PIECES = Array.from({ length: 20 }, (_, i) => ({
   transform: `rotate(${i * 18}deg)`,
 }));
 
-// 0.5.4: ry-slide-fade-out exit animation duration in MatchMoment.module.css
-// (200ms -> 350ms; renamed from ry-slide-up in 0.5.4 -- see main.css).
-// Component schedules a setTimeout matching this before calling the
-// parent's onDismiss so the slide+fade completes BEFORE unmount. Kept
-// as a named constant + a comment because a drift between this number
-// and the keyframe in MatchMoment.module.css would make the toast
-// vanish mid-slide (visible jank) -- worth flagging at both ends.
+// Must match ry-slide-fade-out in MatchMoment.module.css: onDismiss is delayed
+// by this long so the slide finishes before unmount. Drift makes the toast
+// vanish mid-slide.
 const TOAST_EXIT_MS = 350;
 
 interface MatchMomentProps {
   match: Match;
   isBig: boolean;
   onDismiss: () => void;
-  // 0.5.7: true when the parent has demoted this toast (a new match
-  // has arrived + is sliding in on top). Triggers .toastReplaced ->
-  // 200ms opacity fade in place. Auto-dismiss is skipped (Room
-  // auto-prunes this instance ~400ms after demotion). Default false
-  // so non-stacked callers (most tests + the only-one-pending case)
-  // see no behavior change.
+  // Set when the parent demotes this toast because a newer match is sliding in
+  // on top. Fades in place; auto-dismiss is skipped because Room prunes it.
   replaced?: boolean;
 }
 
@@ -51,36 +39,26 @@ export const MatchMoment = ({ match, isBig, onDismiss, replaced = false }: Match
 
   useEscape(onDismiss, isBig);
 
-  // Exit-animation state for the TOAST variant (audit follow-up,
-  // 0.5.2). Big-overlay variant unmounts immediately on dismiss --
-  // it has its own full-screen presentation, no slide-out needed.
+  // Toast variant only; the big overlay unmounts immediately on dismiss.
   const [exiting, setExiting] = useState(false);
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  // Trigger the exit animation, then call the parent's onDismiss after
-  // the slide completes. Guard re-entry via the `exiting` flag so a
-  // race between the auto-dismiss timer and a user click can't fire
-  // onDismiss twice.
+  // Animate out, then onDismiss. The `exiting` guard stops the auto-dismiss
+  // timer and a user click from both firing onDismiss.
   const requestDismiss = useCallback(() => {
     if (exiting) return;
     setExiting(true);
     exitTimerRef.current = setTimeout(onDismiss, TOAST_EXIT_MS);
   }, [exiting, onDismiss]);
 
-  // Unmount cleanup: if the parent yanks us mid-exit (e.g. user clicked
-  // through to the next pending match), clear the pending setTimeout so
-  // it doesn't fire on an unmounted component.
+  // The parent can unmount us mid-exit, so drop the pending timer.
   useEffect(() => () => {
     if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
   }, []);
 
-  // Demotion cancels a pending exit (audit 16 #453): if a new match
-  // lands during the 350ms exit window, Room swaps this instance's
-  // onDismiss to a no-op -- but the already-scheduled timer still holds
-  // the OLD closure, and it always fires before Room's demotion+400ms
-  // prune (dismiss started earlier), wiping the NEW toast ~150ms into
-  // its window. The demoted instance's teardown belongs to Room's prune
-  // timer alone.
+  // Demotion cancels a pending exit: a timer scheduled before the demotion
+  // still holds the old onDismiss closure and would fire first, wiping the NEW
+  // toast. Teardown of a demoted instance belongs to Room's prune timer alone.
   useEffect(() => {
     if (replaced && exitTimerRef.current) {
       clearTimeout(exitTimerRef.current);
@@ -88,15 +66,10 @@ export const MatchMoment = ({ match, isBig, onDismiss, replaced = false }: Match
     }
   }, [replaced]);
 
-  // Auto-dismiss the toast after 3s. Component remounts per match (the parent
-  // sets `key={match.media.id}`), so the effect runs once per match. Deps
-  // include isBig + replaced + requestDismiss: if the parent flips any of
-  // those mid-toast, the effect re-runs and the timer reschedules
-  // correctly instead of being silently stranded.
-  // 0.5.7: also skip when `replaced` is true -- the parent is about to
-  // prune this instance (Room auto-prune fires ~400ms after demotion);
-  // starting an exit slide that the unmount will cut short is wasted
-  // motion + visual jank.
+  // Auto-dismiss after 3s. The parent keys on match.media.id, so this runs once
+  // per match; the deps reschedule the timer if it flips a flag mid-toast
+  // rather than stranding it. Skipped when replaced: the exit slide would be
+  // cut short by the parent's prune.
   useEffect(() => {
     if (isBig || replaced) return;
     const timer = setTimeout(requestDismiss, 3000);
@@ -127,13 +100,9 @@ export const MatchMoment = ({ match, isBig, onDismiss, replaced = false }: Match
   }
 
   return (
-    // role="dialog" + aria-modal + aria-label fully describe the
-    // overlay to assistive tech; the click-outside-to-dismiss is a
-    // mouse shortcut. Keyboard dismissal is the Esc handler in
-    // useEscape above. A keydown on the overlay itself would be
-    // redundant + would shift focus into the backdrop. (The dialog
-    // role suppresses noStaticElementInteractions automatically;
-    // useKeyWithClickEvents still fires.)
+    // role/aria-modal/aria-label describe the overlay to assistive tech.
+    // Click-outside is a mouse shortcut; keyboard dismissal is the useEscape
+    // handler above. A keydown here would shift focus into the backdrop.
     // biome-ignore lint/a11y/useKeyWithClickEvents: dialog wrapper, Esc handles keyboard dismissal.
     <div
       className={styles.overlay}
@@ -142,12 +111,8 @@ export const MatchMoment = ({ match, isBig, onDismiss, replaced = false }: Match
       aria-modal="true"
       onClick={onDismiss}
     >
-      {/* The confetti list is a fixed-length 20 -- entries never reorder,
-          splice, or get inserted, so the array index IS the stable identity.
-          Biome's noArrayIndexKey rule guards against list-mutation bugs that
-          don't apply here. Style objects are precomputed at module scope
-          (CONFETTI_PIECES) so each overlay open reuses the same 20 refs
-          instead of rebuilding them. */}
+      {/* Fixed-length list that never reorders, so the index is stable
+          identity. */}
       {CONFETTI_PIECES.map((style, i) => (
         <div
           // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length 20, no mutation.
@@ -182,10 +147,8 @@ export const MatchMoment = ({ match, isBig, onDismiss, replaced = false }: Match
         ))}
       </div>
 
-      {/* Wrapper exists to stop propagation -- clicks on the buttons
-          inside shouldn't bubble up to the overlay's dismiss handler.
-          No interactive semantics of its own; stopPropagation is the
-          only handler. */}
+      {/* stopPropagation so button clicks don't reach the overlay's dismiss
+          handler. No interactive semantics of its own. */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: stopPropagation wrapper, no interactive semantics. */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: stopPropagation wrapper, no interactive semantics. */}
       <div

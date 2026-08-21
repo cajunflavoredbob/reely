@@ -2,15 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { handler } from '../../internal/app/reely/handlers/health';
 import { makeReq, makeRes } from '../helpers';
 
-// Smoke tests for the health handler. Tiny on purpose -- the handler
-// is two lines: `res.status(200).send('reely is alive')`. The Docker
-// HEALTHCHECK polls this; an empty/non-200/missing-body response would
-// flip the container to "unhealthy" silently. Pinning behavior here
-// catches a future refactor that swaps the body or status by mistake.
-// (Audit 13 #338 originally classified this as "deliberately deferred
-// -- trivial wrapper". The minimal smoke coverage is added 0.4.50 as
-// part of the 0.5.0 close-out so the audit-log status flips from
-// untested to minimally-covered.)
+// The Docker HEALTHCHECK polls this, so a changed status or body silently
+// flips the container to unhealthy.
 
 describe('handler (/health)', () => {
   it('responds with HTTP 200', () => {

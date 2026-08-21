@@ -1,19 +1,10 @@
 import type { Filters } from "../../../../../types/reely";
 import styles from "./FieldPicker.module.css";
 
-// FieldPicker -- searchable list of available filter fields to add to
-// the FilterPanel draft. Renders only when the picker is OPEN -- the
-// "Add filter" toggle button stays in FilterPanel so the parent owns
-// the open/closed state and there's no `isOpen` prop here.
-//
-// Extracted from FilterPanel.tsx in 0.4.47 (audit 13 #321, Option B
-// split: SearchControl + FieldPicker only -- FilterRow stayed in the
-// flat file because its 8-prop interface would have been uglier than
-// the inline row). Source semantics unchanged; only the JSX + CSS
-// module were lifted into their own files.
+// Searchable list of filter fields to add to the FilterPanel draft. FilterPanel
+// owns the open/closed state and only mounts this when open, hence no `isOpen`.
 
-// Field-definition shape pulled inline from Filters['filters'][number]
-// in types/reely.ts so consumers don't have to reach into Filters.
+// Named alias so consumers don't reach into Filters.
 type FieldDef = Filters["filters"][number];
 
 interface FieldPickerProps {
@@ -38,11 +29,8 @@ export const FieldPicker = ({
         placeholder="Search fields…"
         value={search}
         onChange={(e) => onSearchChange(e.target.value)}
-        // The picker opens in response to a user action ("Add filter"
-        // click), so the focus shift is user-initiated and not
-        // unexpected. This is the canonical case where autoFocus is
-        // acceptable even for screen-reader users (the action implies
-        // "I want to type a filter name now").
+        // Only opens on an "Add filter" click, so the focus shift is expected,
+        // screen readers included.
         // biome-ignore lint/a11y/noAutofocus: user-initiated picker.
         autoFocus
       />

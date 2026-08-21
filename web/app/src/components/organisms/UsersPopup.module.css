@@ -51,8 +51,7 @@
   margin-left: 4px;
 }
 
-/* 0.5.4: right-side cluster groups the version label + close pill.
-   Was a bare .closeBtn in the header's space-between layout. */
+/* Right-side cluster: version label plus close pill. */
 .headerActions {
   display: flex;
   align-items: center;
@@ -60,9 +59,7 @@
   flex-shrink: 0;
 }
 
-/* 0.5.4: app version label. Mono + muted so it reads as metadata,
-   not a primary signal. Aligned with the .closeBtn pill via the
-   parent .headerActions flex row. */
+/* Mono and muted so the version reads as metadata, not a signal. */
 .version {
   font-family: var(--ry-font-mono);
   font-size: 11px;
@@ -70,11 +67,8 @@
   letter-spacing: 0.04em;
 }
 
-/* 0.5.4: matched to MatchMoment's .toastClose -- 40x40 gradient pill,
-   same hover brighten + active scale. The popup is a tap target on
-   mobile; the prior 28x28-with-padding button was hard to hit. Sharing
-   the visual idiom across dismissable surfaces (toast + this popup)
-   makes the X read as a primary affordance everywhere it appears. */
+/* Matches MatchMoment's .toastClose: 40x40 is a comfortable mobile tap
+   target, and the shared idiom marks the X as a primary affordance. */
 .closeBtn {
   width: 40px;
   height: 40px;

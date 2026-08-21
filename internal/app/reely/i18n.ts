@@ -8,7 +8,7 @@ import { logger } from './logger';
 
 const LOCALIZATION_PATH = join(process.cwd(), 'configs', 'localization');
 
-// Scans the localization directory once and caches the set of available locale codes.
+// Scans the localization dir once; caches the available locale codes.
 export const getAvailableLocales = memo(async (): Promise<Set<string>> => {
   const availableLocales = new Set<string>();
   const entries = await readdir(LOCALIZATION_PATH, { withFileTypes: true });
@@ -22,20 +22,14 @@ export const getAvailableLocales = memo(async (): Promise<Set<string>> => {
 
 class TranslationLoadError extends Error {}
 
-// A BCP-47-ish locale tag: a 2-3 letter language subtag plus optional
-// dash-separated subtags ("en", "en-US", "zh-Hans"). `locale` reaches this
-// module from an unauthenticated `setLocale` WebSocket message, and the
-// candidate is interpolated into a join() path below -- join() resolves
-// `../`, so an unvalidated value would allow reading arbitrary .json files
-// off disk. Anything not matching this pattern is dropped before readFile.
+// BCP-47-ish locale tag ("en", "en-US", "zh-Hans"). `locale` arrives from an
+// unauthenticated setLocale WS message and is interpolated into a join() path
+// below, which resolves `../`: unvalidated, it reads arbitrary .json off disk.
 const LOCALE_TAG = /^[a-z]{2,3}(-[a-z0-9]+)*$/i;
 
-// Shape check for a parsed locale file (audit 12 #223). The file is JSON,
-// but JSON.parse only guarantees valid JSON, not that the value is a flat
-// string->string map. A hand-edited file with nested objects or non-string
-// values would otherwise leak `[object Object]` / `undefined` into
-// translation surfaces. Reject malformed shapes cleanly so the next
-// candidate in the fallback chain is tried.
+// JSON.parse proves valid JSON, not a flat string->string map. Nested objects
+// or non-string values would leak `[object Object]` into translated surfaces;
+// rejecting lets the next candidate in the fallback chain be tried.
 const isTranslationShape = (parsed: unknown): parsed is Record<string, string> => {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
   for (const v of Object.values(parsed as Record<string, unknown>)) {
@@ -44,15 +38,12 @@ const isTranslationShape = (parsed: unknown): parsed is Record<string, string> =
   return true;
 };
 
-// Loads and parses a locale file, falling back from full tag ("en-US") to
-// language-only ("en") to "en" as a last resort.
+// Loads a locale file, falling back from full tag ("en-US") to language-only
+// ("en") to "en".
 //
-// Cache caveat (audit 12 #222): `memo1` keys on the input locale string,
-// not the candidate that resolved. `loadTranslation('en-US')` and
-// `loadTranslation('xx-bogus')` both fall back to en.json but cache under
-// their own input keys -- storage duplication but no cross-poisoning,
-// since each entry is the same English JSON object. Worth noting if a
-// future change ever lets cache entries diverge by input key.
+// memo1 keys on the input locale, not the candidate that resolved, so several
+// inputs falling back to en.json each cache their own copy. Harmless while the
+// entries are identical.
 export const loadTranslation = memo1(
   async (locale: string): Promise<Record<string, string>> => {
     const candidates = [...new Set([locale, locale.split('-')[0], 'en'])].filter(
@@ -71,10 +62,8 @@ export const loadTranslation = memo1(
         }
         return parsed;
       } catch (err) {
-        // ENOENT is the normal "try the next candidate" case (e.g. "en-US"
-        // -> "en" fallback). Anything else (malformed JSON, permission
-        // denied) is worth surfacing so a broken locale file doesn't
-        // silently fall through to English.
+        // ENOENT is the normal "try the next candidate" case. Malformed JSON
+        // or EACCES must not silently fall through to English.
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
           logger.warn(
             `Failed to load translation "${path}": ${String(err)}`,
@@ -86,28 +75,20 @@ export const loadTranslation = memo1(
   },
 );
 
-// Resolves the best available locale from the request's Accept-Language header.
+// Resolves the best available locale from Accept-Language.
 export const getTranslations = async (req: Request): Promise<Translations> => {
   const availableLocales = await getAvailableLocales();
 
   if (!req.headers['accept-language']) {
-    // Short-circuit to English. The previous version logged "defaulting to en"
-    // but then fell through to accepts(), which returns the first acceptable
-    // option in the offer list -- i.e. whatever locale readdir() listed first
-    // in availableLocales. The log was a lie.
-    // debug, not info: browsers always send Accept-Language, so a header-less
-    // request is a non-browser poller -- logging at info would spam the log.
+    // Short-circuit: accepts() with no header returns the first offer, not en.
+    // debug, not info: a header-less request is a poller, and info would spam.
     logger.debug('No Accept-Language header; defaulting to en');
     return (await loadTranslation('en')) as Translations;
   }
 
-  // accepts() reads the IncomingMessage headers directly -- no manual header parsing needed.
   const negotiator = accepts(req);
-  // Sort the offer list (audit 12 #249) so the negotiator's tie-breaks are
-  // deterministic regardless of the underlying readdir order. accepts ties
-  // on q-weight by falling back to the input offer order; readdir's order
-  // is filesystem-dependent, so without the sort a same-q request could
-  // resolve to different locales on different platforms.
+  // Sort the offers: accepts breaks q-weight ties by offer order, and
+  // readdir's order is filesystem-dependent.
   const acceptedLanguage = negotiator.languages([...availableLocales].sort());
 
   let language: string;

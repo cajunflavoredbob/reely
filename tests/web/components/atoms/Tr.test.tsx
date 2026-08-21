@@ -1,27 +1,21 @@
 // @vitest-environment jsdom
 //
-// biome-ignore-all lint/suspicious/noTemplateCurlyInString: this file's literal `${...}` strings ARE the test fixtures -- they're interpolation placeholders that Tr resolves, not unintended template literals.
-// biome-ignore-all lint/suspicious/noExplicitAny: TranslationKey union isn't worth threading through every test render's `name=` prop; `as any` casts let each test use an arbitrary string key without polluting the production type.
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: the literal `${...}` strings are the fixtures Tr resolves.
+// biome-ignore-all lint/suspicious/noExplicitAny: lets each render use an arbitrary key without threading TranslationKey through.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
 
-// Mock the Zustand store entry. Tr only uses `useStore(['translations'])`,
-// so the mock returns a controllable `translations` map. The dispatch slot
-// is a no-op fn -- nothing in Tr touches it but the return shape is
-// `[store, dispatch]` so the destructure has to land.
-//
-// vi.hoisted lifts the mock fn so vi.mock's hoisted factory can reference
-// it without TDZ (same pattern as the load_secrets mock in
-// tests/config/load_env.test.ts and several earlier batches).
+// Tr only reads `useStore(['translations'])`, so the mock returns a
+// controllable map plus a no-op dispatch to satisfy the destructure.
+// vi.hoisted lifts the fn so vi.mock's hoisted factory can reference it
+// without TDZ.
 const { useStoreMock } = vi.hoisted(() => ({
   useStoreMock: vi.fn(),
 }));
 
 vi.mock('../../../../web/app/src/store', () => ({
   useStore: useStoreMock,
-  // Keep the other exports present so an accidental import from elsewhere
-  // doesn't fall off; they're not used by Tr but the module surface needs
-  // to match what `'../../store'` would resolve to in production.
+  // Unused by Tr, but the mocked module surface has to match the real one.
   useDispatch: vi.fn(),
   useSelector: vi.fn(),
   createStore: vi.fn(),
@@ -49,8 +43,6 @@ describe('Tr', () => {
     expect(container.textContent).toBe('Loading filters');
   });
 
-  // Missing key: fall back to the name itself rather than "undefined".
-  // (`{translation ?? name}` in the source.)
   it('falls back to the name itself when no translation is registered', () => {
     const { container } = render(<Tr name={'MISSING_KEY' as any} />);
     expect(container.textContent).toBe('MISSING_KEY');
@@ -62,36 +54,32 @@ describe('Tr', () => {
     expect(container.textContent).toBe('Hello alice!');
   });
 
-  // Missing context key leaves the literal `${name}` visible rather than
-  // substituting the string "undefined". The single-pass function-replacer
-  // form in interpolate makes this `?? full` fallback work.
+  // Guards against rendering the string "undefined": interpolate's function
+  // replacer falls back with `?? full`.
   it('leaves the ${key} placeholder visible when the context key is missing', () => {
     withTranslations({ GREETING: 'Hello ${name}!' });
     const { container } = render(<Tr name={'GREETING' as any} context={{}} />);
     expect(container.textContent).toBe('Hello ${name}!');
   });
 
-  // Function-replacer form opts out of String.replace's $& / $1 back-
-  // reference interpretation. A translation that happens to contain "$&"
-  // must not be re-expanded to the matched substring.
+  // The function-replacer form opts out of String.replace's $& / $1
+  // back-references, so a value containing "$&" is not re-expanded.
   it('does not expand $& back-references in interpolated values', () => {
     withTranslations({ MONEY: 'Price is ${price}' });
     const { container } = render(<Tr name={'MONEY' as any} context={{ price: '$5 or $&' }} />);
     expect(container.textContent).toBe('Price is $5 or $&');
   });
 
-  // Dotted-path placeholders are accepted (matches the server-side template
-  // regex) but looked up flat in context -- the frontend doesn't walk
-  // nested objects.
+  // Dotted paths match the server-side template regex but are looked up flat;
+  // the frontend does not walk nested objects.
   it('accepts dotted ${user.name} placeholders and looks them up flat', () => {
     withTranslations({ HI: 'Hi ${user.name}!' });
     const { container } = render(<Tr name={'HI' as any} context={{ 'user.name': 'alice' }} />);
     expect(container.textContent).toBe('Hi alice!');
   });
 
-  // Translation present but no context provided: render the raw translation,
-  // including any unresolved ${name} placeholders. (The interpolate branch
-  // only runs when both translation AND context are truthy.)
+  // interpolate runs only when translation and context are both truthy, so
+  // placeholders stay literal.
   it('renders the raw translation untouched when no context is provided', () => {
     withTranslations({ RAW: 'Has ${unresolved}' });
     const { container } = render(<Tr name={'RAW' as any} />);

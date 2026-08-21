@@ -34,13 +34,11 @@ describe('sanitizeInput', () => {
     expect(sanitizeInput('foo\x01bar')).toBe('foobar');
     expect(sanitizeInput('foo\x1fbar')).toBe('foobar');
     expect(sanitizeInput('foo\x7fbar')).toBe('foobar');
-    expect(sanitizeInput('\t\ntest\r')).toBe('test'); // tabs/newlines are control chars; trim handles edges
+    expect(sanitizeInput('\t\ntest\r')).toBe('test'); // tabs and newlines are control chars
   });
 
-  // Audit 13 #292: Unicode bidi-override + isolate codepoints can
-  // reverse rendering direction; an attacker can craft a username
-  // that displays as "alice" but stores as something else (or vice
-  // versa). Strip the whole U+202A-202E and U+2066-2069 range.
+  // Bidi overrides and isolates reverse rendering direction, so a username
+  // can display as "alice" and store as something else.
   it('strips Unicode bidi-override and isolate characters', () => {
     expect(sanitizeInput('alice\u{202E}eve')).toBe('aliceeve');           // RLO
     expect(sanitizeInput('\u{202A}lefttoright')).toBe('lefttoright');     // LRE
@@ -51,9 +49,8 @@ describe('sanitizeInput', () => {
     expect(sanitizeInput('\u{2067}\u{2068}\u{2069}name')).toBe('name');   // RLI + FSI + PDI
   });
 
-  // Zero-width characters and BOMs make "alice" + ZWSP + "extra"
-  // visually identical to "alice" but compare unequal -- the classic
-  // impersonation vector.
+  // Zero-width characters and BOMs let a name render identically and compare
+  // unequal: the impersonation vector.
   it('strips zero-width characters and BOM', () => {
     expect(sanitizeInput('alice\u{200B}extra')).toBe('aliceextra');       // ZWSP
     expect(sanitizeInput('alice\u{200C}')).toBe('alice');                  // ZWNJ
@@ -79,7 +76,7 @@ describe('sanitizeInput', () => {
   });
 
   it('applies maxLength after stripping, not before', () => {
-    // '..abc' -> strip '..' -> 'abc'; slice to 2 -> 'ab'
+    // '..abc' strips to 'abc', then slices to 'ab'.
     expect(sanitizeInput('..abc', 2)).toBe('ab');
   });
 
@@ -119,8 +116,8 @@ describe('sanitizeRoomNameDisplay', () => {
   });
 
   it('strips tabs / newlines entirely (not in allowlist)', () => {
-    // The allowlist accepts the literal space char but not other whitespace.
-    // Adjacent tabs disappear rather than collapsing to a space.
+    // The allowlist takes the space character only, so adjacent tabs vanish
+    // rather than collapsing to one space.
     expect(sanitizeRoomNameDisplay('a\t\tb')).toBe('ab');
     expect(sanitizeRoomNameDisplay('foo\nbar')).toBe('foobar');
   });
@@ -156,11 +153,10 @@ describe('sanitizeRoomNameCanonical', () => {
   });
 });
 
-// Audit 16 #440: the single-pass strip was non-idempotent -- removing a
-// stripped character sitting between two dots reconstructed the literal
-// '..' the pattern exists to remove. sanitizeInput now strips to a
-// fixpoint via the shared stripDangerous helper.
-describe('sanitizeInput strip idempotency (audit 16 #440)', () => {
+// A single pass is not idempotent: removing a stripped character sitting
+// between two dots reconstructs the '..' the pattern exists to remove. The
+// strip has to run to a fixpoint.
+describe('sanitizeInput strip idempotency', () => {
   it.each([
     ['./.', ''],
     ['.\x00.', ''],

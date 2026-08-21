@@ -2,16 +2,14 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
-// Substitutes server-side template placeholders with dev defaults so the
-// Vite dev server works without running a build first.
+// Dev defaults for the server-side template placeholders, so the dev server
+// works without a build first.
 const injectDevVars = {
   name: 'inject-dev-vars',
   apply: 'serve' as const,
   transformIndexHtml(html: string) {
-    // The `${rootPath}` and `${version}` literals are intentional
-    // template-placeholder strings in index.html that get replaced
-    // here at build time -- they're NOT JS template-literal expressions
-    // (this code is a string-replace, not interpolation).
+    // These are literal placeholder strings in index.html, not JS template
+    // expressions; this is a string replace, not interpolation.
     return html
       // biome-ignore lint/suspicious/noTemplateCurlyInString: intentional template placeholder.
       .replace('${rootPath}', '')
@@ -27,25 +25,22 @@ export default defineConfig({
     injectDevVars,
     VitePWA({
       registerType: 'autoUpdate',
-      // Use the existing manifest.webmanifest from static/ -- don't generate one.
+      // Use static/manifest.webmanifest; don't generate one.
       manifest: false,
       workbox: {
-        // Exclude html: index.html contains server-side template variables
-        // (${rootPath}) that are substituted at request time by the Node
-        // server. If the SW cached the raw build output it would serve
-        // unresolved template literals, breaking the WebSocket URL.
-        // Navigations always go to the server so the HTML is always fresh.
+        // No html: the server substitutes index.html's placeholders per
+        // request, so a cached raw build would serve unresolved ones and
+        // break the WebSocket URL.
         globPatterns: ['**/*.{js,css,ico,png,svg,webmanifest}'],
         runtimeCaching: [
           {
-            // Never cache API or WebSocket upgrade requests.
-            // Match on pathname so the pattern works against full URLs (scheme+host+path).
+            // Never cache API or WebSocket upgrades. Match on pathname so the
+            // test works against full URLs.
             urlPattern: ({ url }) => url.pathname.startsWith('/api/'),
             handler: 'NetworkOnly',
           },
           {
-            // Poster images: network-first so fresh art loads when online,
-            // falls back to cached version when offline.
+            // Posters: fresh art when online, cached copy when not.
             urlPattern: ({ url }) => url.pathname.includes('/poster/'),
             handler: 'NetworkFirst',
             options: {
@@ -54,9 +49,7 @@ export default defineConfig({
             },
           },
           {
-            // Google Fonts stylesheets (audit 12 #263). StaleWhileRevalidate
-            // so offline loads use the cached CSS while a fresh fetch
-            // updates it in the background.
+            // Font stylesheets: cached CSS offline, refreshed in the background.
             urlPattern: ({ url }) => url.origin === 'https://fonts.googleapis.com',
             handler: 'StaleWhileRevalidate',
             options: {
@@ -65,9 +58,8 @@ export default defineConfig({
             },
           },
           {
-            // Google Fonts WOFF2/WOFF binaries: long-lived CacheFirst.
-            // Fonts are content-hashed by Google so a cached entry never
-            // goes stale at the same URL.
+            // Font binaries are content-hashed by Google, so a cached entry at
+            // a given URL never goes stale.
             urlPattern: ({ url }) => url.origin === 'https://fonts.gstatic.com',
             handler: 'CacheFirst',
             options: {

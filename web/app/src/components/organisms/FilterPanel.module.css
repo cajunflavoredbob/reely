@@ -8,7 +8,7 @@
   animation: ry-float-up 240ms ease;
 }
 
-/* Drawer variant: positioning handled by parent wrapper */
+/* Drawer variant: the parent wrapper positions it. */
 .drawerContent {
   display: flex;
   flex-direction: column;
@@ -112,7 +112,7 @@
   letter-spacing: 0.06em;
 }
 
-/* Inline filter proposal card -- shown at top of panel body */
+/* Inline filter proposal card, at the top of the panel body */
 .proposalCard {
   background: var(--ry-bg-2);
   border: 1px solid rgba(255, 78, 126, 0.3);
@@ -382,9 +382,8 @@
   border-top: 1px solid var(--ry-line);
 }
 
-/* Inline "Loading values..." shown inside an expanded filter row while
-   the filterValues request is in flight. More compact than the panel-level
-   .loading class which is sized for the empty-panel initial state. */
+/* In-row loading text. More compact than .loading, which is sized for the
+   empty-panel initial state. */
 .loadingInline {
   padding: 14px 0 4px;
   font-size: 12px;
@@ -456,12 +455,6 @@
   cursor: pointer;
 }
 
-/* SearchControl CSS moved to molecules/SearchControl.module.css in
- * 0.4.47 (audit 13 #321 split, Option B). FieldPicker CSS moved to
- * molecules/FieldPicker.module.css alongside it. The classes left
- * here are FilterPanel-only.
- */
-
 /* Add filter button */
 .addBtn {
   display: flex;
@@ -485,14 +478,9 @@
   background: var(--ry-bg-2);
 }
 
-/* Picker drawer styles moved to molecules/FieldPicker.module.css in
- * 0.4.47 (audit 13 #321 split). */
-
-/* ── Local @keyframes (moved from main.css in 0.5.5) ──
- * See the warning comment at the top of main.css for why these can't
- * live globally -- vite scopes the animation-name reference inside
- * module files but not @keyframes in global CSS. Same hash on both
- * sides only when the @keyframes is in the same .module.css. */
+/* Must stay in this module, not main.css: vite hashes the animation-name
+ * reference in module files but not @keyframes in global CSS, so the names
+ * only match when both live in the same .module.css. */
 @keyframes ry-float-up {
   from { transform: translateY(20px); opacity: 0; }
   to   { transform: translateY(0);    opacity: 1; }

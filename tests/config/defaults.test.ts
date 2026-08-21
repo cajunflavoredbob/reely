@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { applyDefaults } from '../../internal/app/reely/config/defaults';
 
-// Pure function: layers a defaults record over the partial input. The
-// nested defaultServerConfig is merged into EACH item in `servers` (so
-// every entry gets `type: 'plex'` unless it already has one).
-
 describe('applyDefaults', () => {
   it('returns the full defaults when given an empty object', () => {
     expect(applyDefaults({})).toEqual({
@@ -21,7 +17,7 @@ describe('applyDefaults', () => {
     const out = applyDefaults({ port: 9000, hostname: '127.0.0.1' });
     expect(out.port).toBe(9000);
     expect(out.hostname).toBe('127.0.0.1');
-    // Other defaults must still be present.
+    // Untouched defaults survive.
     expect(out.logLevel).toBe('INFO');
     expect(out.exposePlexBaseUrl).toBe(true);
   });
@@ -40,7 +36,7 @@ describe('applyDefaults', () => {
   });
 
   it('lets an explicit server.type override the default', () => {
-    // biome-ignore lint/suspicious/noExplicitAny: deliberately off-spec server shape (no token, non-plex type) to prove the merge preserves an explicit type. Validator catches non-plex types elsewhere.
+    // biome-ignore lint/suspicious/noExplicitAny: off-spec shape; the validator catches non-plex types.
     const out = applyDefaults({ servers: [{ type: 'emby', url: 'http://x' } as any] });
     expect(out.servers?.[0]?.type).toBe('emby');
   });
@@ -50,9 +46,7 @@ describe('applyDefaults', () => {
     expect(out.servers).toEqual([]);
   });
 
-  // The `Array.isArray` guard means a non-array `servers` (e.g. a malformed
-  // YAML scalar) doesn't crash the map call -- it just survives untouched
-  // into the result, where the validator will catch it. Pin that behavior.
+  // A malformed YAML scalar must reach the validator, not crash the map call.
   it('does not throw when servers is not an array', () => {
     // biome-ignore lint/suspicious/noExplicitAny: deliberately off-spec input to exercise the Array.isArray guard.
     expect(() => applyDefaults({ servers: 'oops' as any })).not.toThrow();

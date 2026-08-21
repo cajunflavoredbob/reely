@@ -1,7 +1,5 @@
-// This test file intentionally contains `${...}` placeholder strings
-// in its template fixtures -- the handler under test is exactly the
-// thing that interpolates them. Suppressing the noTemplateCurlyInString
-// rule file-wide rather than per-line keeps the fixtures readable.
+// The fixtures carry literal `${...}`: interpolating them is what the handler
+// under test does.
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: template fixtures use literal ${...}.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -10,10 +8,8 @@ import type { Request, Response } from 'express';
 import { loggerMockFactory } from '../helpers';
 vi.mock('../../internal/app/reely/logger', () => loggerMockFactory());
 
-// readFile is mocked so we can supply our own template HTML without
-// touching disk. The handler memoizes the result via util/memo;
-// vi.resetModules in beforeEach is necessary so the memo cache
-// re-initializes per test (each test can override the template body).
+// Supplies the template HTML without touching disk. The handler memoizes it,
+// hence the vi.resetModules in beforeEach.
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
 }));
@@ -68,8 +64,7 @@ const DEFAULT_TEMPLATE =
 
 // ─── Tests ──────────────────────────────────────────────────────────────
 
-// resetModules between tests so `getTemplate`'s memo cache rebuilds
-// against the per-test readFile mock value.
+// resetModules so getTemplate's memo rebuilds against each test's mock value.
 beforeEach(() => {
   vi.resetModules();
   mockedReadFile.mockResolvedValue(DEFAULT_TEMPLATE as never);
@@ -87,9 +82,8 @@ describe('template handler: basic render', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toBe('text/html');
-    // The entry HTML must NOT be cached -- a deploy could otherwise
-    // leave the browser pointing at non-existent old asset filenames
-    // (template.ts comment, audit-history).
+    // A cached entry HTML leaves the browser pointing at asset filenames a
+    // deploy has already removed.
     expect(res.headers['cache-control']).toBe('no-cache');
     expect(res.getBody()).toContain('reely 1.2.3');
   });
@@ -120,7 +114,6 @@ describe('template handler: HTML escaping (XSS defense)', () => {
     const res = makeRes();
     await handler(makeReq(), res);
     const body = res.getBody() ?? '';
-    // Raw script tag must not appear; escaped form must.
     expect(body).not.toContain('<script>alert');
     expect(body).toContain('&lt;script&gt;alert(&quot;xss &amp; &#39;pwn&#39;&quot;)&lt;/script&gt;');
   });
@@ -149,8 +142,7 @@ describe('template handler: rootPath resolution', () => {
   });
 
   it('strips all whitespace from the prefix (not just edges)', async () => {
-    // audit 9 #161: a proxy that forwards internal whitespace must not
-    // poison the template -- silently drop the whitespace.
+    // A proxy forwarding internal whitespace must not poison the template.
     const { handler } = await import('../../internal/app/reely/handlers/template');
     const res = makeRes();
     await handler(
@@ -170,17 +162,15 @@ describe('template handler: rootPath resolution', () => {
     expect(res.getBody()).toContain('const root="/reely";');
   });
 
-  // audit 12 #224: hostile header chars (.., <, >, etc) get HTML-escaped
-  // at substitution but could land in href/src URL contexts where URL
-  // parsers don't apply HTML escaping. Allowlist drops the value
-  // entirely so the misconfiguration surfaces immediately.
+  // The prefix lands in href/src URLs, where HTML escaping does not apply, so
+  // hostile characters have to be rejected outright rather than escaped.
   it.each([
-    '/../system',     // .. path traversal -- caught by the explicit `..` check (added in this batch)
-    '/foo/../bar',    // .. anywhere in the path, not just leading
-    '/<script>',      // < / > rejected by the allowlist
-    '/path?query',    // ? rejected by the allowlist
-    '/path#fragment', // # rejected by the allowlist
-    '/path&query=1',  // & rejected by the allowlist
+    '/../system',     // leading traversal
+    '/foo/../bar',    // traversal anywhere in the path
+    '/<script>',
+    '/path?query',
+    '/path#fragment',
+    '/path&query=1',
   ])(
     'drops invalid prefix %j to empty string',
     async (badPrefix) => {
@@ -188,16 +178,14 @@ describe('template handler: rootPath resolution', () => {
       const res = makeRes();
       await handler(makeReq({ 'x-forwarded-prefix': badPrefix }), res);
       const body = res.getBody() ?? '';
-      // After whitespace strip + trailing-slash strip + ..-check +
-      // allowlist check, a failed gate drops the candidate to ''.
+      // Any failed gate drops the candidate to ''.
       expect(body).toContain('const root="";');
     },
   );
 
   it('strips internal whitespace BEFORE allowlist check, so /a b c becomes /abc (valid)', async () => {
-    // Whitespace-rich paths are rescued by the audit-9 #161 strip, not
-    // rejected outright. The resulting compact form passes the allowlist
-    // when its remaining chars are valid.
+    // The strip runs first, so a whitespace-rich path is compacted rather
+    // than rejected, and passes if what remains is valid.
     const { handler } = await import('../../internal/app/reely/handlers/template');
     const res = makeRes();
     await handler(makeReq({ 'x-forwarded-prefix': '/a b c' }), res);
@@ -234,10 +222,8 @@ describe('template handler: missing-key + dotted-path resolution', () => {
     expect(res.getBody()).toBe('hi Alice');
   });
 
-  // audit 10 #168: the prior reduce form silently returned the parent
-  // string when a later segment ran off the end (e.g. context {a: "x"}
-  // and keyPath ['a','b'] returned "x"). Now: returns '' the moment any
-  // intermediate node isn't an object.
+  // Guards against a path that runs off the end returning the parent value:
+  // {a: "x"} with ${a.b} used to render "x".
   it('returns empty string when a dotted path runs into a non-object', async () => {
     mockedGetTranslations.mockResolvedValue({ a: 'x' });
     mockedReadFile.mockResolvedValue('val=[${a.b}]' as never);

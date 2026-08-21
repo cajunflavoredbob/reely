@@ -7,10 +7,9 @@ import { filterToQueryString } from '../../internal/app/plex/util';
 import { filtersToPlexQueryString } from '../../internal/app/reely/providers/plex';
 
 describe('filterToQueryString', () => {
-  // Plex operators always end in '='. The slice(0, -1) trims the trailing '='
-  // and the resulting key+suffix is the Plex query-string key. Each value
-  // is emitted as a separate (key, value) tuple so commas inside a value
-  // can't split into extra values on the Plex side (audit 9 #129).
+  // Plex operators all end in '='; trimming it leaves the query-string key
+  // suffix. One tuple per value, so a comma inside a value cannot split into
+  // extra values on the Plex side.
 
   it('strips the trailing = from equality', () => {
     expect(
@@ -48,9 +47,8 @@ describe('filterToQueryString', () => {
     ).toEqual([['year>>', '2000']]);
   });
 
-  // Plex advertises the date "is before" operator as a bare '<<'; the
-  // provider normalizes it to '<<=' before it reaches the client
-  // (audit 16 #449), and this is the wire form it produces.
+  // Plex advertises date "is before" as a bare '<<'; the provider normalizes
+  // it to '<<=' before the client sees it, and this is the wire form back.
   it('preserves <<= as << on the key', () => {
     expect(
       filterToQueryString({ key: 'addedAt', operator: '<<=', value: ['2020-01-01'] }),
@@ -71,8 +69,7 @@ describe('filterToQueryString', () => {
 });
 
 describe('filtersToPlexQueryString', () => {
-  // Helper -- URLSearchParams stringifies stably so equality on .toString()
-  // is the clearest way to assert the result.
+  // URLSearchParams stringifies stably, so .toString() equality is safe.
   const params = (q: URLSearchParams) => q.toString();
 
   it('returns an empty URLSearchParams when filters is undefined', () => {
@@ -96,8 +93,8 @@ describe('filtersToPlexQueryString', () => {
     ]))).toBe('genre=Action&genre=Drama');
   });
 
-  // The 'library' filter is handled specially in getMedia (used to pick which
-  // Plex libraries to search) and must not appear as a Plex API filter param.
+  // getMedia uses 'library' to choose which libraries to search, so it must
+  // not also go out as a Plex API filter param.
   it("skips the 'library' filter", () => {
     expect(params(filtersToPlexQueryString([
       { key: 'library', operator: '=', value: ['1'] },

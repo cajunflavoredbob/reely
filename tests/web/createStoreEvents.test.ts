@@ -1,10 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Companion to createStore.test.ts. That file covered init + dispatch +
-// AbortController teardown (audit 13 #338 batch 0.4.29). This one covers
-// the connected / disconnected / message event-handler paths -- the
-// reactive surface of the store. Same mock harness; split into two
-// files just to keep each focused and the diffs reviewable.
+// Companion to createStore.test.ts, which covers init, dispatch and
+// AbortController teardown. This one covers the connected / disconnected /
+// message handlers.
 
 const makeClientMock = () => {
   const client = new EventTarget() as EventTarget & Record<string, ReturnType<typeof vi.fn>>;
@@ -25,8 +23,7 @@ vi.mock('../../web/app/src/api/reely', () => ({
   },
 }));
 
-// historyReplaceState is captured per test so we can assert on URL updates
-// without re-reading the mock through the global. Cleared in beforeEach.
+// Captured per test so URL assertions don't re-read it through the global.
 let historyReplaceState: ReturnType<typeof vi.fn>;
 
 const setupDomGlobals = (opts: {
@@ -61,9 +58,8 @@ const loadCreateStore = async () => {
   return mod;
 };
 
-// Drive the store into route='room' state. The reducer's joinRoomSuccess
-// case requires state.room to exist (set by the joinOrCreateRoom action)
-// before it'll transition route='room'; this helper does both.
+// Drive the store to route='room'. joinRoomSuccess only transitions when
+// state.room already exists, so dispatch joinOrCreateRoom first.
 const enterRoom = (mod: Awaited<ReturnType<typeof loadCreateStore>>, roomName: string) => {
   // biome-ignore lint/suspicious/noExplicitAny: dispatched action shape; full Actions narrowing not the point in test setup.
   mod.useZustandStore.getState().dispatch({ type: 'joinOrCreateRoom', payload: { roomName } } as any);
@@ -104,19 +100,18 @@ describe('connected handler', () => {
     setupDomGlobals({ userName: 'alice' });
     const mod = await loadCreateStore();
     mod.createStore();
-    // route starts as 'loading' on a fresh createStore.
+    // A fresh createStore starts on route 'loading'.
     clientMock.dispatchEvent(new Event('connected'));
     expect(clientMock.login).toHaveBeenCalledWith({ userName: 'alice' });
   });
 
-  // Audit 13 #301: stale-localStorage race guard. If the user is actively
-  // on the login screen typing their identity, an incoming reconnect must
-  // NOT pre-empt with whatever cached userName happens to be in localStorage.
+  // A reconnect must not pre-empt a user typing their identity on the login
+  // screen with whatever cached userName localStorage happens to hold.
   it('does NOT auto-login when the route is "login" (stale-localStorage race guard, #301)', async () => {
     setupDomGlobals({ userName: 'alice' });
     const mod = await loadCreateStore();
     mod.createStore();
-    // Move to login route before the 'connected' event fires.
+    // Move to the login route before 'connected' fires.
     // biome-ignore lint/suspicious/noExplicitAny: navigate action shape.
     mod.useZustandStore.getState().dispatch({ type: 'navigate', payload: { route: 'login' } } as any);
     clientMock.dispatchEvent(new Event('connected'));
@@ -137,22 +132,11 @@ describe('connected handler', () => {
     const mod = await loadCreateStore();
     mod.createStore();
     clientMock.dispatchEvent(new Event('connected'));
-    // Connected sets route via the cached-userName login path; record it.
-    // After 5s the loading-escape timer WOULD have re-flipped route to
-    // 'login' if it had not been cleared (its check is route === 'loading').
-    // We're not on 'loading' anymore (the connected branch dispatched
-    // login -> reducer doesn't navigate from 'loading' until loginSuccess
-    // arrives; route remains 'loading' here actually -- but the timer's
-    // clearTimeout call is the point under test).
-    //
-    // Assert via the clearTimeout side-effect: advance 5s and verify the
-    // timer callback did NOT cause a state-change toast or navigation
-    // (its only side effect is navigate-to-login).
+    // The escape timer's only side effect is navigate-to-login, fired at 5s
+    // unless cleared. Route holding steady proves the clearTimeout ran.
     const routeBefore = mod.useZustandStore.getState().route;
     vi.advanceTimersByTime(5_001);
     const routeAfter = mod.useZustandStore.getState().route;
-    // Route should still match what 'connected' left it as -- the
-    // escape-timer's navigate-to-login did NOT fire.
     expect(routeAfter).toBe(routeBefore);
   });
 });
@@ -165,38 +149,32 @@ describe('disconnected handler', () => {
     expect(mod.useZustandStore.getState().connectionStatus).toBe('disconnected');
   });
 
-  // The lastRoom snapshot is internal state inside createStore's closure;
-  // observable only via its USE on the next loginSuccess (path 1 below).
-  // Smoke test here: a disconnect outside the 'room' route should NOT
-  // arm the silent-rejoin path. Proved indirectly via the path-1 test.
+  // lastRoom lives in createStore's closure and is only observable through
+  // path 1 below; here just check a non-room disconnect still applies status.
   it('still applies status when not in a room (no rejoin candidate captured)', async () => {
     const mod = await loadCreateStore();
     mod.createStore();
-    // route is 'loading' -- not 'room' -- so no lastRoom snapshot.
+    // route is 'loading', not 'room', so no lastRoom snapshot.
     clientMock.dispatchEvent(new Event('disconnected'));
     expect(mod.useZustandStore.getState().connectionStatus).toBe('disconnected');
   });
 });
 
-describe('message handler: loginSuccess paths (audit 13 #304)', () => {
-  // Path 1: WS reconnect while the user was in a room AND within the
-  // 10-minute reconnect window. Silently rejoin via client.joinOrCreateRoom
-  // instead of letting the reducer's loginSuccess case clear room state
-  // and flash an empty stack.
+describe('message handler: loginSuccess paths', () => {
+  // Path 1: reconnect while in a room, inside the 10-minute window. Rejoin
+  // silently, or the reducer's loginSuccess clears room state and the user
+  // sees an empty stack flash.
   it('path 1: silently rejoins the room on reconnect within the window', async () => {
     setupDomGlobals({ userName: 'alice' });
     const mod = await loadCreateStore();
     mod.createStore();
-    // Establish a live connection first: the lastRoom capture is gated on
-    // connectionStatus === 'connected' (audit 16 #428) so failed reconnect
-    // attempts can't keep re-arming the rejoin window. In production a
-    // user in a room always got there over a live connection.
+    // The lastRoom capture is gated on connectionStatus === 'connected', so a
+    // live connection has to exist first.
     clientMock.dispatchEvent(new Event('connected'));
     enterRoom(mod, 'movie-night');
     expect(mod.useZustandStore.getState().route).toBe('room');
 
-    // Reconnect cycle: disconnect captures lastRoom, then loginSuccess
-    // arrives while route is still 'room'.
+    // Disconnect captures lastRoom, then loginSuccess arrives on route 'room'.
     clientMock.dispatchEvent(new Event('disconnected'));
     clientMock.dispatchEvent(new MessageEvent('message', {
       // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
@@ -204,7 +182,7 @@ describe('message handler: loginSuccess paths (audit 13 #304)', () => {
     }));
 
     expect(clientMock.joinOrCreateRoom).toHaveBeenCalledWith({ roomName: 'movie-night' });
-    // Room state must NOT have been cleared by the reducer's loginSuccess case.
+    // The reducer's loginSuccess case must not have cleared room state.
     expect(mod.useZustandStore.getState().room).toBeDefined();
     expect(mod.useZustandStore.getState().route).toBe('room');
   });
@@ -215,33 +193,29 @@ describe('message handler: loginSuccess paths (audit 13 #304)', () => {
     setupDomGlobals({ userName: 'alice' });
     const mod = await loadCreateStore();
     mod.createStore();
-    clientMock.dispatchEvent(new Event('connected')); // arm the #428 capture gate
+    clientMock.dispatchEvent(new Event('connected')); // arm the lastRoom capture
     enterRoom(mod, 'movie-night');
 
     clientMock.dispatchEvent(new Event('disconnected'));
     // Advance past RECONNECT_REJOIN_WINDOW_MS (10 minutes).
     vi.setSystemTime(11 * 60 * 1000);
-    // Clear the call from enterRoom -- we only care about what happens
-    // AFTER the stale-window loginSuccess arrives below.
+    // Drop enterRoom's call; only the stale-window loginSuccess below matters.
     clientMock.joinOrCreateRoom.mockClear();
     clientMock.dispatchEvent(new MessageEvent('message', {
       // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
       data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
     }));
 
-    // Silent-rejoin did NOT fire (joinOrCreateRoom never called by the handler).
     expect(clientMock.joinOrCreateRoom).not.toHaveBeenCalled();
-    // Reducer's loginSuccess case ran: route -> 'login', room cleared.
+    // The reducer's loginSuccess case ran instead.
     expect(mod.useZustandStore.getState().route).toBe('login');
     expect(mod.useZustandStore.getState().room).toBeUndefined();
   });
 
-  // audit 16 #428: handleClose fires a 'disconnected' event for every
-  // failed reconnect attempt during an outage, and each one used to
-  // re-stamp lastRoom.at -- the rejoin window measured time since the
-  // last ATTEMPT, not the drop, so it could never expire while the tab
-  // kept retrying. The capture is now gated on a live connection.
-  it('path 1: failed reconnect attempts do not extend the rejoin window (audit 16 #428)', async () => {
+  // handleClose fires 'disconnected' for every failed reconnect attempt. If
+  // each re-stamped lastRoom.at, the window would measure from the last
+  // ATTEMPT rather than the drop and never expire while the tab kept retrying.
+  it('path 1: failed reconnect attempts do not extend the rejoin window', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     setupDomGlobals({ userName: 'alice' });
@@ -250,8 +224,8 @@ describe('message handler: loginSuccess paths (audit 13 #304)', () => {
     clientMock.dispatchEvent(new Event('connected'));
     enterRoom(mod, 'movie-night');
 
-    // The live connection drops at t=0; retries keep failing across the
-    // 10-minute window, each close firing another 'disconnected'.
+    // Drop at t=0, then failing retries across the window, each firing
+    // another 'disconnected'.
     clientMock.dispatchEvent(new Event('disconnected'));
     vi.setSystemTime(9 * 60 * 1000);
     clientMock.dispatchEvent(new Event('disconnected'));
@@ -264,10 +238,8 @@ describe('message handler: loginSuccess paths (audit 13 #304)', () => {
       data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
     }));
 
-    // The window is measured from the ORIGINAL drop (t=0), long expired.
-    // Pre-#428, the 11-minute attempt re-stamped it and this silently
-    // rejoined (re-creating the server-side room, empty, if it had
-    // TTL-expired during the outage).
+    // Measured from the original drop at t=0, long expired. A re-stamp would
+    // rejoin silently, re-creating an empty room if the server TTL had lapsed.
     expect(clientMock.joinOrCreateRoom).not.toHaveBeenCalled();
     expect(mod.useZustandStore.getState().route).toBe('login');
     expect(mod.useZustandStore.getState().room).toBeUndefined();
@@ -278,21 +250,21 @@ describe('message handler: loginSuccess paths (audit 13 #304)', () => {
     setupDomGlobals({ userName: 'alice' });
     const mod = await loadCreateStore();
     mod.createStore();
-    clientMock.dispatchEvent(new Event('connected')); // arm the #428 capture gate
+    clientMock.dispatchEvent(new Event('connected')); // arm the lastRoom capture
     enterRoom(mod, 'movie-night');
     clientMock.dispatchEvent(new Event('disconnected'));
     clientMock.dispatchEvent(new MessageEvent('message', {
       // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
       data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
     }));
-    // Let the rejection microtask settle.
+    // Let the rejection settle.
     await new Promise((r) => setTimeout(r, 0));
     const toasts = mod.useZustandStore.getState().toasts ?? [];
     expect(toasts.some((t) => t.message.includes("Couldn't rejoin"))).toBe(true);
   });
 
-  // Path 2: not currently in a room, but the URL had ?roomName on initial
-  // load. Skip the login screen and auto-join.
+  // Path 2: not in a room, but ?roomName was on the URL at load. Skip the
+  // login screen and auto-join.
   it('path 2: dispatches joinOrCreateRoom when pendingRoomJoin is set and user is not in a room', async () => {
     setupDomGlobals({
       href: 'https://reely.example.com/?roomName=movie-night',
@@ -300,7 +272,7 @@ describe('message handler: loginSuccess paths (audit 13 #304)', () => {
     });
     const mod = await loadCreateStore();
     mod.createStore();
-    // route stays 'loading' on init (userName + ?roomName both present).
+    // With userName and ?roomName both present, init stays on 'loading'.
     clientMock.dispatchEvent(new MessageEvent('message', {
       // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
       data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
@@ -308,8 +280,8 @@ describe('message handler: loginSuccess paths (audit 13 #304)', () => {
     expect(clientMock.joinOrCreateRoom).toHaveBeenCalledWith({ roomName: 'movie-night' });
   });
 
-  // Path 3: no in-room, no pendingRoomJoin -> fall through to reducer.
-  // The reducer's loginSuccess case from 'loading' route navigates to 'login'.
+  // Path 3: no room, no pendingRoomJoin, so the reducer's loginSuccess takes
+  // 'loading' to 'login'.
   it('path 3: falls through to the reducer when there\'s nothing special to do', async () => {
     setupDomGlobals({ userName: 'alice' });
     const mod = await loadCreateStore();
@@ -399,9 +371,8 @@ describe('message handler: URL syncing', () => {
     expect(url).not.toContain('roomName');
   });
 
-  // Auto-rejoin candidate must be dropped on EXPLICIT leave/logout: the user
-  // deliberately left, so a subsequent reconnect shouldn't silently pull them
-  // back into the room they left.
+  // An explicit leave must drop the rejoin candidate, or a later reconnect
+  // pulls the user back into the room they deliberately left.
   it('leaveRoomSuccess drops the silent-rejoin candidate so a later reconnect does NOT rejoin', async () => {
     setupDomGlobals({ userName: 'alice' });
     const mod = await loadCreateStore();
@@ -412,8 +383,8 @@ describe('message handler: URL syncing', () => {
       // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
       data: { type: 'leaveRoomSuccess' } as any,
     }));
-    // Now a reconnect cycle: disconnect would NOT capture lastRoom because
-    // route is no longer 'room'; even if it had, the leave above wiped it.
+    // Off route 'room' the disconnect captures nothing, and the leave already
+    // wiped any candidate.
     clientMock.dispatchEvent(new Event('disconnected'));
     clientMock.joinOrCreateRoom.mockClear();
     clientMock.dispatchEvent(new MessageEvent('message', {

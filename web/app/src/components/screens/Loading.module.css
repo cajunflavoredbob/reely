@@ -2,10 +2,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  /* Progressive enhancement: 100vh first as the fallback, then 100dvh
-     for browsers that support it (mobile Safari ~16+, Chrome ~108+).
-     Older browsers ignore the second rule; modern browsers override
-     with the dynamic viewport height that excludes browser UI chrome. */
+  /* 100vh fallback for browsers without dvh; the rest get a viewport height
+     that excludes browser UI chrome. */
   min-height: 100vh;
   /* biome-ignore lint/suspicious/noDuplicateProperties: intentional vh -> dvh fallback. */
   min-height: 100dvh;
@@ -25,7 +23,7 @@
   background-clip: text;
   color: transparent;
   animation: pulse 1.6s ease-in-out infinite;
-  /* Tells the browser the element will animate -- avoids paint thrash */
+  /* Avoids paint thrash on the pulse. */
   will-change: opacity, transform;
 }
 

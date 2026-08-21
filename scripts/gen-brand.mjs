@@ -1,23 +1,16 @@
 #!/usr/bin/env node
-// Regenerate every derived brand asset from the one canonical source,
-// docs/branding/reely-logo.svg.
-//
-// Before this existed the mark was hand-copied into four files and the eight
-// raster assets came from an unrecorded toolchain. That is how a favicon
-// shipped with two of its three frames flattened onto an opaque backdrop and
-// the in-app gradient drifted away from the shipped icon: nothing could check
-// them against anything. Everything downstream of the master is now produced
-// here, and tests/web/brandAssets.test.ts asserts the checked-in SVG sources
-// still agree with it.
-//
-// Requires ImageMagick with the librsvg delegate (`magick -list format` should
-// show SVG backed by RSVG; the internal MSVG renderer mangles the gradients).
+// Regenerate every derived brand asset from docs/branding/reely-logo.svg.
+// tests/web/brandAssets.test.ts asserts the checked-in SVG sources still agree
+// with that master.
 //
 //   pnpm gen:brand
 //
-// Raster output is NOT verified in CI: librsvg antialiasing differs across
-// versions, so a byte comparison would fail on a runner for no real reason.
-// CI checks the deterministic part, which is the SVG geometry.
+// Requires ImageMagick with the librsvg delegate; the internal MSVG renderer
+// mangles the gradients.
+//
+// Raster output is not verified in CI: librsvg antialiasing differs across
+// versions, so a byte comparison would fail for no real reason. CI checks the
+// SVG geometry, which is deterministic.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -35,9 +28,8 @@ const GEOMETRY_TS = join(ROOT, "web/app/src/components/atoms/markGeometry.ts");
 const MANIFEST = join(ROOT, "web/app/static/manifest.webmanifest");
 
 // iOS composites apple-touch-icon over black, so transparency reads as a black
-// plate. Bake the app chrome colour in instead, read from the manifest rather
-// than duplicated here: this script already rewrites that file, and a third
-// copy of the colour would silently go stale the moment the chrome changed.
+// plate; bake the chrome colour in instead. Read from the manifest rather than
+// duplicated here, since a second copy would go stale.
 const CHROME = JSON.parse(readFileSync(MANIFEST, "utf8")).background_color;
 if (typeof CHROME !== "string") {
   throw new Error("gen-brand: manifest.webmanifest has no background_color");
@@ -49,8 +41,8 @@ process.on("exit", () => rmSync(tmp, { recursive: true, force: true }));
 const svg = readFileSync(MASTER, "utf8");
 
 // --- parse the master -------------------------------------------------
-// Deliberately strict: every extractor throws if the master stops looking
-// the way this script expects, so a silent geometry drift is impossible.
+// Strict by design: every extractor throws if the master stops matching, so
+// geometry cannot drift silently.
 const need = (re, label) => {
   const m = svg.match(re);
   if (!m) throw new Error(`gen-brand: cannot find ${label} in ${MASTER}`);
@@ -93,9 +85,8 @@ const stops = [...svg.matchAll(/<stop offset="([^"]+)" stop-color="(#[0-9A-Fa-f]
 if (stops.length !== 3) throw new Error("gen-brand: expected 3 gradient stops");
 
 // --- geometry module for the in-app <Logo> ----------------------------
-// Logo.tsx renders the same mark inline (it needs useId-scoped gradient ids
-// so two Logos on a page cannot collide). It imports these constants rather
-// than carrying a second hand-maintained copy of the artwork.
+// Logo.tsx renders the mark inline (useId-scoped gradient ids, so two Logos on
+// a page can't collide) and imports these rather than keeping its own copy.
 const ts = `// GENERATED FILE -- do not edit.
 // Produced by scripts/gen-brand.mjs from docs/branding/reely-logo.svg.
 // Run \`pnpm gen:brand\` after changing the master; CI fails if this drifts.
@@ -114,8 +105,7 @@ export const GLYPH_PATH =
 writeFileSync(GEOMETRY_TS, ts);
 
 // --- icon.svg ---------------------------------------------------------
-// A byte copy of the master. It used to be an independent file that drifted;
-// deriving it means the favicon and the brand asset cannot disagree.
+// Byte copy of the master, so the favicon and the brand asset can't disagree.
 writeFileSync(join(ICONS, "icon.svg"), svg);
 
 // --- rasterisation ----------------------------------------------------
@@ -148,9 +138,8 @@ png(join(BRANDING, "reely-logo-1000.png"), 1000);
 png(join(BRANDING, "reely-logo-32-preview.png"), 32);
 
 // --- favicon.ico ------------------------------------------------------
-// PNG-compressed frames at full 32-bit alpha. The previous file was 8bpp
-// paletted with a 1-bit transparency mask, which banded the gradient and left
-// the 32 and 48 frames flooded with an opaque backdrop.
+// PNG-compressed frames at full 32-bit alpha; 8bpp paletted with a 1-bit mask
+// bands the gradient and floods the larger frames with an opaque backdrop.
 const icoFrames = [16, 32, 48].map((px) => ({
   px,
   data: readFileSync(png(join(tmp, `ico-${px}.png`), px)),
@@ -182,16 +171,10 @@ writeFileSync(
 );
 
 // --- manifest cache-busting stamp -------------------------------------
-// Installed PWAs keep their launcher icon across upgrades: Chrome's WebAPK
-// update check diffs manifest FIELDS, not icon bytes, and the icon URLs are
-// unversioned static paths. So a release whose entire point was new icons
-// changed nothing on any device that had already installed it.
-//
-// Stamping the src with a digest of the actual icon bytes means the manifest
-// changes exactly when the artwork changes, and never on an unrelated release.
-// A hand-written version string here would just be one more thing to forget,
-// which is the same failure that left docker-compose pinned to a version that
-// was never published.
+// Chrome's WebAPK update check diffs manifest fields, not icon bytes, and the
+// icon URLs are unversioned, so an installed PWA keeps its old launcher icon
+// forever. Stamping src with a digest of the icon bytes makes the manifest
+// change exactly when the artwork does, with nothing to remember by hand.
 const stamp = createHash("sha256")
   .update(readFileSync(join(ICONS, "icon-192.png")))
   .update(readFileSync(join(ICONS, "icon-512.png")))
@@ -204,9 +187,8 @@ const manifest = readFileSync(MANIFEST, "utf8").replace(
 );
 writeFileSync(MANIFEST, manifest);
 
-// iOS is not covered by this: it snapshots the apple-touch-icon when the user
-// adds to the home screen and never looks again. Existing iOS installs need a
-// remove-and-re-add to pick up new artwork.
+// Not iOS: it snapshots the apple-touch-icon at add-to-home-screen and never
+// looks again, so existing installs need a remove-and-re-add.
 
 // biome-ignore lint/suspicious/noConsole: this is a CLI tool; stdout is its output.
 console.log(`brand assets regenerated from docs/branding/reely-logo.svg (icon stamp ${stamp})`);

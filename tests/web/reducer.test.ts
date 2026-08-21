@@ -20,8 +20,8 @@ describe('reducer userJoinedRoom', () => {
     expect(next.room?.users).toEqual([{ user: { userName: 'alice' }, progress: 0 }]);
   });
 
-  // Finding 2: a reconnecting/rejoining user broadcasts userJoinedRoom again.
-  // A blind append showed that user twice in everyone else's list.
+  // A rejoining user broadcasts userJoinedRoom again; a blind append shows
+  // them twice in everyone else's list.
   it('does not duplicate a user who rejoins', () => {
     const start = withUsers([{ user: { userName: 'alice' }, progress: 0.4 }]);
     const next = reducer(start, joined('alice', 0));
@@ -48,8 +48,8 @@ describe('reducer mediaVersion (audit #14)', () => {
       } as Actions,
     );
 
-  // CardStack is keyed on mediaVersion and never re-renders otherwise. A
-  // reset-to-0 collided across rejoins; the counter must be monotonic.
+  // CardStack is keyed on mediaVersion and never re-renders otherwise, so the
+  // counter must be monotonic: a reset to 0 collides across rejoins.
   it('assigns a fresh mediaVersion on every join so the CardStack key never collides', () => {
     const first = joinCycle(initialState);
     const second = joinCycle(first);
@@ -58,8 +58,8 @@ describe('reducer mediaVersion (audit #14)', () => {
   });
 });
 
-// #43 + #70: these error messages previously had no reducer case and fell
-// through silently, leaving the user with no feedback.
+// Without a reducer case these errors fall through silently and the user gets
+// no feedback at all.
 describe('reducer error toasts', () => {
   it('filterChangeError surfaces the server message as a toast (#43)', () => {
     const next = reducer(initialState, {
@@ -70,13 +70,10 @@ describe('reducer error toasts', () => {
     expect(next.toasts[0].message).toBe('Please wait a moment.');
   });
 
-  // Audit 16 #452 changed NOT_JOINED semantics: the server already
-  // considers the user out of any room, so the reducer treats it as a
-  // successful leave (clear room, route to login) instead of toasting --
-  // the toast-only handling left the user trapped on a dead room screen
-  // after a failed silent rejoin. The toast branch remains for any
-  // future errorType.
-  it('leaveRoomError NOT_JOINED is treated as a successful leave (audit 16 #452)', () => {
+  // NOT_JOINED means the server already considers the user out, so treat it as
+  // a successful leave. Toasting instead strands them on a dead room screen
+  // after a failed silent rejoin. The toast branch stays for other errorTypes.
+  it('leaveRoomError NOT_JOINED is treated as a successful leave', () => {
     const inRoom = {
       ...initialState,
       route: 'room',
@@ -107,29 +104,24 @@ describe('reducer error toasts', () => {
     expect(next.toasts).toHaveLength(1);
   });
 
-  // Audit 12 #241: every error toast must carry showTimeMs so it auto-
-  // dismisses. Prior cases shipped a toast with no TTL, which left it
-  // pinned to the screen until the user clicked. The connection-failure
-  // toast is intentionally sticky (cleared on reconnect) and isn't
-  // covered here -- that's the `updateConnectionStatus` path.
+  // An error toast without showTimeMs stays pinned until the user clicks it.
+  // The connection-failure toast is deliberately sticky and lives on the
+  // updateConnectionStatus path instead.
   it.each([
     ['filterChangeError', { type: 'filterChangeError', payload: { message: 'no' } } as Actions],
-    // NOT_JOINED no longer toasts (audit 16 #452); exercise the toast
-    // branch with a hypothetical future errorType.
+    // NOT_JOINED no longer toasts, so use a hypothetical errorType.
     ['leaveRoomError', { type: 'leaveRoomError', payload: { errorType: 'OTHER' } } as unknown as Actions],
     ['logoutError', { type: 'logoutError', payload: { name: 'NotLoggedIn', message: '' } } as Actions],
     ['requestFiltersError', { type: 'requestFiltersError', payload: { message: 'fail' } } as Actions],
-  ])('%s carries a showTimeMs (audit 12 #241)', (_label, action) => {
+  ])('%s carries a showTimeMs', (_label, action) => {
     const next = reducer(initialState, action);
     expect(next.toasts[0].showTimeMs).toBeGreaterThan(0);
   });
 });
 
-// Audit 9 #103: removeToast filtered by object identity, so a dispatched
-// payload that wasn't reference-equal to the stored toast (e.g. a fresh
-// object rebuilt from { id, message }) silently no-op'd the removal. 0.4.3
-// switched the filter to compare by id.
-describe('reducer removeToast (audit 9 #103)', () => {
+// removeToast compares by id. An identity filter silently no-ops on any
+// payload rebuilt from { id, message } rather than passed by reference.
+describe('reducer removeToast', () => {
   const seeded: Store = {
     ...initialState,
     toasts: [
@@ -147,9 +139,7 @@ describe('reducer removeToast (audit 9 #103)', () => {
   });
 
   it('removes by id even when the payload is a fresh object (not reference-equal)', () => {
-    // Construct a payload with the same id but a different object identity
-    // and different message text -- the prior identity filter would have
-    // failed to match and left the toast in state.
+    // Same id, different object and message: an identity filter would miss it.
     const next = reducer(seeded, {
       type: 'removeToast',
       payload: { id: 'a', message: 'different text', appearance: 'Failure' },
@@ -158,12 +148,10 @@ describe('reducer removeToast (audit 9 #103)', () => {
   });
 });
 
-// Audit 9 #120: the prior room-event cases spread `state.room!` (non-null
-// assertion). A server-contract violation that ever delivered one of these
-// events to a roomless client would have thrown a runtime TypeError. 0.4.6
-// guards with `if (!state.room) return state;` -- the action becomes a
-// safe no-op instead.
-describe('reducer room-event guards (audit 9 #120)', () => {
+// Room events guard with `if (!state.room) return state;`. Without it, a
+// server-contract violation delivering one to a roomless client throws a
+// TypeError on the `state.room!` spread.
+describe('reducer room-event guards', () => {
   it('userProgress returns state unchanged when no room is joined', () => {
     const next = reducer(initialState, {
       type: 'userProgress',
@@ -201,12 +189,10 @@ describe('reducer room-event guards (audit 9 #120)', () => {
   });
 });
 
-// Audit 13 #328 (landed 0.4.46): the module-scope toastCounter +
-// mediaVersionCounter `let`s moved into the Store. The reducer is now
-// pure -- each Store instance keeps its own counters. The invariant
-// (monotonic within a Store's lifetime, never reset) still holds; it
-// just lives explicitly in state instead of implicitly in the module.
-describe('reducer counters in state (audit 13 #328)', () => {
+// toastCounter and mediaVersionCounter live in the Store, not module scope, so
+// the reducer stays pure and each Store keeps its own. Both must be monotonic
+// within a Store's lifetime and never reset.
+describe('reducer counters in state', () => {
   it('initialState has toastCounter=0 + mediaVersionCounter=0', () => {
     expect(initialState.toastCounter).toBe(0);
     expect(initialState.mediaVersionCounter).toBe(0);
@@ -235,7 +221,7 @@ describe('reducer counters in state (audit 13 #328)', () => {
     } as Actions);
     expect(next.toastCounter).toBe(1);
     expect(next.toasts).toHaveLength(1);
-    // Toast id contains the counter: `toast-{counter}-{random}`.
+    // Ids are `toast-{counter}-{random}`.
     expect(next.toasts[0].id).toMatch(/^toast-1-/);
   });
 
@@ -244,9 +230,7 @@ describe('reducer counters in state (audit 13 #328)', () => {
     expect(next.toastCounter).toBe(0);
   });
 
-  // filterChangeApplied bumps mediaVersionCounter always but only bumps
-  // toastCounter when the apply came from a DIFFERENT user (self-apply
-  // doesn't surface a toast -- you already know what you did).
+  // A self-apply doesn't toast: you already know what you did.
   it('filterChangeApplied bumps mediaVersionCounter always but toastCounter only on other-user applies', () => {
     const seeded: Store = {
       ...initialState,
@@ -254,7 +238,7 @@ describe('reducer counters in state (audit 13 #328)', () => {
       room: { name: 'r', joined: true, mediaVersion: 5 },
       mediaVersionCounter: 5,
     };
-    // Self-apply: toastCounter stays.
+    // Self-apply: toastCounter holds.
     const selfApply = reducer(seeded, {
       type: 'filterChangeApplied',
       payload: { appliedBy: 'alice', media: [], filters: [] },
@@ -285,8 +269,7 @@ describe('reducer counters in state (audit 13 #328)', () => {
       type: 'joinRoomSuccess',
       payload: { roomName: 'r2', media: [], users: [], previousMatches: [] },
     } as Actions);
-    // logoutError still toasts (leaveRoomError NOT_JOINED navigates
-    // instead since audit 16 #452).
+    // logoutError still toasts; leaveRoomError NOT_JOINED navigates instead.
     s = reducer(s, { type: 'logoutError', payload: { name: 'NotLoggedIn', message: '' } } as Actions);
     // 4 mediaVersion bumps (2 per cycle).
     expect(s.mediaVersionCounter).toBe(4);
@@ -294,11 +277,8 @@ describe('reducer counters in state (audit 13 #328)', () => {
     expect(s.toastCounter).toBe(1);
   });
 
-  // Each Store keeps its OWN counters -- two parallel pseudo-stores never
-  // share state. (Pre-#328 they did, via module-scope `let`.) Verified by
-  // running the same action sequence against two independent initialStates
-  // and asserting the results match exactly -- impossible under the
-  // module-scope design.
+  // Module-scope counters would make the second run continue the first's
+  // trajectory instead of repeating it.
   it('two independent Store sequences produce identical counter trajectories (no cross-Store leak)', () => {
     const run = () => {
       let s: Store = initialState;
@@ -310,10 +290,8 @@ describe('reducer counters in state (audit 13 #328)', () => {
     expect(run()).toEqual({ tc: 1, mv: 1 });
   });
 
-  // Toast ids include the counter and a random suffix, so successive toasts
-  // never collide on id even with the same counter (defensive). Pinning
-  // the format so a future refactor doesn't drop the random component
-  // without realizing.
+  // The random suffix keeps ids distinct even on a repeated counter; pinned so
+  // a refactor cannot quietly drop it.
   it('toast ids follow the `toast-{counter}-{random}` shape', () => {
     let s: Store = initialState;
     s = reducer(s, { type: 'filterChangeError', payload: { message: 'one' } } as Actions);

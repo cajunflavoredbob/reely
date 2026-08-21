@@ -17,17 +17,11 @@ import { useEscape } from "../../hooks/useEscape";
 import { buildPlexLinks, useLocalPlexReachable } from "../../utils/plexLinks";
 import { posterSrc } from "../../utils/poster";
 
-// ─── Shared sub-components (audit 13 #281) ─────────────────────────
-// The desktop and mobile branches of <RoomScreen> below both render a
-// Share button + a Filter button with identical structure -- only the
-// CSS class, icon size, and label vary. Extracting them as private
-// components inside this file (no public API surface) collapses ~50
-// lines of duplicated JSX between the two branches.
-//
-// Kept INSIDE Room.tsx rather than as separate atom files because
-// they're tightly coupled to the desktop/mobile CSS-module class
-// names; promoting them to atoms/molecules would just shift the
-// "which variant?" prop drilling somewhere else.
+// ─── Shared sub-components ─────────────────────────────────────────
+// The desktop and mobile branches below render the same Share and Filter
+// buttons, varying only by class, icon size, and label. Kept private to this
+// file: they are coupled to the desktop/mobile CSS-module class names, so
+// promoting them to atoms would only move the variant prop drilling.
 
 interface ShareButtonProps {
   onClick: () => void;
@@ -48,13 +42,10 @@ const ShareButton = ({ onClick, copied, size, className }: ShareButtonProps) => 
         <path d="M9.5 6.5a3.5 3.5 0 00-5 0l-2 2a3.5 3.5 0 005 5L9 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
       </svg>
     )}
-    {/* Stack both labels in one grid cell so the button width is
-        max("Share", "Copied!") and stays stable on the flip --
-        the inactive label is visibility:hidden so it doesn't
-        draw, but still contributes to the cell's intrinsic width.
-        The outer aria-label="Copy room link" remains the screen-
-        reader read; aria-hidden on these spans keeps the active
-        label out of the accessible-name calculation. */}
+    {/* Both labels share one grid cell so the button width stays stable on
+        the flip: the hidden one still contributes intrinsic width.
+        aria-hidden keeps them out of the accessible name, which the outer
+        aria-label supplies. */}
     <span className={styles.shareBtnLabel}>
       <span aria-hidden={copied}>Share</span>
       <span aria-hidden={!copied}>Copied!</span>
@@ -66,16 +57,13 @@ interface FilterButtonProps {
   onClick: () => void;
   filterCount: number;
   size: number;
-  // Composed by the caller -- desktop folds in a desktopFilterBtnActive
-  // class tied to the panel-open state; mobile uses a different
-  // active-vs-inactive class entirely. Caller composes the final
-  // string so the button doesn't need a desktop/mobile mode flag.
+  // Composed by the caller so the button needs no desktop/mobile mode flag:
+  // the two branches key their active state off different classes.
   buttonClassName: string;
   badgeClassName?: string;
   ariaExpanded?: boolean;
   label?: string;
-  // Different stroke widths between contexts (desktop is finer at 1.5,
-  // mobile beefier at 2 to read at smaller surface area).
+  // Mobile goes heavier to read at a smaller surface area.
   strokeWidth?: number;
 }
 
@@ -113,10 +101,8 @@ function useIsDesktop() {
   return isDesktop;
 }
 
-// Clipboard fallback for non-secure contexts. navigator.clipboard is
-// undefined on plain http:// -- reely's stated LAN deployment target -- so a
-// temp-textarea + execCommand path is needed there. Returns whether the copy
-// actually succeeded.
+// Clipboard fallback: navigator.clipboard is undefined on plain http://,
+// reely's stated LAN deployment target. Returns whether the copy succeeded.
 const legacyCopy = (text: string): boolean => {
   try {
     const ta = document.createElement("textarea");
@@ -135,78 +121,44 @@ const legacyCopy = (text: string): boolean => {
 
 export const RoomScreen = () => {
   const [{ room, user, createRoom, config }, dispatch] = useStore(["room", "user", "createRoom", "config"]);
-  // Probe once whether the browser can reach the local Plex server; if so,
-  // the desktop sidebar match cards open Plex locally instead of via plex.tv.
+  // When reachable, sidebar match cards open local Plex instead of plex.tv.
   const localPlexReachable = useLocalPlexReachable(config?.plexBaseUrl);
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [matchesOpen, setMatchesOpen] = useState(false);
-  // Stack of unfired match celebrations -- newest at the END of the array
-  // (= top of the visual stack). All entries render simultaneously; only
-  // the topmost is functionally active (its onDismiss clears the whole
-  // stack, only it can be big). Older entries fade out via the
-  // .toastReplaced class on MatchMoment and are auto-pruned ~400ms later
-  // by the effect below. z-index is uniform across slots (150); paint
-  // order = DOM order, so later-appended entries naturally end up on top.
+  // Unfired match celebrations, newest at the END (= top of the visual
+  // stack). All entries render at once, but only the topmost is active: it
+  // alone can be big and its onDismiss clears the stack. z-index is uniform,
+  // so DOM order decides paint order and later entries land on top. Demoted
+  // entries fade via .toastReplaced and are pruned by the effect below.
   //
-  // 0.5.7 changed this from a FIFO queue (audit 11 #178: oldest first,
-  // advance on dismiss, every match got its own celebration moment) to
-  // a stack per the owner's feedback after 0.5.6 landed the slide-in
-  // animation: "the new match notification needs to slide down on top
-  // of the existing one. The new notification replaces the previous
-  // one." Trade-off (explicit reversal of audit 11 #178): rapid back-
-  // to-back matches no longer each get their own 3s celebration window
-  // -- the latest preempts. The matches list (sidebar / popup) is still
-  // the canonical record of every match; the toast is for the active-
-  // notification feel only.
+  // A stack, not a queue: the newest match preempts, so rapid back-to-back
+  // matches do not each get a 3s window. The matches list is the canonical
+  // record; the toast only carries the notification feel.
   const [pendingStack, setPendingStack] = useState<Match[]>([]);
-  // The very first celebration of the session gets the full-screen overlay;
-  // all subsequent ones get the small toast. Tracked via a ref so a batch
-  // of fresh matches arriving in the same tick doesn't blow past the
-  // heuristic -- the prior `matchCount === 1` gate would have jumped to 3
-  // on a 3-match batch and shown nothing as big. The ref flips on the
-  // first dismiss, regardless of how many matches the user is queued
-  // through.
+  // Only the session's first celebration is full-screen. A ref, not a
+  // matchCount check: a batch arriving in one tick would skip past a count
+  // gate and show nothing as big. Flips on the first dismiss.
   const bigCelebrationShown = useRef(false);
   const dismissPending = () => {
     bigCelebrationShown.current = true;
-    // Clear the whole stack -- demoted entries were already faded out by
-    // .toastReplaced and are invisible; unmounting them all at once with
-    // the dismissed top is visually a no-op.
+    // Clearing the whole stack is visually a no-op: demoted entries have
+    // already faded out.
     setPendingStack([]);
   };
   const [copied, setCopied] = useState(false);
   const [usersPopupOpen, setUsersPopupOpen] = useState(false);
   const isDesktop = useIsDesktop();
 
-  // Celebrate genuinely new matches by media identity, not by matches.length.
-  // Length comparison missed a re-match (same title, length unchanged) and --
-  // worse -- fired celebrations for stale matches when joinRoomSuccess loaded
-  // previousMatches wholesale on a rejoin. The first effect run seeds the
-  // seen-set from the matches present at mount (the join's previousMatches)
-  // so those don't pop.
+  // New matches are detected by media identity, not by matches.length: a
+  // length check misses a re-match and fires celebrations for the stale
+  // previousMatches that joinRoomSuccess loads on a rejoin. The first run
+  // seeds the seen-set from whatever is present at mount so those don't pop.
   //
-  // `useRef<Set<string>>()` (audit 9 #136 / clarified for audit 11 #187):
-  // React keeps the FIRST ref value across renders -- subsequent renders
-  // never see a new initializer. Passing `new Set(...)` inline would
-  // re-allocate the Set on every render and discard each copy. The
-  // pattern here -- typed as `useRef<Set<string>>()` with undefined
-  // initial value, populated inside the effect -- allocates the Set
-  // exactly once at first effect run.
-  //
-  // On a room CHANGE (audit 12 #244) the seen-set is reseeded from the
-  // new room's previousMatches. RoomScreen doesn't unmount across the
-  // auto-rejoin path (0.3.19 #17 keeps the route as "room"), so without
-  // this reset the previous room's match ids would persist and suppress
-  // celebrations in the new room for any media that happened to share
-  // an id (rare, but real for franchises across libraries).
-  // Type narrowed in 0.4.19 (audit 13 #307). The prior
-  // `useRef<Set<string>>()` LOOKED like a ref of a Set but under
-  // strict TS it resolves to `MutableRefObject<Set<string> | undefined>`
-  // -- the current value is undefined until the effect below seeds it.
-  // Explicit `Set<string> | undefined` matches the actual semantics so
-  // a reader doesn't think `seenMatchIds.current` is always present.
-  // The `?? new Set<string>()` fallback at line 117 already handles
-  // the pre-seed window correctly; just spelling it out in the type.
+  // The set is undefined until the effect seeds it, hence the explicit type
+  // and the `??` fallback below. It also has to be reseeded when the room
+  // changes: RoomScreen does not unmount across the auto-rejoin path, so the
+  // old room's ids would otherwise suppress celebrations for any media
+  // sharing an id.
   const seenMatchIds = useRef<Set<string> | undefined>(undefined);
   const lastSeenRoomName = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -223,33 +175,19 @@ export const RoomScreen = () => {
     seenMatchIds.current = seen;
     const fresh = matches.filter((m) => !seen.has(m.media.id));
     if (fresh.length > 0) {
-      // Append fresh matches in arrival order. The last one ends up at
-      // the top of the stack -- newest wins. When several arrive in the
-      // same tick they all mount together; the top is what the user
-      // sees + only the top runs the dismiss path (others are no-op).
-      // (0.5.7: was a FIFO queue per audit 11 #178; see the pendingStack
-      // declaration above for the rationale on the model change.)
+      // Arrival order, so the newest lands on top of the stack.
       const ordered = [...fresh].sort((a, b) => a.matchedAt - b.matchedAt);
       setPendingStack((prev) => [...prev, ...ordered]);
     }
-    // Always sync the seen set with the current matches (audit 14 #366).
-    // Previously the seen.add loop was inside the `fresh.length > 0`
-    // branch, so on a path where matches changed but produced no fresh
-    // entries (rejoin paths, server replays the same set), the seen set
-    // could fall behind. Defensive: keep seen aligned with matches every
-    // run regardless.
+    // Sync every run, not just when there were fresh entries: a rejoin can
+    // change matches without producing any, leaving the seen set behind.
     for (const m of matches) seen.add(m.media.id);
   }, [room?.matches, room?.name]);
 
-  // 0.5.7: Auto-prune demoted entries from pendingStack 400ms after the
-  // stack grew beyond a single entry. .toastReplaced's fade is 200ms;
-  // the extra 200ms is buffer so the fade completes cleanly before the
-  // unmount. If another match arrives during this window, the effect
-  // re-runs (pendingStack.length changed) and the previous timer is
-  // canceled, restarting the prune clock with the newer outgoing as
-  // the demoted one. Net effect: at any steady state, only the topmost
-  // match is mounted; the transient stack of two only exists during
-  // the 400ms window between arrival and prune.
+  // Prune demoted entries 400ms after the stack grows: .toastReplaced fades
+  // for 200ms, and the rest is buffer so it completes before unmount. A match
+  // arriving inside the window cancels and restarts the timer. Steady state is
+  // one mounted match; the stack of two exists only during that window.
   useEffect(() => {
     if (pendingStack.length <= 1) return;
     const timer = setTimeout(() => {
@@ -258,25 +196,21 @@ export const RoomScreen = () => {
     return () => clearTimeout(timer);
   }, [pendingStack.length]);
 
-  // Escape closes the filter panel only when it's actually open. Without
-  // this gate the handler runs unconditionally and conflicts with other
-  // overlays' Escape handlers (UsersPopup, MatchMoment) -- they all
-  // fire on a single Esc keystroke (audit 12 #243). Gating on
-  // filterPanelOpen scopes Room's listener to the case where it has
-  // something to do.
+  // Gated on filterPanelOpen: an ungated handler fires on the same Esc
+  // keystroke as UsersPopup's and MatchMoment's.
   useEscape(() => setFilterPanelOpen(false), filterPanelOpen);
 
-  // Prefetch the filter-field catalog so the toast on filterChangeApplied
-  // can resolve field titles even when the user hasn't opened the panel yet.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: dispatch is stable across renders (it's the reducer-store dispatch); adding it as a dep would just satisfy the rule without behavior change.
+  // Prefetch the filter-field catalog so the filterChangeApplied toast can
+  // resolve field titles before the user has opened the panel.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: dispatch is the store dispatch, stable across renders.
   useEffect(() => {
     if (!createRoom?.availableFilters) {
       dispatch({ type: "requestFilters" });
     }
   }, [createRoom?.availableFilters]);
 
-  // sortedMatches must be computed before the early return so hook order is
-  // stable across room=defined/undefined transitions (Rules of Hooks).
+  // Must precede the early return below, or hook order shifts when `room`
+  // flips between defined and undefined.
   const sortedMatches = useMemo(
     () =>
       [...(room?.matches ?? [])].sort((a, b) => b.matchedAt - a.matchedAt),
@@ -288,35 +222,30 @@ export const RoomScreen = () => {
   const users = room.users ?? [];
   const filterCount = room.activeFilters?.length ?? 0;
 
-  // Only the first match of the session gets the full-overlay celebration;
-  // subsequent matches show the small toast.
   const isBigCelebration = !bigCelebrationShown.current;
 
   const handleShare = async () => {
     const url = new URL(location.href);
     url.search = "";
     url.searchParams.set("roomName", room.name);
-    // URLSearchParams encodes apostrophes as %27. They're safe unencoded in
-    // a query string, so leave them readable in the share link
-    // ("?roomName=bob's+room" instead of "?roomName=bob%27s+room").
+    // URLSearchParams encodes apostrophes as %27, which is safe but ugly in a
+    // shared link. They need no encoding in a query string.
     const shareUrl = url.href.replace(/%27/g, "'");
 
-    // navigator.clipboard is undefined on plain http:// (non-secure context).
-    // Try it when available, fall back to execCommand, and only show "Copied!"
-    // on a real success -- the old code always showed it even when the copy
-    // threw on http://.
-    let copied = false;
+    // Fall back to execCommand, and only show "Copied!" on a real success:
+    // clipboard.writeText throws on http://.
+    let didCopy = false;
     if (navigator.clipboard?.writeText) {
       try {
         await navigator.clipboard.writeText(shareUrl);
-        copied = true;
+        didCopy = true;
       } catch {
-        copied = false;
+        didCopy = false;
       }
     }
-    if (!copied) copied = legacyCopy(shareUrl);
+    if (!didCopy) didCopy = legacyCopy(shareUrl);
 
-    if (copied) {
+    if (didCopy) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } else {
@@ -343,14 +272,9 @@ export const RoomScreen = () => {
     />
   );
 
-  // Render the pendingStack of MatchMoment toasts. Mounted in both the
-  // desktop swipe stage and the mobile top-level layout (the JSX moves
-  // per layout; the contents are identical). Audit 15 #386 hoisted this
-  // above the desktop/mobile branching so it appears once. 0.5.7: render
-  // all entries -- newest at the end of the array = top of the visual
-  // stack. Only the top is functionally active (dismissable, can be big);
-  // the rest get replaced=true which fades them out via .toastReplaced
-  // (see MatchMoment.module.css).
+  // Every entry renders; only the top one is dismissable and can be big. The
+  // rest take replaced=true, which fades them out. Built once here because
+  // both layout branches mount identical contents in different places.
   const matchMomentStack = pendingStack.map((m, i) => {
     const isTop = i === pendingStack.length - 1;
     return (
@@ -364,8 +288,7 @@ export const RoomScreen = () => {
     );
   });
 
-  // UsersPopup is identical across desktop + mobile (just different
-  // container positions in each branch). Audit 15 #386 hoisted.
+  // Identical across both layouts; only its container position differs.
   const usersPopup = usersPopupOpen && (
     <UsersPopup
       users={users}
@@ -482,11 +405,9 @@ export const RoomScreen = () => {
             {cardStack}
           </div>
 
-          {/* Filter backdrop -- click-outside-to-dismiss shortcut for
-              mouse users. Keyboard users dismiss via Esc (useEscape
-              above; same handler) so a backdrop keydown handler would
-              be redundant + would make the backdrop focusable, which
-              is wrong for an invisible overlay. */}
+          {/* Click-outside-to-dismiss for mouse users. No keydown handler: the
+              keyboard path is Esc via useEscape, and adding one would make an
+              invisible overlay focusable. */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: keyboard path is Esc via useEscape. */}
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: keyboard path is Esc via useEscape. */}
           <div
@@ -553,15 +474,10 @@ export const RoomScreen = () => {
         </div>
 
         {sortedMatches.length > 0 ? (
-          /* The mobile match strip is a horizontally-scrollable bar of
-             poster thumbs that scrolls + opens MatchesList on click.
-             Converting to <button> would override the browser's
-             scroll-snap + horizontal-overflow defaults that the
-             module.css relies on. role="button" + tabIndex + the
-             explicit onKeyDown handler give it the same semantics
-             as a real button for assistive tech. Worth revisiting if
-             the layout ever simplifies enough that a button reset
-             is cheap. */
+          /* A <button> here would override the scroll-snap and
+             horizontal-overflow defaults the module.css relies on. role,
+             tabIndex, and onKeyDown supply the same semantics to
+             assistive tech. */
           // biome-ignore lint/a11y/useSemanticElements: scroll-snap defaults require div; semantics covered by role + tabIndex + onKeyDown.
           <div
             className={styles.mobileMatchStrip}
@@ -574,7 +490,7 @@ export const RoomScreen = () => {
                 setMatchesOpen(true);
               }
             }}
-            aria-label={`${sortedMatches.length} matches – tap to view`}
+            aria-label={`${sortedMatches.length} matches, tap to view`}
           >
             {sortedMatches.map((match) => (
               <div key={match.media.id} className={styles.mobileMatchThumb}>
@@ -595,8 +511,8 @@ export const RoomScreen = () => {
             ))}
           </div>
         ) : (
-          // Placeholder reserves the same vertical slot as the strip, so the
-          // bottom bar doesn't shift when the first match arrives.
+          // Reserves the strip's vertical slot so the bottom bar doesn't shift
+          // when the first match arrives.
           <div className={styles.mobileMatchEmpty}>
             matches will appear here as you swipe
           </div>

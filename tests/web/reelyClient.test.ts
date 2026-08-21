@@ -1,10 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// A controllable WebSocket double. The real ReelyClient creates `new WebSocket(...)`
-// inside its constructor and again inside its private reconnect path, so the test
-// needs to capture each socket instance and drive its open/close/message events
-// from the outside. `instances` is the bridge: every `new MockWebSocket(...)` pushes
-// itself onto it, and `latest()` returns the one ReelyClient is currently bound to.
+// Controllable WebSocket double. ReelyClient constructs a socket in its
+// constructor and again on every reconnect, so tests need a handle on each:
+// every construction pushes onto `instances`, and `latest()` is the bound one.
 class MockWebSocket extends EventTarget {
   static instances: MockWebSocket[] = [];
   static CONNECTING = 0;
@@ -34,7 +32,7 @@ class MockWebSocket extends EventTarget {
   close() {
     this.simulateClose();
   }
-  // Test-side drivers (named `simulate*` so the test reads as a script of events).
+  // Test-side event drivers.
   simulateOpen() {
     this.readyState = MockWebSocket.OPEN;
     this.dispatchEvent(new Event('open'));
@@ -52,16 +50,15 @@ class MockWebSocket extends EventTarget {
   }
 }
 
-// API_URL is computed at module-load time from `location.href` and
-// `document.body.dataset.rootPath`. Stub both before importing the module
-// so the URL parses cleanly and we can also assert what it resolved to.
+// API_URL is computed at module load from location.href and
+// document.body.dataset.rootPath, so both must be stubbed before the import.
 const setupDomGlobals = (rootPath = '') => {
   vi.stubGlobal('location', { href: 'https://reely.example.com:8000/app/' });
   vi.stubGlobal('document', { body: { dataset: { rootPath } } });
 };
 
-// Lazy import the module AFTER globals are stubbed. Each test that wants a
-// different rootPath / location must call vi.resetModules() first.
+// Imports after the globals are stubbed. A different rootPath or location
+// needs vi.resetModules() first.
 const loadClient = async () => {
   const mod = await import('../../web/app/src/api/reely');
   return mod.ReelyClient;
@@ -107,7 +104,7 @@ describe('API_URL', () => {
   });
 });
 
-describe('handleMessage shape-guard (audit 13 #311)', () => {
+describe('handleMessage shape-guard', () => {
   it('dispatches the message under its `type` and the generic "message"', async () => {
     const ReelyClient = await loadClient();
     const client = new ReelyClient();
@@ -164,9 +161,9 @@ describe('waitForConnected', () => {
     await expect(promise).resolves.toBe(true);
   });
 
-  // Why a separate "connected" event instead of waiting on the socket's "open":
-  // mid-reconnect the dead socket would never fire open, so we listen on the
-  // client instead which survives the swap (comment in source).
+  // The client emits "connected" rather than the test watching the socket's
+  // "open": mid-reconnect the dead socket never fires open, and the client
+  // survives the swap.
   it('still resolves after a reconnect cycle (close -> connect -> open)', async () => {
     vi.useFakeTimers();
     const ReelyClient = await loadClient();
@@ -189,7 +186,7 @@ describe('waitForAnyMessage', () => {
     await expect(promise).resolves.toMatchObject({ type: 'loginSuccess' });
   });
 
-  it('rejects when the socket closes mid-wait (audit 13 #312)', async () => {
+  it('rejects when the socket closes mid-wait', async () => {
     const ReelyClient = await loadClient();
     const client = new ReelyClient();
     MockWebSocket.latest().simulateOpen();
@@ -209,7 +206,7 @@ describe('waitForAnyMessage', () => {
     await expect(promise).rejects.toThrow(/Timed out/);
   });
 
-  // FilterPanel fires several requestFilterValues at once; the match predicate
+  // FilterPanel fires several requestFilterValues at once, so the predicate
   // correlates each response to its caller's key.
   it('uses the match predicate to route responses to the right caller', async () => {
     const ReelyClient = await loadClient();
@@ -220,7 +217,7 @@ describe('waitForAnyMessage', () => {
       (m) =>
         m.type === 'requestFilterValuesSuccess' && m.payload.request.key === 'genre',
     );
-    // Wrong-key response: must NOT resolve genrePromise.
+    // Wrong key: must not resolve genrePromise.
     MockWebSocket.latest().simulateMessage({
       type: 'requestFilterValuesSuccess',
       payload: { request: { key: 'year' }, values: [] },
@@ -255,8 +252,7 @@ describe('sendMessage + pendingRates', () => {
     // biome-ignore lint/suspicious/noExplicitAny: test message shape.
     client.sendMessage({ type: 'rate', payload: { mediaId: 'm', rating: 1 } } as any);
     expect(MockWebSocket.latest().sent).toHaveLength(0);
-    // Open + flush is gated on join-success (handleOpen comment); the queue
-    // is observable by triggering a join-success and watching it drain.
+    // The flush is gated on join-success, so trigger one and watch it drain.
     MockWebSocket.latest().simulateOpen();
     MockWebSocket.latest().simulateMessage({ type: 'joinRoomSuccess', payload: {} });
     const sent = MockWebSocket.latest().sent;
@@ -290,8 +286,8 @@ describe('sendMessage + pendingRates', () => {
     expect(JSON.parse(sent[0] ?? '{}').payload.mediaId).toBe('m10');
   });
 
-  // Audit 13 #286: a socket that re-closes mid-flush previously lost the tail.
-  // Now any unsent remainder lands back on pendingRates in original order.
+  // A socket that re-closes mid-flush must put the unsent remainder back on
+  // pendingRates in original order instead of losing it.
   it('re-queues the unsent tail when the socket closes mid-flush', async () => {
     vi.useFakeTimers();
     const ReelyClient = await loadClient();
@@ -301,8 +297,7 @@ describe('sendMessage + pendingRates', () => {
       client.sendMessage({ type: 'rate', payload: { mediaId: `m${i}`, rating: 1 } } as any);
     }
     const ws = MockWebSocket.latest();
-    // Intercept send: after 2 sends the socket "drops" -- simulating a close
-    // partway through the flush loop.
+    // After 2 sends the socket "drops", partway through the flush loop.
     let sentCount = 0;
     ws.send = (data: string) => {
       ws.sent.push(data);
@@ -312,7 +307,7 @@ describe('sendMessage + pendingRates', () => {
     ws.simulateOpen();
     ws.simulateMessage({ type: 'joinRoomSuccess', payload: {} });
     expect(ws.sent).toHaveLength(2);
-    // Reconnect, rejoin: the surviving tail (m2, m3, m4) flushes in order.
+    // Reconnect and rejoin: the tail flushes in order.
     ws.simulateClose();
     vi.advanceTimersByTime(2_000);
     const ws2 = MockWebSocket.latest();
@@ -329,25 +324,25 @@ describe('reconnect backoff', () => {
     new ReelyClient();
     expect(MockWebSocket.instances).toHaveLength(1);
     MockWebSocket.latest().simulateClose();
-    // Base 500ms + up to 1s jitter. Advance well past the worst case.
+    // Base 500ms plus up to 1s jitter; advance past the worst case.
     vi.advanceTimersByTime(2_000);
     expect(MockWebSocket.instances).toHaveLength(2);
   });
 
   it('caps the backoff base at 30s even after many failed attempts', async () => {
     vi.useFakeTimers();
-    // Pin jitter to 0 so we can assert the deterministic upper bound.
+    // Jitter pinned to 0 for a deterministic bound.
     vi.spyOn(Math, 'random').mockReturnValue(0);
     const ReelyClient = await loadClient();
     new ReelyClient();
-    // Force the backoff counter high enough that 500 * 2^n would exceed 30s.
+    // Push the backoff counter past where 500 * 2^n exceeds 30s.
     for (let i = 0; i < 8; i++) {
       MockWebSocket.latest().simulateClose();
       vi.advanceTimersByTime(31_000);
     }
     const beforeCount = MockWebSocket.instances.length;
     MockWebSocket.latest().simulateClose();
-    // Just under 30s: no new socket yet (proves cap is at least 30s, not above).
+    // Just under 30s: no new socket, so the cap is not below 30s.
     vi.advanceTimersByTime(29_999);
     expect(MockWebSocket.instances.length).toBe(beforeCount);
     // Crossing 30s: the capped reconnect fires.
@@ -356,10 +351,10 @@ describe('reconnect backoff', () => {
   });
 });
 
-describe('flushAfterRejoinHandler teardown (audit 11 #175 / audit 12 #213)', () => {
-  // Two opens without an intervening join must NOT leave two flush listeners
-  // installed; otherwise the eventual join-success would flush twice and the
-  // listener set would grow across every reconnect-without-rejoin cycle.
+describe('flushAfterRejoinHandler teardown', () => {
+  // Two opens without a join between them must not leave two flush listeners
+  // installed, or the eventual join-success flushes twice and the listener set
+  // grows on every reconnect-without-rejoin cycle.
   it('does not flush twice when two opens happen without a join in between', async () => {
     vi.useFakeTimers();
     const ReelyClient = await loadClient();
@@ -367,12 +362,12 @@ describe('flushAfterRejoinHandler teardown (audit 11 #175 / audit 12 #213)', () 
     // biome-ignore lint/suspicious/noExplicitAny: test message shape.
     client.sendMessage({ type: 'rate', payload: { mediaId: 'm0', rating: 1 } } as any);
 
-    // First open, then close before any join arrives.
+    // Open, then close before any join arrives.
     MockWebSocket.latest().simulateOpen();
     MockWebSocket.latest().simulateClose();
     vi.advanceTimersByTime(2_000);
 
-    // Second open + join: must flush exactly once (one rate sent), not twice.
+    // Second open plus join: exactly one rate sent.
     const ws2 = MockWebSocket.latest();
     ws2.simulateOpen();
     ws2.simulateMessage({ type: 'joinRoomSuccess', payload: {} });
@@ -380,13 +375,10 @@ describe('flushAfterRejoinHandler teardown (audit 11 #175 / audit 12 #213)', () 
   });
 });
 
-// Audit 16 #438: both production rate-storm defenses -- the 0.5.20
-// pendingRates offline dedupe and the 0.5.22 sentRateIds online dedupe --
-// shipped with "no test changes"; the pendingRates suite above drives
-// sendMessage() directly, so rate() (the only production entry point) was
-// never exercised. These pin the storm defenses through rate(), plus the
-// audit 16 #429 room-affinity rules for the offline queue.
-describe('rate() storm defenses (audit 16 #438 / 0.5.20 + 0.5.22)', () => {
+// The pendingRates suite above drives sendMessage() directly, leaving rate()
+// (the only production entry point) unexercised. These pin both storm defenses
+// through rate() itself, plus the room-affinity rules for the offline queue.
+describe('rate() storm defenses', () => {
   const ratesSent = (ws: MockWebSocket) =>
     ws.sent.map((s) => JSON.parse(s)).filter((m) => m.type === 'rate');
 
@@ -412,8 +404,8 @@ describe('rate() storm defenses (audit 16 #438 / 0.5.20 + 0.5.22)', () => {
     await client.rate({ mediaId: 'm1', rating: 'like' });
 
     const joined = client.joinRoom({ roomName: 'movie-night' });
-    // Let request()'s waitForConnected/waitForAnyMessage chain register
-    // its listeners before the reply arrives.
+    // Let request()'s waitForConnected/waitForAnyMessage chain register its
+    // listeners before the reply arrives.
     await new Promise((r) => setTimeout(r, 0));
     ws.simulateMessage({ type: 'joinRoomSuccess', payload: { roomName: 'movie-night' } });
     await joined;
@@ -437,18 +429,18 @@ describe('rate() storm defenses (audit 16 #438 / 0.5.20 + 0.5.22)', () => {
     const ws2 = MockWebSocket.latest();
     ws2.simulateOpen();
     ws2.simulateMessage({ type: 'joinRoomSuccess', payload: {} });
-    // Exactly one queued rate flushes -- the storm scenario (a stuck client
-    // looping rate dispatches while offline) can't fill the queue.
+    // One queued rate flushes, so a stuck client looping rate dispatches while
+    // offline cannot fill the queue.
     expect(ratesSent(ws2)).toHaveLength(1);
   });
 
-  it('a rate queued in room A does not flush into room B (audit 16 #429)', async () => {
+  it('a rate queued in room A does not flush into room B', async () => {
     vi.useFakeTimers();
     const ReelyClient = await loadClient();
     const client = new ReelyClient();
     const ws1 = MockWebSocket.latest();
     ws1.simulateOpen();
-    // Establish room A as the current room (tags subsequent queued rates).
+    // Room A becomes current, tagging the queued rates that follow.
     ws1.simulateMessage({ type: 'joinRoomSuccess', payload: { roomName: 'room-a' } });
     ws1.simulateClose();
     await client.rate({ mediaId: 'm1', rating: 'like' });
@@ -456,13 +448,13 @@ describe('rate() storm defenses (audit 16 #438 / 0.5.20 + 0.5.22)', () => {
     vi.advanceTimersByTime(2_000);
     const ws2 = MockWebSocket.latest();
     ws2.simulateOpen();
-    // The user lands in a DIFFERENT room after the outage.
+    // The user lands in a different room after the outage.
     ws2.simulateMessage({ type: 'joinRoomSuccess', payload: { roomName: 'room-b' } });
 
     expect(ratesSent(ws2)).toHaveLength(0);
   });
 
-  it('a rate queued in room A flushes when rejoining room A (audit 16 #429 control)', async () => {
+  it('a rate queued in room A flushes when rejoining room A', async () => {
     vi.useFakeTimers();
     const ReelyClient = await loadClient();
     const client = new ReelyClient();
@@ -482,7 +474,7 @@ describe('rate() storm defenses (audit 16 #438 / 0.5.20 + 0.5.22)', () => {
     expect(rates[0].payload.mediaId).toBe('m1');
   });
 
-  it('leaveRoomSuccess clears the offline queue (audit 16 #429)', async () => {
+  it('leaveRoomSuccess clears the offline queue', async () => {
     vi.useFakeTimers();
     const ReelyClient = await loadClient();
     const client = new ReelyClient();
@@ -495,15 +487,15 @@ describe('rate() storm defenses (audit 16 #438 / 0.5.20 + 0.5.22)', () => {
     vi.advanceTimersByTime(2_000);
     const ws2 = MockWebSocket.latest();
     ws2.simulateOpen();
-    // Server confirms a leave before any rejoin (e.g. a leave that raced
-    // the disconnect): the queued rates belong to the ended session.
+    // A leave that raced the disconnect: the queued rates belong to the
+    // session that just ended.
     ws2.simulateMessage({ type: 'leaveRoomSuccess', payload: {} });
     ws2.simulateMessage({ type: 'joinRoomSuccess', payload: { roomName: 'room-a' } });
 
     expect(ratesSent(ws2)).toHaveLength(0);
   });
 
-  it('logoutSuccess clears the offline queue and dedup set (audit 16 #429)', async () => {
+  it('logoutSuccess clears the offline queue and dedup set', async () => {
     vi.useFakeTimers();
     const ReelyClient = await loadClient();
     const client = new ReelyClient();
@@ -520,10 +512,9 @@ describe('rate() storm defenses (audit 16 #438 / 0.5.20 + 0.5.22)', () => {
     ws2.simulateMessage({ type: 'logoutSuccess', payload: {} });
     ws2.simulateMessage({ type: 'joinRoomSuccess', payload: { roomName: 'room-a' } });
 
-    // Queue cleared by logout: nothing flushes for the next user...
+    // Queue cleared, so nothing flushes for the next user.
     expect(ratesSent(ws2)).toHaveLength(0);
-    // ...and the dedup set was cleared too, so the next session can rate
-    // the same media over the open socket.
+    // Dedup set cleared too, so the next session can rate the same media.
     await client.rate({ mediaId: 'm1', rating: 'dislike' });
     expect(ratesSent(ws2)).toHaveLength(1);
   });
@@ -536,12 +527,12 @@ describe('applyFilters wait is bounded and room-pinned', () => {
     vi.useFakeTimers();
     const ReelyClient = await loadClient();
     const client = new ReelyClient();
-    // Never opens. The bare waitForConnected never rejects and has no
-    // timeout, so this used to park silently and fire minutes later.
-    // Handler attached in the same tick the promise is created: the rejection
-    // lands during the timer advance below, and an unhandled rejection makes
-    // vitest exit non-zero even with every test green. Pinned to the reason
-    // too, so an unrelated throw cannot satisfy it.
+    // Never opens. A bare waitForConnected has no timeout and never rejects,
+    // so the apply parks silently and fires minutes later.
+    // The handler attaches in the same tick the promise is created: the
+    // rejection lands during the timer advance below, and an unhandled
+    // rejection makes vitest exit non-zero even with every test green. Matched
+    // on the reason so an unrelated throw cannot satisfy it.
     const settled = client.applyFilters({ filters: [] }).then(
       () => 'resolved',
       (err: Error) => err.message,
@@ -559,7 +550,7 @@ describe('applyFilters wait is bounded and room-pinned', () => {
     const client = new ReelyClient();
     const ws = MockWebSocket.latest();
 
-    // Establish room A, then drop the socket and tap Apply there.
+    // Room A, then drop the socket and tap Apply there.
     ws.simulateOpen();
     const join = client.joinOrCreateRoom({ roomName: 'room-a' });
     await vi.advanceTimersByTimeAsync(0);
@@ -575,10 +566,9 @@ describe('applyFilters wait is bounded and room-pinned', () => {
       (err: Error) => err.message,
     );
 
-    // They end up in room B by the time the socket comes back. The server's
-    // membership gate would legitimately accept this, because the client IS a
-    // live member of B -- so room A's filters would be applied to room B and
-    // broadcast to everyone in it.
+    // They are in room B when the socket returns. The server's membership gate
+    // would accept the apply, since the client really is a member of B, and
+    // room A's filters would land on room B and broadcast to everyone in it.
     await vi.advanceTimersByTimeAsync(5000);
     const ws2 = MockWebSocket.latest();
     ws2.simulateOpen();
@@ -589,8 +579,8 @@ describe('applyFilters wait is bounded and room-pinned', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     // Rejects rather than resolving silently: handleApply closes the panel on
-    // send, so a silent drop would leave the user staring at an unchanged deck
-    // with no explanation. createStore turns the rejection into a toast.
+    // send, so a silent drop leaves the user staring at an unchanged deck with
+    // no explanation. createStore turns the rejection into a toast.
     expect(await settled).toMatch(/room-a/);
     expect(MockWebSocket.latest().sent.some((f) => f.includes('applyFilters'))).toBe(false);
   });
@@ -620,12 +610,12 @@ describe('rejoin flush keeps the rate dedup set', () => {
     ws.simulateMessage({ type: 'joinRoomSuccess', payload: joinPayload });
     await firstJoin;
 
-    // Swipe while the socket is down, so the rate queues and records its id.
+    // Swipe while down, so the rate queues and records its id.
     ws.simulateClose();
     await client.rate({ mediaId: 'm1', rating: 'like' });
 
-    // Reconnect and auto-rejoin. joinOrCreateRoom clears sentRateIds, and the
-    // server built its deck BEFORE this rate landed, so the card comes back.
+    // joinOrCreateRoom clears sentRateIds, and the server built its deck
+    // before this rate landed, so the card comes back.
     await vi.advanceTimersByTimeAsync(5000);
     const ws2 = MockWebSocket.latest();
     ws2.simulateOpen();
@@ -639,10 +629,9 @@ describe('rejoin flush keeps the rate dedup set', () => {
     const afterFlush = rateFrames().length;
     expect(afterFlush).toBeGreaterThan(0); // the queued rate really did flush
 
-    // Re-swiping the same card must be suppressed. Without re-recording the id
-    // during the flush it reaches the server, hits the already-rated branch,
-    // and counts as neither a vote nor progress -- so the progress bar
-    // silently disagrees with the card count.
+    // Without re-recording the id during the flush, the re-swipe reaches the
+    // server, hits the already-rated branch, and counts as neither a vote nor
+    // progress: the progress bar then disagrees with the card count.
     await client.rate({ mediaId: 'm1', rating: 'like' });
     expect(rateFrames().length).toBe(afterFlush);
   });
@@ -665,9 +654,9 @@ describe('UserFacingError tagging', () => {
     await join;
     ws.simulateClose();
 
-    // The store decides whether to show a rejection verbatim by reading this
-    // flag. Without it the user gets "The server isn't responding", which
-    // blames the server for something the server never saw.
+    // The store reads this flag to decide whether to show a rejection
+    // verbatim. Without it the user gets "The server isn't responding",
+    // blaming the server for something it never saw.
     const settled = client.applyFilters({ filters: [] }).then(
       () => undefined,
       (err: { userFacing?: unknown }) => err.userFacing,

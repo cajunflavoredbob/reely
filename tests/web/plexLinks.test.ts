@@ -26,7 +26,6 @@ describe('buildPlexLinks', () => {
     );
   });
 
-  // The local path is taken when preferLocal is true AND a base URL exists.
   it('builds the local Plex web URL when preferLocal is true', () => {
     const links = buildPlexLinks(
       media(),

@@ -5,13 +5,8 @@ export class ReelyError extends Error {
   }
 }
 
-// Extends ReelyError (was: extends Error) so it inherits the
-// this.constructor.name pattern -- audit 15 #382 aligned the two
-// error classes. The 21 ReelyError subclasses in config/errors.ts
-// rely on that constructor for their per-class err.name surfacing;
-// extending it here gives ReelyUnknownError the same behavior with
-// no instanceof breakage (verified: no callers use
-// `instanceof ReelyError` / `instanceof ReelyUnknownError`).
+// Extends ReelyError, not Error, to inherit the constructor that surfaces the
+// subclass name as err.name.
 export class ReelyUnknownError extends ReelyError {}
 
 export function assert(
