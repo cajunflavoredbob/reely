@@ -2,17 +2,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 
-// Room is the swipe-screen container. It pulls in CardStack + FilterPanel
-// + UsersPopup + MatchesList + MatchMoment + Card -- all of which have
-// their own coverage in earlier batches. We stub the heavy children as
-// sentinels (carrying their useful props on data-attrs) so this test
-// focuses on Room's own orchestration: route gating, popup toggle
-// wiring, share-button clipboard fallback, match-celebration queue,
-// requestFilters prefetch.
+// Swipe-screen container. The heavy children are stubbed as sentinels (props
+// on data-attrs, callbacks exposed as buttons) so these focus on Room's own
+// orchestration: route gating, popup wiring, share clipboard fallbacks, the
+// match-celebration stack, and the requestFilters prefetch. Each child has its
+// own test file.
 //
-// Tests cover the MOBILE layout only -- matchMedia is stubbed to return
-// false for `(min-width: 900px)`. Desktop is a substantially different
-// layout that warrants its own pass if/when the audit calls for it.
+// Mobile layout only: matchMedia returns false for `(min-width: 900px)`.
 const {
   useStoreMock,
   useLocalPlexReachableMock,
@@ -35,10 +31,6 @@ vi.mock('../../../../web/app/src/utils/plexLinks', async () => {
   return { ...actual, useLocalPlexReachable: useLocalPlexReachableMock };
 });
 
-// Stub the heavy children as sentinels carrying the props we care about
-// as data-attrs. Where a callback prop matters for an interaction test
-// (FilterPanel.onClose, UsersPopup.onLeave, etc.), the sentinel exposes
-// a button that invokes it so the test can fire it.
 vi.mock('../../../../web/app/src/components/organisms/CardStack', () => ({
   CardStack: ({ cards }: { cards: { id: string }[] }) => (
     <div data-testid="card-stack-stub" data-card-count={cards.length} />
@@ -91,8 +83,7 @@ vi.mock('../../../../web/app/src/components/organisms/MatchMoment', () => ({
     match: { media: { id: string } };
     isBig: boolean;
     onDismiss: () => void;
-    // 0.5.7: stack model. Non-top entries get replaced=true; the stub
-    // surfaces it as a data attribute so tests can assert on it.
+    // Non-top stack entries get replaced=true; surfaced as a data attr.
     replaced?: boolean;
   }) => (
     <div
@@ -148,9 +139,8 @@ const makeMatch = (id: string, matchedAt = 100, posterUrl: string | undefined = 
   // biome-ignore lint/suspicious/noExplicitAny: extra Match fields.
 } as any);
 
-// matchMedia + ResizeObserver aren't in jsdom by default. matchMedia
-// returns false for the desktop breakpoint so all tests run against the
-// mobile layout (simpler + most behaviors are shared).
+// jsdom ships neither. Returning false for the desktop breakpoint keeps every
+// test on the mobile layout.
 const stubMatchMedia = (matches = false) => {
   vi.stubGlobal('matchMedia', () =>
     ({
@@ -191,7 +181,7 @@ describe('RoomScreen: no-room early return', () => {
     withState({ room: undefined });
     render(<RoomScreen />);
     expect(screen.getByText('No Room!')).toBeDefined();
-    // None of the heavy children should render in the no-room state.
+    // No heavy children in the no-room state.
     expect(screen.queryByTestId('card-stack-stub')).toBeNull();
   });
 });
@@ -218,7 +208,7 @@ describe('RoomScreen: mobile layout basics', () => {
       },
     });
     render(<RoomScreen />);
-    // Match strip is a div with role="button" + aria-label including the count.
+    // The strip is a role=button whose aria-label carries the count.
     expect(screen.getByRole('button', { name: /1 matches.*tap to view/i })).toBeDefined();
   });
 
@@ -234,10 +224,8 @@ describe('RoomScreen: popup wiring', () => {
   it('clicking the filter button opens FilterPanel; onClose hides it', () => {
     withState({ room: { name: 'movie-night', users: [], matches: [], media: [] } });
     render(<RoomScreen />);
-    // FilterPanel not rendered until open.
     expect(screen.queryByTestId('filter-panel-stub')).toBeNull();
-    // FilterButton always carries aria-label="Filters" (mobile + desktop).
-    // aria-expanded is desktop-only so we can't filter by that here.
+    // aria-expanded is desktop-only, so match on the label.
     const filterButton = screen.getByRole('button', { name: 'Filters' });
     fireEvent.click(filterButton);
     expect(screen.getByTestId('filter-panel-stub')).toBeDefined();
@@ -263,7 +251,6 @@ describe('RoomScreen: popup wiring', () => {
     });
     render(<RoomScreen />);
     expect(screen.queryByTestId('users-popup-stub')).toBeNull();
-    // UserPillRow renders as a button with an aria-label "Show all N users in room".
     fireEvent.click(screen.getByRole('button', { name: /Show all .* users in room/i }));
     expect(screen.getByTestId('users-popup-stub')).toBeDefined();
     fireEvent.click(screen.getByTestId('users-popup-close'));
@@ -293,8 +280,8 @@ describe('RoomScreen: popup wiring', () => {
 });
 
 describe('RoomScreen: requestFilters prefetch', () => {
-  // The filter-catalog prefetch lets the filterChangeApplied toast resolve
-  // field titles even when the user hasn't opened the panel yet.
+  // Lets the filterChangeApplied toast resolve field titles before the panel
+  // has ever been opened.
   it('dispatches requestFilters on mount when createRoom.availableFilters is absent', () => {
     withState({
       room: { name: 'movie-night', users: [], matches: [], media: [] },
@@ -315,19 +302,12 @@ describe('RoomScreen: requestFilters prefetch', () => {
 });
 
 describe('RoomScreen: match-celebration stack (0.5.7)', () => {
-  // 0.5.7: model changed from a FIFO queue (audit 11 #178: oldest first,
-  // advance on dismiss, every match got its own moment) to a stack where
-  // the newest is on top + the rest fade out via .toastReplaced. The
-  // rationale: per the owner's feedback, new match notifications should
-  // slide down on top of any existing one and replace it. See Room.tsx
-  // pendingStack comment for the full trade-off (rapid back-to-back
-  // matches no longer each get a 3s celebration window; the matches
-  // list is the canonical record).
-  // Audit 12 #244 (room-change reseed) is unchanged by this model swap.
+  // A stack, not a FIFO queue: the newest match sits on top and the rest fade
+  // out via .toastReplaced. Rapid back-to-back matches therefore do not each
+  // get a 3s window; the matches list is the canonical record. See Room.tsx's
+  // pendingStack comment.
 
   it('does NOT celebrate matches that were present at first mount (they are the join\'s previousMatches)', () => {
-    // Initial mount: room.matches has two matches. Both are "previous";
-    // none should pop a celebration.
     withState({
       room: {
         name: 'movie-night',
@@ -360,20 +340,13 @@ describe('RoomScreen: match-celebration stack (0.5.7)', () => {
     });
     expect(screen.getByTestId('match-moment-stub')).toBeDefined();
     expect(screen.getByTestId('match-moment-stub').getAttribute('data-match-id')).toBe('a');
-    // First celebration of the session gets the big overlay.
+    // The session's first celebration gets the big overlay.
     expect(screen.getByTestId('match-moment-stub').getAttribute('data-is-big')).toBe('true');
   });
 
-  // 0.5.7: when multiple fresh matches arrive in the same tick, ALL
-  // render simultaneously (stack model). DOM order = stack order; the
-  // last-rendered is the visual top + the only one that's active
-  // (dismissable, can be big). The rest carry replaced=true so the
-  // .toastReplaced fade kicks in. The top gets the big-celebration
-  // overlay (first of the session); older entries cannot be big.
-  // Also asserts the dismiss path: clicking the top's dismiss clears
-  // the entire stack in one shot (older entries were already faded
-  // invisible -- unmounting them with the dismissed top is a visual
-  // no-op).
+  // Fresh matches arriving in one tick all render. The last is the visual top
+  // and the only active one; the rest carry replaced=true. Dismissing the top
+  // clears the whole stack, since the faded entries unmount invisibly.
   it('stacks newest on top, marks older entries replaced, and clears whole stack on top dismiss', () => {
     withState({
       room: { name: 'movie-night', users: [], matches: [], media: [] },
@@ -391,24 +364,19 @@ describe('RoomScreen: match-celebration stack (0.5.7)', () => {
       });
       rerender(<RoomScreen />);
     });
-    // Both render. Order in DOM = stack order; newest (b) is last. In
-    // jsdom, window.matchMedia returns matches=false so only the mobile
-    // branch renders -- one stub per stack entry. (If we ever add a
-    // desktop test variant by stubbing matchMedia, the count would
-    // double.)
+    // DOM order is stack order, newest last. matchMedia=false means only the
+    // mobile branch renders, so one stub per stack entry.
     const stubs = screen.getAllByTestId('match-moment-stub');
     expect(stubs.length).toBe(2);
-    // `a` (older, underneath): not top, so isBig=false + replaced=true.
+    // `a` is underneath: not big, replaced.
     expect(stubs[0].getAttribute('data-match-id')).toBe('a');
     expect(stubs[0].getAttribute('data-is-big')).toBe('false');
     expect(stubs[0].getAttribute('data-replaced')).toBe('true');
-    // `b` (newer, top): isBig=true (first celebration of session),
-    // replaced=false.
+    // `b` is on top: big (session's first celebration), not replaced.
     expect(stubs[1].getAttribute('data-match-id')).toBe('b');
     expect(stubs[1].getAttribute('data-is-big')).toBe('true');
     expect(stubs[1].getAttribute('data-replaced')).toBe('false');
-    // Dismiss the TOP (b). The top's dismiss button fires
-    // dismissPending which clears the whole stack.
+    // The top's dismiss fires dismissPending, clearing the whole stack.
     const bDismiss = stubs[1].querySelector('[data-testid="match-dismiss"]') as HTMLButtonElement;
     fireEvent.click(bDismiss);
     expect(screen.queryAllByTestId('match-moment-stub').length).toBe(0);
@@ -418,7 +386,7 @@ describe('RoomScreen: match-celebration stack (0.5.7)', () => {
 describe('RoomScreen: Share button (clipboard + fallbacks)', () => {
   beforeEach(() => {
     withState({ room: { name: 'movie-night', users: [], matches: [], media: [] } });
-    // Stub location so the share URL has a known base.
+    // Known base for the share URL.
     Object.defineProperty(window, 'location', {
       configurable: true,
       value: {
@@ -428,14 +396,9 @@ describe('RoomScreen: Share button (clipboard + fallbacks)', () => {
     });
   });
 
-  // Find the share button via its title text -- the ShareButton helper
-  // inside Room.tsx renders a button containing the visible label.
+  // ShareButton's label alternates between "Share" and "Copied!", so match
+  // either.
   const clickShareButton = () => {
-    // ShareButton's label text alternates between "Share" and "Copied!"
-    // and is also "Share link copied" via aria-label. Use the share button
-    // by its position: it's the first button in the mobile bottom bar
-    // (which is also adjacent to the filter button). Match aria-label or
-    // visible text containing 'Share'.
     const share = screen.getAllByRole('button').find((b) => /share|copied/i.test(b.textContent ?? ''));
     if (!share) throw new Error('Share button not found');
     fireEvent.click(share);
@@ -450,21 +413,17 @@ describe('RoomScreen: Share button (clipboard + fallbacks)', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText.mock.calls[0]?.[0]).toContain('roomName=movie-night');
-    // The "Copied!" indicator is up. Both labels are always in the DOM
-    // (width-stable button -- 0.5.9 fix); the active one carries
-    // aria-hidden="false", so query that specifically rather than
-    // textContent (which now always contains both strings).
+    // Both labels stay in the DOM to keep the button width stable, so
+    // textContent always holds both; the active one is aria-hidden="false".
     const share = screen.getAllByRole('button').find((b) => /share|copied/i.test(b.textContent ?? ''));
     const visibleLabel = share?.querySelector<HTMLElement>('span[aria-hidden="false"]');
     expect(visibleLabel?.textContent).toBe('Copied!');
   });
 
-  // No clipboard + legacy execCommand fails -> window.prompt fallback so
-  // the user can copy the link by hand.
+  // prompt() is the last resort, so the user can still copy the link by hand.
   it('falls back to window.prompt when neither clipboard.writeText nor execCommand succeeds', async () => {
-    // No clipboard.
     vi.stubGlobal('navigator', {});
-    // execCommand returns false (jsdom default; pin explicitly).
+    // jsdom's default, pinned explicitly.
     document.execCommand = vi.fn().mockReturnValue(false);
     const promptSpy = vi.fn();
     vi.stubGlobal('prompt', promptSpy);

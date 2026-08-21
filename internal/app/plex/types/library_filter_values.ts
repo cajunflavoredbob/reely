@@ -11,11 +11,9 @@ export interface FilterValues {
   title2: string;
   viewGroup: string;
   viewMode: number;
-  // Optional (audit 16 #445): Plex returns 200 OK with this field OMITTED
-  // (not []) when a section has no values for the filter -- the 0.5.23
-  // production bug. The optional marker makes the compiler enforce the
-  // guards the fix added; PlexApi.getFilterValues returns a merged shape
-  // with Directory guaranteed concrete.
+  // Plex returns 200 OK with this OMITTED, not [], when a section has no
+  // values for the filter. Optional so the compiler enforces the guards;
+  // PlexApi.getFilterValues returns a merged shape where it is concrete.
   Directory?: FilterValue[];
 }
 

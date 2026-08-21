@@ -1,26 +1,13 @@
 // @vitest-environment jsdom
 //
-// biome-ignore-all lint/suspicious/noExplicitAny: Filter / Filters fixture shapes are partial; full discriminated unions aren't the point in the tests here -- we exercise the external behavior, not the type narrowing.
+// biome-ignore-all lint/suspicious/noExplicitAny: fixtures are partial; these exercise behavior, not type narrowing.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 
-// FilterPanel has the deferred #321 split tension (FilterRow / FieldPicker
-// / SearchControl) -- writing tests against the current internal shape
-// risks throwaway when the split lands. These tests deliberately target
-// the EXTERNAL contract surface that should survive any reasonable
-// split:
-//   - onClose called by the close button
-//   - onApply called with the draft filters + onClose follow-on
-//   - "Apply filters" vs "Clear filters" button label + enabled/disabled
-//   - "FILTERS_LOADING" Tr while availableFilters is undefined
-//   - empty-state copy
-//   - field count in header when filters loaded
-//   - isDrawer prop selects the drawer-content class
-//   - re-open (isOpen toggles false -> true) re-syncs the draft from
-//     room.activeFilters
-//
-// Internal row / picker / SearchControl behavior is NOT covered here --
-// once #321 lands those will live in dedicated component tests.
+// Targets FilterPanel's external contract only: close, apply, submit-button
+// label and enabled state, loading copy, field count, isDrawer class, and the
+// re-open re-sync. FilterRow / FieldPicker / SearchControl internals have
+// their own tests.
 
 const { useStoreMock, useDispatchMock } = vi.hoisted(() => ({
   useStoreMock: vi.fn(),
@@ -37,9 +24,7 @@ vi.mock('../../../../web/app/src/store', () => ({
 import { FilterPanel } from '../../../../web/app/src/components/organisms/FilterPanel';
 import type { Filter, Filters } from '../../../../types/reely';
 
-// Minimal Filters catalog: one int field "year" with one operator "=",
-// one string field "genre". Enough to render row UI when a filter
-// references either key.
+// Minimal catalog: one integer field, one string field, one operator each.
 const baseFilters = (): Filters => ({
   filters: [
     { key: 'year', title: 'Year', type: 'integer' },
@@ -77,10 +62,7 @@ afterEach(() => {
 });
 
 describe('FilterPanel: loading state', () => {
-  // Until `createRoom.availableFilters` arrives from the server, the
-  // panel shows a loading line. The copy comes through <Tr
-  // name="FILTERS_LOADING" />; Tr falls back to rendering the raw key
-  // when no translations are loaded (verified in Tr's own test).
+  // Tr renders the raw key when no translations are loaded.
   it('shows the FILTERS_LOADING Tr key when no availableFilters yet', () => {
     withState({ createRoom: { availableFilters: undefined } });
     render(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} />);
@@ -99,8 +81,7 @@ describe('FilterPanel: header chrome (filter catalog loaded)', () => {
     withState({ createRoom: { availableFilters: baseFilters() } });
     render(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} />);
     expect(screen.getByText('Filter the room')).toBeDefined();
-    // "Build a shortlist" is split across two spans (the accent wraps
-    // "shortlist") so use a heading-role lookup.
+    // An accent span splits "shortlist" off, so match on the heading role.
     expect(screen.getByRole('heading', { level: 1 }).textContent).toMatch(/Build a.*shortlist/);
   });
 
@@ -146,8 +127,7 @@ describe('FilterPanel: Apply button (default state)', () => {
     expect(screen.getByRole('button', { name: 'Apply filters' })).toBeDefined();
   });
 
-  // Disabled until the draft has at least one applicable filter (or
-  // the panel enters Clear mode -- see below).
+  // Enabled only with an applicable filter, or in Clear mode below.
   it('disables the Apply button when the draft has no applicable filters', () => {
     withState({
       createRoom: { availableFilters: baseFilters() },
@@ -170,8 +150,7 @@ describe('FilterPanel: Apply button (default state)', () => {
 });
 
 describe('FilterPanel: Apply with a populated draft (seeded from activeFilters)', () => {
-  // Draft initial state clones room.activeFilters so re-opening the panel
-  // shows the current applied set as the starting point for edits.
+  // The draft clones room.activeFilters, so edits start from the applied set.
   const filterFixture = (): Filter[] => [
     { key: 'year', operator: '=', value: ['2024'] } as Filter,
   ];
@@ -214,31 +193,15 @@ describe('FilterPanel: Apply with a populated draft (seeded from activeFilters)'
 });
 
 describe('FilterPanel: Clear mode (room has filters, draft is empty)', () => {
-  // When the user removes every filter row in a panel that opened with
-  // applied filters, the button flips to "Clear filters" and is enabled
-  // -- submitting an empty set clears the server-side applied set.
-  // Without this branch, applied filters could never be removed from
-  // the UI (the disabled-empty-draft gate would block submission).
-  //
-  // Triggered via a draft of [] AND room.activeFilters non-empty -- the
-  // panel starts seeded from activeFilters, but the user can remove the
-  // rows. Simulate the post-removal state by passing draft seed [] +
-  // activeFilters non-empty (the seed happens on mount; here we mount
-  // with an empty seed + a non-empty activeFilters).
+  // Removing every row from a panel that opened with applied filters flips the
+  // button to "Clear filters" and enables it, so the empty submission clears
+  // the server-side set. Without this branch the disabled-empty-draft gate
+  // makes applied filters unremovable.
   it('labels the submit button "Clear filters" when room has activeFilters but draft is empty', () => {
-    // To get this state at mount: room.activeFilters has filters that
-    // are NOT applicable (i.e. don't match any field in the catalog),
-    // so the draft.filter(isFilterApplicable) returns []. The simplest
-    // proxy: room.activeFilters has entries with keys that aren't in
-    // baseFilters' field set.
-    //
-    // Actually simpler still: build a fixture whose values are empty so
-    // isFilterApplicable returns false, but the rows still exist.
     withState({
       createRoom: { availableFilters: baseFilters() },
-      // value: [] -> not applicable -> draft.filter(...) = []
-      // BUT room.activeFilters.length > 0 -> hasActiveFilters = true
-      // -> isClearing = true
+      // value: [] is inapplicable, so the draft filters down to [] while
+      // activeFilters stays non-empty: hasActiveFilters -> isClearing.
       room: { activeFilters: [{ key: 'year', operator: '=', value: [] }] },
     });
     render(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} />);
@@ -295,10 +258,9 @@ describe('FilterPanel: isDrawer layout switch', () => {
 });
 
 describe('FilterPanel: re-open re-sync (isOpen toggle false -> true)', () => {
-  // While the panel is open, the user's in-progress edits stay put even
-  // if room.activeFilters changes server-side. On a CLOSED -> OPEN
-  // transition the draft re-syncs from room.activeFilters so the panel
-  // doesn't reopen with stale-from-last-open edits.
+  // In-progress edits survive server-side activeFilters changes while open;
+  // only a closed -> open transition re-syncs, so the panel never reopens
+  // with edits left from last time.
   it('re-syncs draft from room.activeFilters when isOpen toggles false -> true', () => {
     withState({
       createRoom: { availableFilters: baseFilters() },
@@ -307,10 +269,9 @@ describe('FilterPanel: re-open re-sync (isOpen toggle false -> true)', () => {
     const { rerender } = render(
       <FilterPanel onClose={vi.fn()} onApply={vi.fn()} isOpen={false} />,
     );
-    // Verify mount under closed state shows "Apply filters" (draft seeded
-    // from activeFilters which is applicable -> Apply enabled).
+    // Seeded from an applicable activeFilters, so Apply starts enabled.
     expect((screen.getByRole('button', { name: 'Apply filters' }) as HTMLButtonElement).disabled).toBe(false);
-    // Server-side: room.activeFilters changes while panel is closed.
+    // activeFilters changes server-side while the panel is closed.
     act(() => {
       withState({
         createRoom: { availableFilters: baseFilters() },
@@ -318,8 +279,7 @@ describe('FilterPanel: re-open re-sync (isOpen toggle false -> true)', () => {
       });
       rerender(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} isOpen={false} />);
     });
-    // Toggle open: the effect re-syncs draft from room.activeFilters ([])
-    // -> draft is empty -> Apply disabled.
+    // Opening re-syncs the draft from the now-empty activeFilters.
     act(() => {
       rerender(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} isOpen={true} />);
     });

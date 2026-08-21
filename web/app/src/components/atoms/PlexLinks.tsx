@@ -8,9 +8,8 @@ interface PlexLinksProps {
   media: Media;
 }
 
-// "Open in Plex" link. Routes directly to the local Plex web UI when the
-// browser can reach it on the LAN, falls back to app.plex.tv otherwise.
-// Renders nothing until the Plex server id has arrived in the config message.
+// "Open in Plex" link: local Plex web UI when the browser can reach it on the
+// LAN, app.plex.tv otherwise. Renders nothing until the config message lands.
 export const PlexLinks = ({ media }: PlexLinksProps) => {
   const [{ config }] = useStore(["config"]);
   const localReachable = useLocalPlexReachable(config?.plexBaseUrl);
@@ -23,10 +22,9 @@ export const PlexLinks = ({ media }: PlexLinksProps) => {
   if (!links) return null;
 
   return (
-    // stopPropagation wrapper: prevents clicks on "Open in Plex" from
-    // bubbling up to parent overlays (e.g. MatchMoment's overlay
-    // onClick dismisses the match celebration). No own interactive
-    // semantics -- it's a layout container around a real <a>.
+    // stopPropagation so the click doesn't reach parent overlays (MatchMoment's
+    // onClick dismisses the celebration). No semantics of its own: it wraps a
+    // real <a>.
     // biome-ignore lint/a11y/noStaticElementInteractions: stopPropagation wrapper.
     // biome-ignore lint/a11y/useKeyWithClickEvents: stopPropagation wrapper.
     <div className={styles.row} onClick={(e) => e.stopPropagation()}>

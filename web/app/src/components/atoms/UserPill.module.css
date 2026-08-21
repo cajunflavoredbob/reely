@@ -16,9 +16,8 @@
   flex-shrink: 0;
 }
 
-/* Left-to-right progress fill, painted behind the label. Saturation and
-   lightness are pushed well above the dim base so the filled portion
-   reads at a glance, not just on close inspection. */
+/* Left-to-right progress fill behind the label. Saturation and lightness sit
+   well above the dim base so the filled portion reads at a glance. */
 .fill {
   position: absolute;
   top: 0;

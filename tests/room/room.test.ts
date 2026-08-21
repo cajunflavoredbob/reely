@@ -13,19 +13,15 @@ import {
 import type { Room } from '../../internal/app/reely/room';
 import type { Client } from '../../internal/app/reely/client';
 
-// Minimal stub -- only the fields getRoom reads.
+// Only the fields getRoom reads.
 const stubRoom = (name: string): Room => ({
   roomName: name,
   users: new Map<string, Client>(),
 } as unknown as Room);
 
 describe('getRoom', () => {
-  // Clean up the module-level rooms Map between tests (audit 12 #248).
-  // The prior version relied on unique room names per test, but with
-  // vitest's `clearMocks`/`restoreMocks` running between tests, the
-  // mutable singleton state was the one leak left. removeRoom is the
-  // public memory-only delete (audit 12 #203 -- safe here since the
-  // tests never wrote a backing file).
+  // The rooms Map is module-level, so it leaks between tests. removeRoom is
+  // memory-only, safe here because no test writes a backing file.
   afterEach(() => {
     for (const room of getAllRooms()) removeRoom(room.roomName);
   });

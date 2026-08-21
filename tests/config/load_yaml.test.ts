@@ -5,9 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadFromYaml } from '../../internal/app/reely/config/load_yaml';
 import { ConfigFileNotFoundError } from '../../internal/app/reely/config/errors';
 
-// Real-tempdir tests: cleaner than mocking fs since js-yaml is the actual
-// parser doing the work and the JSON_SCHEMA gating is a property of the
-// parser call. Each test gets its own tempdir + cleanup in afterEach.
+// Real tempdirs rather than a mocked fs: the JSON_SCHEMA gating under test is
+// a property of the real js-yaml parser call.
 
 let dir: string;
 
@@ -16,8 +15,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  // Restore perms on anything chmod-ed during the test so the cleanup
-  // can read + remove it (otherwise rm fails on the EACCES test case).
+  // Restore perms or rm fails after the EACCES case.
   await chmod(dir, 0o700).catch(() => {});
   await rm(dir, { recursive: true, force: true });
 });
@@ -54,11 +52,9 @@ servers:
 });
 
 describe('loadFromYaml: error mapping', () => {
-  // Only the "file genuinely missing" case gets the typed
-  // ConfigFileNotFoundError so loadConfig can fall through to env-only.
-  // Anything else (EACCES, EISDIR, malformed YAML, etc.) propagates with
-  // its real cause so operators see a diagnostic that points at the
-  // actual problem.
+  // Only a genuinely missing file gets ConfigFileNotFoundError, which lets
+  // loadConfig fall through to env-only. Everything else propagates with its
+  // real cause.
   it('throws ConfigFileNotFoundError on ENOENT', async () => {
     const missing = join(dir, 'nope.yaml');
     await expect(loadFromYaml(missing)).rejects.toBeInstanceOf(ConfigFileNotFoundError);
@@ -67,13 +63,12 @@ describe('loadFromYaml: error mapping', () => {
 
   it('propagates EACCES as-is (not wrapped in ConfigFileNotFoundError)', async () => {
     const path = await writeYaml('config.yaml', 'port: 9000\n');
-    // 000 = no permissions; readFile will EACCES.
     await chmod(path, 0o000);
-    // root can read everything, which would make this test silently pass.
-    if (process.getuid && process.getuid() === 0) return; // skip under root
-    // chmod(0o000) is a no-op for read access on Windows (Node only maps
-    // the read-only attribute), so the EACCES this test needs can never
-    // fire there -- same silent-pass class as the root case above.
+    // Root reads anything, so the case cannot arise and the test would pass
+    // vacuously.
+    if (process.getuid && process.getuid() === 0) return;
+    // Same, on Windows: chmod(0o000) only maps the read-only attribute, so
+    // EACCES never fires.
     if (process.platform === 'win32') return;
     await expect(loadFromYaml(path)).rejects.not.toBeInstanceOf(ConfigFileNotFoundError);
     await expect(loadFromYaml(path)).rejects.toThrow(/EACCES|permission/i);
@@ -84,18 +79,13 @@ describe('loadFromYaml: error mapping', () => {
     await expect(loadFromYaml(path)).rejects.toThrow(/must be an object/);
   });
 
-  // Note: isRecord's check is `typeof === 'object' && !== null`, which
-  // ACCEPTS arrays (documented in tests/util/assert.test.ts). So an
-  // array-rooted YAML survives loadFromYaml and gets caught downstream
-  // by the validator instead. Not a load-time rejection.
+  // isRecord accepts arrays, so an array-rooted YAML survives this stage and
+  // is caught by the validator instead.
 });
 
-describe('loadFromYaml: JSON_SCHEMA gating (audit 12 #235)', () => {
-  // js-yaml's DEFAULT_SCHEMA parses YAML 1.1 booleans, meaning `on`/`yes`/
-  // `y`/`true` all become `true` and `off`/`no`/`n`/`false` all become
-  // `false`. That's gibberish for a config field that's supposed to be
-  // a string (e.g. LOG_LEVEL: y becomes `true`). JSON_SCHEMA narrows to
-  // the JSON-compatible types so these stay as strings.
+describe('loadFromYaml: JSON_SCHEMA gating', () => {
+  // js-yaml's DEFAULT_SCHEMA reads YAML 1.1 booleans, so `logLevel: y` would
+  // become `true`. JSON_SCHEMA narrows to JSON types and keeps them strings.
   it('keeps "yes" as a string, not a boolean', async () => {
     const path = await writeYaml('config.yaml', 'logLevel: yes\n');
     const out = await loadFromYaml(path);

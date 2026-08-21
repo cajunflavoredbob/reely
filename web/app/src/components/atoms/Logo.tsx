@@ -17,48 +17,31 @@ interface LogoProps {
   withWord?: boolean;
 }
 
-// React.memo (audit 14 #334): Logo is rendered as a static brand mark
-// in several layouts; props (size + withWord) are stable across most
-// re-renders of those parents. Memo skips the SVG node construction
-// when props are unchanged.
+// memo: static mark with stable props; skips the SVG build on parent renders.
 export const Logo = memo(({ size = 28, withWord = true }: LogoProps) => {
-  // useId per render so two Logos on the same page don't collide on a
-  // shared `<linearGradient>` id. SVG ids are global; without this, a
-  // second Logo's gradient fill resolved to the first Logo's gradient
-  // (or broke when the first unmounted). React's useId already returns
-  // a unique value -- audit 12 #195 dropped the prior template-literal
-  // wrapping (`ry-mark-grad-${useId()}`) since the extra prefix was
-  // pure noise + a per-render string allocation.
+  // SVG ids are global: without a unique one, a second Logo's fill resolves to
+  // the first Logo's gradient and breaks when that one unmounts.
   const gradId = useId();
   return (
     <div className={styles.root}>
-      {/* aria-hidden: the Logo's role-as-brand-mark; the textual
-          "reely" wordmark below (when withWord) carries the label
-          for screen readers. */}
+      {/* aria-hidden: the wordmark below carries the label for screen readers. */}
       <svg width={size} height={size} viewBox={MARK_VIEWBOX} fill="none" aria-hidden="true">
         <defs>
-          {/* Endpoints come from the master, so they cannot drift. They are
-              percentages, i.e. the objectBoundingBox default. An earlier
-              hand-written copy of this component used userSpaceOnUse with the
-              same numbers, which is NOT equivalent: the bounding-box form
-              shears the gradient's axis by the card's 300x420 aspect, so the
-              in-app mark ran its gradient at a different angle than the
-              favicon beside it. */}
+          {/* Endpoints are percentages, i.e. the objectBoundingBox default.
+              Not userSpaceOnUse: bounding-box shears the gradient axis by the
+              card's 300x420 aspect, which is what matches the favicon. */}
           <linearGradient id={gradId} {...GRADIENT}>
             {GRADIENT_STOPS.map((stop) => (
               <stop key={stop.offset} offset={stop.offset} stopColor={stop.color} />
             ))}
           </linearGradient>
         </defs>
-        {/* Fanned card stack (a hand mid-swipe). Geometry is generated from
-            docs/branding/reely-logo.svg by scripts/gen-brand.mjs, so this
-            cannot drift from the favicon and PWA icons. */}
+        {/* Fanned card stack. Geometry is generated from
+            docs/branding/reely-logo.svg by scripts/gen-brand.mjs. */}
         <g transform={MARK_TRANSFORM}>
           {BACK_CARDS.map((back) => (
             <g key={back.rotate} transform={back.rotate}>
-              {/* back.rect, not CARD: the back cards carry their own geometry
-                  in the master, and spreading the top card's rect over them
-                  meant a master edit to a back card never reached the app. */}
+              {/* back.rect, not CARD: back cards carry their own geometry. */}
               <rect {...back.rect} fill={back.fill} opacity={back.opacity} />
             </g>
           ))}

@@ -23,25 +23,20 @@ type FilterClientMessageByType<
   ClientMessageType extends string,
 > = A extends { type: ClientMessageType } ? A : never;
 
-// A connection must stay open this long before it counts as "healthy" and
-// resets the reconnect backoff. Shorter than this and a server that accepts
-// the handshake then immediately closes (crash loop) would reconnect at the
-// base delay forever -- the backoff would never escalate.
+// Uptime before a connection counts as healthy and resets the reconnect
+// backoff. Stops an accept-then-close crash loop retrying at the base delay
+// forever.
 const STABLE_CONNECTION_MS = 10_000;
 
-// How long a request (login, joinRoom, ...) waits for its server reply before
-// giving up. Without it a dropped reply hangs the request promise -- and the
-// UI -- permanently.
+// Reply deadline. Stops a dropped reply hanging the promise, and the UI.
 const REQUEST_TIMEOUT_MS = 15_000;
 
 /**
- * An error whose message is written for the user and is safe to show verbatim.
+ * Error whose message is safe to show the user verbatim.
  *
- * The store's catch-all renders a generic "server isn't responding" toast,
- * which is right for a timeout or a transport failure but wrong for a
- * condition the user caused and can act on. Surfacing every rejection message
- * instead would risk putting internal text in front of them, so the ones meant
- * for display are tagged rather than assumed.
+ * The store's catch-all toast blames the server, which is wrong for a
+ * condition the user caused. Tagged rather than assumed, so internal text
+ * never reaches the UI.
  */
 export class UserFacingError extends Error {
   readonly userFacing = true;
@@ -51,40 +46,30 @@ export class ReelyClient extends EventTarget {
   ws!: WebSocket;
   reconnectionAttempts = 0;
   private stableConnectionTimer?: ReturnType<typeof setTimeout>;
-  // `rate` messages dropped while the socket was down (the brief gap between
-  // the socket closing and the UI noticing). Flushed on the next open so a
-  // swipe in that window still reaches the server. Bounded so a long outage
-  // can't grow it without limit.
+  // Swipes made while the socket was down, flushed on the next open. Bounded
+  // so a long outage can't grow it without limit.
   //
-  // Each entry carries the room the swipe was made in (audit 16 #429) so
-  // the flush can never replay it into a DIFFERENT room: all rooms draw
-  // from the same library, so the server-side media.has() guard would
-  // accept a cross-room flush as a legitimate vote (and on a shared
-  // device, attribute it to whoever joined next). Entries without a tag
-  // (queued before any join completed) flush unconditionally, matching
-  // the pre-#429 behavior.
+  // Each entry carries its room so a flush can't replay it into a DIFFERENT
+  // room: all rooms draw from one library, so the server's media.has() guard
+  // would take the cross-room vote as legitimate. Untagged entries (queued
+  // before any join) flush unconditionally.
   private pendingRates: Array<{ msg: ServerMessage; roomName?: string }> = [];
 
-  // Canonical name of the room this client most recently joined/created;
-  // tags queued rates (above) and is cleared on leave/logout. (audit 16 #429)
+  // Canonical name of the current room; tags queued rates.
   private currentRoomName?: string;
 
-  // The handler currently waiting to flush pendingRates after the next
-  // post-reconnect joinRoomSuccess / createRoomSuccess (added 0.4.2 #86).
-  // Kept on the instance so each reconnect cycle replaces the previous one
-  // rather than accumulating: a user who reconnects repeatedly without
-  // rejoining (server-restart loop on login, or logged out) would otherwise
-  // grow the EventTarget listener list unboundedly across the page session
-  // (audit 11 #175 / audit 12 #213).
+  // Handler waiting to flush pendingRates on the next post-reconnect
+  // join/createRoomSuccess. On the instance so each reconnect cycle replaces
+  // the previous one; repeated reconnects without a rejoin would otherwise
+  // grow the EventTarget listener list unboundedly.
   private flushAfterRejoinHandler?: EventListener;
 
   constructor() {
     super();
-    // Rate-queue room-affinity bookkeeping (audit 16 #429): remember which
-    // room the user is in (for tagging queued rates), and drop all queued
-    // rate state when the room session explicitly ends -- an offline swipe
-    // from a left room must not flush into the next room joined, and on a
-    // shared device must not be attributed to the next user after logout.
+    // Rate-queue room affinity: track the current room to tag queued rates,
+    // and drop all rate state when the session ends. An offline swipe from a
+    // room the user left must not flush into the next room, nor be credited
+    // to the next user on a shared device.
     this.addEventListener("joinRoomSuccess", this.captureRoomName);
     this.addEventListener("createRoomSuccess", this.captureRoomName);
     this.addEventListener("leaveRoomSuccess", this.clearRateState);
@@ -123,13 +108,8 @@ export class ReelyClient extends EventTarget {
 
   private handleMessage = (e: MessageEvent<string>) => {
     try {
-      // Shape-guard before treating the parsed value as a ClientMessage
-      // (audit 13 #311). The prior code parsed + cast, then accessed
-      // `msg.type` -- which TypeErrors on non-object JSON literals (null,
-      // numbers, strings) and silently no-ops on object literals without
-      // a `type` field. Falling through to the catch worked by accident;
-      // surface the bad-frame case explicitly so a buggy server can't
-      // ship something the dispatcher would mis-handle.
+      // Shape-guard before casting: a bare cast TypeErrors on non-object JSON
+      // and silently no-ops on objects with no `type`.
       const parsed: unknown = JSON.parse(e.data);
       if (
         !parsed ||
@@ -152,30 +132,21 @@ export class ReelyClient extends EventTarget {
       return Promise.resolve(true);
     }
 
-    // Wait on the client's own "connected" event, not the current socket's
-    // "open". If waitForConnected is called while the socket is CLOSING/CLOSED
-    // (the gap between handleClose and the scheduled reconnect), connect()
-    // swaps in a brand-new socket -- an "open" listener bound to the dead one
-    // would never fire. "connected" is dispatched by handleOpen regardless of
-    // which underlying socket opened, so it survives reconnects.
+    // Wait on our own "connected" event, not the socket's "open": connect()
+    // swaps in a new socket, so a listener bound to the dead one never fires.
     return new Promise((resolve) => {
       this.addEventListener("connected", () => resolve(true), { once: true });
     });
   };
 
   private handleOpen = () => {
-    // Do NOT flush the queued `rate` messages here -- the new socket hasn't
-    // logged in or rejoined a room yet, so the server's handleRate would
-    // drop every one (no userName, no room.users membership). Wait for the
-    // next join-success on this socket (the reducer's auto-rejoin path
-    // calls joinOrCreateRoom on reconnect, audit 4 #17 / 0.3.19) and flush
-    // then. If no join happens after the reconnect (user explicitly left
-    // before disconnect), the queue stays put -- it'll get drained the
-    // next time the user joins, OR aged out by the MAX_PENDING_RATES cap.
+    // Do NOT flush queued rates here: the new socket hasn't logged in or
+    // rejoined, so the server would drop every one. Flush on the next
+    // join-success instead; with no join the queue waits or ages out at
+    // MAX_PENDING_RATES.
     //
-    // Tear down any prior reconnect's pending listener BEFORE registering
-    // this one (audit 11 #175 / audit 12 #213). Without this, every WS open
-    // that didn't see a join-success leaks two listeners.
+    // Tear down the prior reconnect's listener BEFORE registering this one;
+    // every open without a join-success would otherwise leak two listeners.
     if (this.flushAfterRejoinHandler) {
       this.removeEventListener("joinRoomSuccess", this.flushAfterRejoinHandler);
       this.removeEventListener("createRoomSuccess", this.flushAfterRejoinHandler);
@@ -192,20 +163,13 @@ export class ReelyClient extends EventTarget {
           : undefined;
       const queued = this.pendingRates;
       this.pendingRates = [];
-      // Re-queue any message we can't send (audit 13 #286). The prior
-      // loop silently dropped the tail if the socket closed mid-flush:
-      // a `break` on `readyState !== OPEN` would lose every message
-      // after the first failed send, and the user's swipes during that
-      // brief disconnection window would simply not register. Now any
-      // unsent messages survive into the next reconnect's flush by
-      // landing back on pendingRates. The order is preserved (we
-      // unshift the surviving tail back to the head) so swipe order
-      // doesn't get shuffled across reconnects.
+      // Re-queue what we can't send: bailing out on a mid-flush close would
+      // lose every swipe after the first failed send. Survivors unshift back
+      // to the head, so order holds across reconnects.
       const remaining: typeof queued = [];
       for (const entry of queued) {
-        // Room affinity (audit 16 #429): a rate queued in room A must not
-        // flush into room B. Untagged entries (queued before any join
-        // completed) flush unconditionally, as before.
+        // A rate queued in room A must not flush into room B. Untagged
+        // entries flush unconditionally.
         if (entry.roomName !== undefined && entry.roomName !== joinedRoom) {
           console.warn(
             `Dropped queued "rate" from room "${entry.roomName}" (rejoined "${joinedRoom}")`,
@@ -213,15 +177,10 @@ export class ReelyClient extends EventTarget {
           continue;
         }
         if (this.ws.readyState === WebSocket.OPEN) {
-          // Re-record the dedup id. The join that triggered this flush cleared
-          // sentRateIds, and the server built its joinRoomSuccess deck BEFORE
-          // these rates landed -- so the user is looking at cards they already
-          // voted on, with the memory that would suppress a re-swipe wiped.
-          // Re-swiping one hits storeRating's already-rated branch, which
-          // returns before recording progress, so the swipe counts as neither
-          // a vote nor progress and the bar silently disagrees with the deck.
-          // That is exactly the "same mediaId 95+ times as already-rated"
-          // shape sentRateIds was introduced to stop.
+          // Re-record the dedup id: the join cleared sentRateIds and the
+          // server's deck predates these rates, so the user is seeing cards
+          // they already voted on. A re-swipe records neither a vote nor
+          // progress, drifting the progress bar from the deck.
           if (entry.msg.type === "rate") this.sentRateIds.add(entry.msg.payload.mediaId);
           this.ws.send(JSON.stringify(entry.msg));
         } else {
@@ -237,33 +196,26 @@ export class ReelyClient extends EventTarget {
     this.addEventListener("createRoomSuccess", flushAfterRejoin);
 
     this.dispatchEvent(new Event("connected"));
-    // Reset the backoff counter only after the connection proves stable.
-    // Resetting on every `open` let an accept-then-close crash loop reconnect
-    // at the base delay indefinitely -- the thundering herd the backoff is
-    // meant to prevent.
+    // Reset the backoff only once the connection proves stable: resetting on
+    // every `open` lets an accept-then-close crash loop retry at base delay.
     clearTimeout(this.stableConnectionTimer);
     this.stableConnectionTimer = setTimeout(() => {
       this.reconnectionAttempts = 0;
     }, STABLE_CONNECTION_MS);
   };
 
-  // Socket errors were previously swallowed entirely. Reconnection is driven
-  // by the close handler; this just makes the error visible.
+  // Reconnection is driven by the close handler; this only makes errors visible.
   private handleError = (event: Event) => {
     console.warn("reely WebSocket error", event);
   };
 
   private handleClose = () => {
-    // The connection didn't survive to "stable"; keep the backoff counter so
-    // a crash loop escalates the delay.
+    // Never reached "stable"; keep the backoff counter so a crash loop escalates.
     clearTimeout(this.stableConnectionTimer);
     this.dispatchEvent(new Event("disconnected"));
 
-    // Capped exponential backoff with jitter. Base 500ms, doubling per attempt
-    // up to a 30s ceiling, plus up to 1s of random jitter. The old schedule
-    // (attempts * 1000, starting at 0) reconnected instantly then grew
-    // linearly and uncapped -- it hammered a down server and made every
-    // client retry in lockstep (thundering herd) after a restart.
+    // Capped exponential backoff with jitter. The cap keeps a down server from
+    // being hammered; the jitter breaks lockstep retries after a restart.
     const base = Math.min(30_000, 500 * 2 ** this.reconnectionAttempts);
     const delay = base + Math.random() * 1_000;
     setTimeout(() => this.connect(), delay);
@@ -271,22 +223,17 @@ export class ReelyClient extends EventTarget {
     this.reconnectionAttempts += 1;
   };
 
-  // Wait for any one of several message types, with shared cleanup. A naive
-  // Promise.race of per-type {once:true} listeners would leak the unfired
-  // listener forever, which accumulates across reconnect cycles and can fire
-  // on later unrelated messages with the same type.
+  // Wait for any of several message types, with shared cleanup. A Promise.race
+  // of per-type {once:true} listeners leaks the unfired ones, which pile up
+  // across reconnects and fire on later unrelated messages of that type.
   //
-  // Rejects after REQUEST_TIMEOUT_MS so a dropped server reply (handler crash,
-  // lost message) surfaces as an error instead of hanging the caller -- and
-  // the UI -- forever. The cleanup runs on the timeout path too, so no
-  // listener leaks.
+  // Rejects after REQUEST_TIMEOUT_MS so a dropped reply surfaces as an error
+  // instead of hanging the caller; cleanup runs on that path too.
   //
-  // `match` correlates a response to a specific request. Without it the first
-  // message of a matching TYPE resolves the promise -- fine when one request
-  // of that type is in flight, but for overlapping requestFilterValues calls
-  // (FilterPanel fires one per filter key) the wrong key's response could
-  // resolve the wrong waiter. A non-matching message is ignored; the waiter
-  // keeps listening (and is still bounded by the timeout).
+  // `match` correlates a reply to its request. Several requestFilterValues
+  // calls run at once (one per filter key), so matching on TYPE alone resolves
+  // the wrong waiter. Non-matching messages are ignored and the waiter keeps
+  // listening, still timeout-bounded.
   waitForAnyMessage = <K extends ClientMessage["type"]>(
     types: K[],
     match?: (msg: FilterClientMessageByType<ClientMessage, K>) => boolean,
@@ -317,11 +264,8 @@ export class ReelyClient extends EventTarget {
         handlers.set(type, handler);
         this.addEventListener(type, handler);
       }
-      // Reject promptly if the socket closes mid-wait (audit 13 #312).
-      // Without this, a caller (login, joinRoom, etc.) blocks until
-      // REQUEST_TIMEOUT_MS (15s) on every reconnect-mid-request, freezing
-      // the UI on a reply that the new socket will never get. The close
-      // path's caller can decide whether to retry or surface a toast.
+      // Reject on a mid-wait close: the new socket will never receive this
+      // reply, so waiting out the full timeout just freezes the UI.
       closeHandler = () => {
         cleanup();
         reject(new Error(`Socket closed waiting for a server reply (${types.join(" / ")})`));
@@ -334,31 +278,19 @@ export class ReelyClient extends EventTarget {
     });
   };
 
-  // Three-step request pattern: wait for the socket OPEN, send the
-  // outbound message, then await the matching reply. Audit 15 #390
-  // consolidated eight nearly-identical request methods (login,
-  // logout, joinRoom, joinOrCreateRoom, leaveRoom, createRoom,
-  // requestFilters, requestFilterValues) behind this single helper.
-  // Each caller dropped from a 5-line boilerplate to a single
-  // this.request(...) delegating call; the shared correctness
-  // invariant (open-socket gate before send, close-event rejection
-  // mid-wait, 15s timeout) lives in one place now.
-  // requestFilterValues additionally passes a matcher to correlate
-  // the key-bearing response with its caller.
+  // Wait for OPEN, send, await the matching reply. Every request method routes
+  // through here so the invariants (open-socket gate, close-event rejection,
+  // timeout) live in one place.
   private async request<K extends ClientMessage["type"]>(
     msg: ServerMessage,
     replyTypes: K[],
     match?: (msg: FilterClientMessageByType<ClientMessage, K>) => boolean,
   ): Promise<FilterClientMessageByType<ClientMessage, K>> {
-    // Bound the wait-for-open phase (audit 16 #450). waitForConnected
-    // never rejects on its own, so a request dispatched during an outage
-    // used to park forever with no per-request feedback -- each Login
-    // click queued another send that fired whenever the socket finally
-    // reconnected, possibly minutes later. Racing against the same
-    // REQUEST_TIMEOUT_MS the reply phase uses routes the failure into
-    // the caller's existing catch (toast). The {once} "connected"
-    // listener waitForConnected registered stays behind on timeout;
-    // it resolves an unreferenced promise later, which is harmless.
+    // Bound the wait-for-open phase: waitForConnected never rejects, so a
+    // request made during an outage parks forever and fires minutes later on
+    // reconnect. The race routes that into the caller's catch (toast). The
+    // abandoned {once} "connected" listener resolves an unreferenced promise
+    // later, which is harmless.
     let connectTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -384,13 +316,10 @@ export class ReelyClient extends EventTarget {
     this.request({ type: "logout" }, ["logoutSuccess", "logoutError"]);
 
   joinRoom = async (joinRoomRequest: JoinRoomRequest) => {
-    // Reset the sentRateIds set: a new room has its own per-room ratings
-    // map server-side, so a card the user rated in a prior room should
-    // be ratable again here. Caveat: auto-rejoin (audit 4 #17 / 0.3.19)
-    // also flows through this path, so the dedup memory does NOT
-    // survive a reconnect; the server's storeRating "already rated"
-    // guard + the 0.5.20 pendingRates dedup are the remaining defenses
-    // for that window.
+    // Ratings are per-room server-side, so a card rated elsewhere is ratable
+    // here. Caveat: auto-rejoin runs this path too, so the dedup memory does
+    // NOT survive a reconnect; the server's already-rated guard and the
+    // pendingRates dedup cover that window.
     this.sentRateIds.clear();
     return this.request(
       { type: "joinRoom", payload: joinRoomRequest },
@@ -398,8 +327,7 @@ export class ReelyClient extends EventTarget {
     );
   };
 
-  // The server takes one of two paths internally; we race all four possible
-  // outcomes so callers can await a definitive resolution.
+  // The server picks join or create, so race all four replies.
   joinOrCreateRoom = async (joinRoomRequest: JoinRoomRequest) => {
     this.sentRateIds.clear();
     return this.request(
@@ -408,9 +336,8 @@ export class ReelyClient extends EventTarget {
     );
   };
 
-  // Wait for an open socket before sending (request helper does this): a
-  // sendMessage on a non-OPEN socket would be dropped and leave the awaited
-  // reply unresolved forever if this is called mid-reconnect.
+  // request() gates on an open socket: a send to a non-OPEN socket is dropped
+  // and leaves the awaited reply unresolved forever.
   leaveRoom = async () =>
     this.request({ type: "leaveRoom" }, ["leaveRoomSuccess", "leaveRoomError"]);
 
@@ -423,15 +350,10 @@ export class ReelyClient extends EventTarget {
   };
 
   rate = async (rateRequest: Rate) => {
-    // Drop dispatches for a mediaId we've already sent in this session.
-    // Defense-in-depth against a client-side loop firing rate dispatches
-    // for the same card -- see sentRateIds declaration above for the
-    // production post-mortem. The card is removed from the deck after a
-    // valid swipe, so this only ever drops loop-noise, never a legitimate
-    // user action. This gate makes FIRST-decision-wins the app's
-    // effective offline semantics -- sendMessage's queue-level
-    // replace-with-latest never sees a repeat from this path (audit 16
-    // #451).
+    // Drop repeat mediaIds. A valid swipe removes the card from the deck, so
+    // this only ever drops loop noise. It also makes first-decision-wins the
+    // effective semantics: sendMessage's replace-with-latest never sees a
+    // repeat from here.
     if (this.sentRateIds.has(rateRequest.mediaId)) return;
     this.sentRateIds.add(rateRequest.mediaId);
     this.sendMessage({
@@ -444,10 +366,8 @@ export class ReelyClient extends EventTarget {
     this.request({ type: "requestFilters" }, ["requestFiltersSuccess", "requestFiltersError"]);
 
   requestFilterValues = async (filterValueRequest: FilterValueRequest) => {
-    // Correlate on the filter key: FilterPanel fires one requestFilterValues
-    // per key, so several can be in flight at once. Both response shapes echo
-    // the key (success: payload.request.key, error: payload.key), so each
-    // waiter resolves on its OWN key's response, not whichever arrives first.
+    // Correlate on the filter key: one call per key runs concurrently, so
+    // without this each waiter resolves on whichever reply arrives first.
     const { key } = filterValueRequest;
     return this.request(
       { type: "requestFilterValues", payload: filterValueRequest },
@@ -462,13 +382,9 @@ export class ReelyClient extends EventTarget {
   /**
    * waitForConnected, bounded, for fire-and-forget sends.
    *
-   * The audit-16 #450 race was applied only inside request(); these callers
-   * kept awaiting the bare promise, which never rejects and has no timeout. A
-   * tap during an outage parked silently and each further tap parked another,
-   * every one registering a fresh {once} "connected" closure that EventTarget
-   * cannot dedupe and nothing removes. They all fired together whenever the
-   * socket eventually reconnected, minutes later, long after the user had
-   * moved on.
+   * The bare promise never rejects, so every tap during an outage parks
+   * another undedupable {once} "connected" closure and they all fire together
+   * on reconnect, minutes later.
    */
   private waitForConnectedWithin = async (): Promise<void> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -487,13 +403,10 @@ export class ReelyClient extends EventTarget {
     }
   };
 
-  // Fire-and-forget: there's no `setLocaleSuccess` reply, and the language
-  // hint is purely advisory (Plex falls back to English if unrecognized).
-  // No awaited response, no caller wants a confirmation -- the WS send is
-  // the whole interaction (audit 9 #121).
+  // Fire-and-forget: no setLocaleSuccess reply exists and the hint is advisory
+  // (Plex falls back to English on an unrecognized locale).
   setLocale = async (locale: Locale) => {
-    // Advisory only, so a failed wait is not worth surfacing -- but it must
-    // not park forever either.
+    // Advisory, so a failed wait isn't worth surfacing; just don't park forever.
     try {
       await this.waitForConnectedWithin();
     } catch {
@@ -507,30 +420,22 @@ export class ReelyClient extends EventTarget {
   };
 
   applyFilters = async (payload: { filters: Filter[] }) => {
-    // Wait for the socket to be OPEN before sending (audit 13 #313). The
-    // prior synchronous version called sendMessage immediately; if a user
-    // tapped Apply during a reconnect, the message went to a CLOSED or
-    // CLOSING socket and was silently dropped. Now matches the
-    // login/logout/setLocale pattern -- await waitForConnected first.
-    // Fire-and-forget after the send: the server replies via
-    // `filterChangeApplied` to every room member (broadcast), so this
-    // caller doesn't need a per-request waiter.
+    // Gate on an open socket, or an Apply tapped mid-reconnect is silently
+    // dropped. Fire-and-forget after that: the server broadcasts
+    // filterChangeApplied to the whole room, so no waiter is needed.
     //
-    // Bounded, and pinned to the room the user was actually looking at. An
-    // unbounded wait meant a parked apply could fire after the user had moved
-    // to another room, where the server's membership gate legitimately passes
-    // -- so room A's filter set was applied to room B and broadcast to
-    // everyone in it, wiping their decks.
+    // Pinned to the room the apply was made in. The server's membership gate
+    // passes wherever the user now is, so a parked apply that fires after a
+    // room change applies room A's filters to room B and wipes every member's
+    // deck.
     const requestedIn = this.currentRoomName;
     await this.waitForConnectedWithin();
-    // `requestedIn === undefined` means no join had completed when the apply
-    // was made, so there is no affinity to enforce. That matches how the rate
-    // queue treats untagged entries: flush unconditionally.
+    // Undefined means no join had completed, so there is no affinity to
+    // enforce; same rule as untagged entries in the rate queue.
     if (requestedIn !== undefined && this.currentRoomName !== requestedIn) {
-      // Throw rather than return: handleApply closes the panel on send, so a
-      // silent drop leaves the user looking at an unchanged deck with no
-      // explanation. createStore attaches a catch to every dispatched promise,
-      // which turns this into a toast.
+      // Throw, not return: the panel already closed, so a silent drop leaves
+      // an unexplained unchanged deck. createStore's catch turns this into a
+      // toast.
       throw new UserFacingError(
         `Those filters were for "${requestedIn}", so they were not applied here.`,
       );
@@ -538,49 +443,28 @@ export class ReelyClient extends EventTarget {
     this.sendMessage({ type: "applyFilters", payload });
   };
 
-  // Cap on queued rate messages. The disconnect-detection gap is brief, so
-  // this is only ever a handful in practice; the cap just bounds a pathological
-  // case (the oldest queued swipes are dropped past it).
+  // Queue cap; the oldest swipes drop past it. Only a pathological case hits it.
   private static readonly MAX_PENDING_RATES = 50;
 
-  // Set of mediaIds we've already dispatched a `rate` for in this session.
-  // Audit 16 / 0.5.22 follow-up to the 0.5.20 pendingRates dedup: that fix
-  // only covered the OFFLINE queue. Production reely 0.5.20 (self-hosted
-  // deploy, 2026-05-27 ~02:55 UTC) still tripped the WS 100/10s rate
-  // limit because a stuck client fires rate dispatches in a tight loop
-  // over an OPEN socket -- each one goes straight to ws.send() with no
-  // dedup. This sentinel set bounds the storm at source: once a card is
-  // rated, no valid use case for re-rating exists (the card is removed
-  // from the deck client-side), so strict drop-on-duplicate is safe.
-  // Memory is bounded by the room's media set size; no expiry needed
-  // within a session.
+  // mediaIds already rated this session. Stops a stuck client looping rate
+  // dispatches over an OPEN socket from tripping the server's WS rate limit,
+  // which the offline-only pendingRates dedup never sees. Safe because a rated
+  // card leaves the deck. Bounded by the room's media set; no expiry needed.
   private sentRateIds = new Set<string>();
 
   sendMessage(msg: ServerMessage) {
     if (this.ws.readyState !== WebSocket.OPEN) {
-      // Swiping or tapping while disconnected would call send() on a closed
-      // socket -- a synchronous throw that surfaces as an unhandled rejection
-      // in async callers (e.g. rate()). A `rate` is a real swipe, so queue it
-      // for flush-on-reconnect rather than losing it; other message types are
-      // request/response and the caller retries, so just drop them.
+      // send() on a closed socket throws synchronously, surfacing as an
+      // unhandled rejection in async callers. A `rate` is a real swipe, so
+      // queue it; other types are request/response and the caller retries.
       if (msg.type === "rate") {
-        // Dedupe by mediaId so a stuck client (key-held-down, render loop,
-        // or otherwise looping rate dispatches against the same card while
-        // offline) can't fill the queue with 50 copies of the same vote.
-        // Post-mortem from production reely 0.5.9 (self-hosted deploy,
-        // 2026-05-27 ~02:30 UTC): the same mediaId showed up 95+ times in
-        // the server log as "already rated" warnings, traced to repeated
-        // queue-flushes of all-same-mediaId entries across reconnect
-        // cycles.
+        // Dedupe by mediaId so a stuck client can't fill the queue with 50
+        // copies of one vote.
         //
-        // Contract note (audit 16 #451): through the production entry
-        // point -- rate(), the only caller that sends rates -- a repeat
-        // mediaId is dropped by sentRateIds BEFORE reaching this queue,
-        // so the app's effective semantics are FIRST-decision-wins and
-        // this replace branch is unreachable. It stays as queue-layer
-        // defense in depth (a direct sendMessage caller, or a future
-        // relaxation of rate()'s dedup for an undo feature, hits it);
-        // at this layer the latest entry wins.
+        // Unreachable via rate(), the only production caller, since
+        // sentRateIds drops repeats first. Kept as queue-layer defense for a
+        // direct sendMessage caller or a future undo feature; at this layer
+        // the latest entry wins.
         const mediaId = msg.payload.mediaId;
         const dupIdx = this.pendingRates.findIndex(
           (m) => m.msg.type === "rate" && m.msg.payload.mediaId === mediaId,

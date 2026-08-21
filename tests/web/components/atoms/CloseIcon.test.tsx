@@ -35,7 +35,6 @@ describe('CloseIcon', () => {
     expect(svg?.getAttribute('class')).toBe('custom-class');
   });
 
-  // Decorative -- the surrounding <button> carries the aria-label.
   it('is marked aria-hidden so the surrounding button label owns accessibility', () => {
     const { container } = render(<CloseIcon />);
     expect(container.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');

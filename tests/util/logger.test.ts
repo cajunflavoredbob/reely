@@ -1,13 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Audit 9 #145: logger.applyRedactions was rewritten in 0.4.5 from
-// `redactions.reduce(split.join)` (O(N*L) per message) to a single
-// combined regex pass with a cached pattern that invalidates on
-// addRedaction. The new path has to escape regex metacharacters so a raw
-// '+', '.', '?' in a token is matched literally, not interpreted.
+// applyRedactions compiles one combined regex, cached and invalidated by
+// addRedaction, so it must escape metacharacters: a raw '+', '.' or '?' in a
+// token has to match literally.
 
-// Reset modules between tests so the redaction list + compiled regex
-// start fresh.
+// Reset so the redaction list and compiled regex start fresh.
 beforeEach(() => {
   vi.resetModules();
 });
@@ -23,12 +20,11 @@ vi.mock('pino', () => {
     error: (msg: string) => captured.push(msg),
     fatal: (msg: string) => captured.push(msg),
   });
-  // Module shape: default export + named export, matching pino's actual
-  // dual-form so the static `import pino from 'pino'` resolves cleanly.
+  // Mirrors pino's dual form so `import pino from 'pino'` resolves.
   return { __esModule: true, default: fn };
 });
 
-describe('logger applyRedactions (audit 9 #145)', () => {
+describe('logger applyRedactions', () => {
   beforeEach(() => {
     captured.length = 0;
   });
@@ -46,14 +42,11 @@ describe('logger applyRedactions (audit 9 #145)', () => {
     const { logger, addRedaction } = await import(
       '../../internal/app/reely/logger'
     );
-    // Plex tokens have hyphens; URLs have dots + slashes + plus signs.
-    // Each of these is a regex metacharacter that must be escaped before
-    // the combined pattern is compiled.
+    // Real tokens and URLs carry hyphens, dots, slashes and plus signs.
     addRedaction('a.b+c?d');
     logger.info('value: a.b+c?d');
     expect(captured[0]).toBe('value: ****');
-    // Sanity: a literal that *looks* like the regex but isn't equal must
-    // NOT be redacted. (Confirms the meta-chars aren't being interpreted.)
+    // A string the unescaped pattern would match must survive.
     captured.length = 0;
     logger.info('value: axbXcYd');
     expect(captured[0]).toBe('value: axbXcYd');
@@ -81,12 +74,10 @@ describe('logger applyRedactions (audit 9 #145)', () => {
   });
 });
 
-// Audit 16 #441: main.ts dumps the config through JSON.stringify at DEBUG
-// with redaction as the stated guard, but JSON escaping rewrites `"` and
-// `\` inside string values -- a password containing either character
-// matched neither the raw nor the URL-encoded registered form and printed
-// unmasked. addRedaction now also registers the JSON-escaped body.
-describe('addRedaction JSON-escaped form (audit 16 #441)', () => {
+// main.ts dumps the config through JSON.stringify at DEBUG, and JSON escaping
+// rewrites `"` and `\`, so a password containing either matched neither the
+// raw nor the URL-encoded form and printed unmasked.
+describe('addRedaction JSON-escaped form', () => {
   beforeEach(() => {
     captured.length = 0;
   });
@@ -98,9 +89,8 @@ describe('addRedaction JSON-escaped form (audit 16 #441)', () => {
     const password = 'my"pass';
     addRedaction(password);
     logger.debug(JSON.stringify({ basicAuth: { password } }, null, 2));
-    // The JSON-escaped body (my\"pass) must be gone; only the masked
-    // form remains. (Can't assert not-contains 'pass' -- the KEY name
-    // "password" legitimately contains it.)
+    // Asserting on the escaped body, not on 'pass': the key name
+    // "password" legitimately contains it.
     expect(captured[0]).not.toContain('my\\"pass');
     expect(captured[0]).toContain('****');
   });

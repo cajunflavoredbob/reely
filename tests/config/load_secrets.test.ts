@@ -3,12 +3,8 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// readDockerSecret reads from process.env.SECRETS_DIR (default /run/secrets).
-// Tests redirect SECRETS_DIR to a per-test tmpdir so file fixtures can be
-// laid down without root.
-//
-// vi.resetModules() + dynamic import per test because the SECRETS_DIR
-// constant is captured at module load.
+// SECRETS_DIR is redirected to a tmpdir so fixtures need no root. It is
+// captured at module load, hence resetModules plus a dynamic import per test.
 
 let dir: string;
 
@@ -36,16 +32,14 @@ describe('readDockerSecret', () => {
   });
 
   it('returns undefined when the secret file does not exist (ENOENT)', async () => {
-    // No file written -- the orchestrator never mounted this secret, so
-    // the caller falls back to the env-var path.
+    // Nothing written: the secret was never mounted, so the caller falls back
+    // to the env var.
     const { readDockerSecret } = await reload();
     await expect(readDockerSecret('plex_token')).resolves.toBeUndefined();
   });
 
-  // Audit 12 #199: an operator who mounted a secret and then left the file
-  // empty is misconfigured, not opting out. 0.4.8 throws instead of
-  // silently falling back to env (which would mask "auth bypassed" as
-  // "auth not configured").
+  // A mounted-but-empty secret is misconfiguration, not opt-out. Falling back
+  // to env would mask "auth bypassed" as "auth not configured".
   it('throws EmptyDockerSecretError on an empty secret file', async () => {
     writeFileSync(join(dir, 'plex_token'), '');
     const { readDockerSecret, EmptyDockerSecretError } = await reload();

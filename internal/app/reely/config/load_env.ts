@@ -7,16 +7,12 @@ export type ConfigEnvVariableName =
   | 'HOST' | 'PORT' | 'LOG_LEVEL' | 'ROOT_PATH' | 'ALLOWED_ORIGINS'
   | 'EXPOSE_PLEX_BASE_URL';
 
-// Splits a comma-separated env value, trimming each segment and dropping
-// empties so "a,,b" or "a, b " yields ["a","b"], not ["a","","b"].
+// "a,,b" and "a, b " both yield ["a","b"].
 const EnvList = (value: string) =>
   value.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
 
-// Parses a boolean env value. Accepts true/1/yes/on (case-insensitive) as
-// true; false/0/no/off as false. Anything else throws -- silent coercion
-// of a typo'd value to a default would hide misconfiguration (a typo'd
-// EXPOSE_PLEX_BASE_URL=ture would otherwise resolve to the default
-// instead of surfacing the typo).
+// Throws on anything unrecognized: coercing a typo (EXPOSE_PLEX_BASE_URL=ture)
+// to the default would hide the misconfiguration.
 const EnvBool = (value: string): boolean => {
   const v = value.trim().toLowerCase();
   if (v === 'true' || v === '1' || v === 'yes' || v === 'on') return true;
@@ -27,8 +23,7 @@ const EnvBool = (value: string): boolean => {
   );
 };
 
-// Strips undefined entries so we don't accidentally override YAML config with
-// undefined values when merging env config and file config together.
+// Strips undefined entries so the env spread can't blank out YAML values.
 const trimRecord = (value: Record<string, unknown>) => {
   const entries = Object.entries(value).filter(([, v]) => typeof v !== 'undefined');
   if (entries.length !== 0) return Object.fromEntries(entries);
@@ -41,25 +36,18 @@ const getTrimmedEnv = (
   const value = process.env[key];
   if (!value) return undefined;
   const parsed = Type(value.trim());
-  // Number(non-numeric) is NaN, which would then be spread into the partial
-  // config and override the default. Fail fast at load time with a clear
-  // message instead of letting NaN propagate.
+  // Number(non-numeric) is NaN, which would spread into the config and
+  // override the default.
   if (Type === Number && !Number.isFinite(parsed as number)) {
-    // JSON.stringify quotes + escapes the raw value (audit 12 #236) so
-    // a hostile string like `PORT="<script>..."` lands in logs as a
-    // safe literal rather than verbatim characters in the message.
+    // JSON.stringify escapes the raw value so a hostile PORT lands in the log
+    // as a quoted literal.
     throw new Error(`Env var ${key}=${JSON.stringify(value)} is not a valid number`);
   }
   return parsed;
 };
 
-// Reads supported environment variables and returns a partial Config.
-// Environment variables take precedence over the YAML config file (see config/main.ts).
-//
-// PLEX_URL must include an explicit scheme (audit 12 #207). The prior
-// silent downgrade to http:// shipped the Plex token in cleartext with
-// only a log warning that's easy to miss in container logs. Forcing the
-// operator to type http:// or https:// makes the channel choice explicit.
+// PLEX_URL must carry an explicit scheme. Defaulting to http:// would ship the
+// Plex token in cleartext behind a log warning that's easy to miss.
 const normalizeUrl = (raw: string | number | boolean | string[] | undefined): string | undefined => {
   if (!raw || typeof raw !== 'string') return undefined;
   if (/^https?:\/\//i.test(raw)) return raw;
@@ -72,25 +60,12 @@ const normalizeUrl = (raw: string | number | boolean | string[] | undefined): st
 };
 
 export const loadFromEnv = async (): Promise<Partial<Config> | undefined> => {
-  // Partial-bundle gates (audit 12 #198): each bundle (server, basicAuth,
-  // tlsConfig) is only emitted when BOTH halves of its required pair are
-  // present. Without the gate, setting only LIBRARY_TITLE_FILTER (or only
-  // AUTH_USER, or only TLS_CERT) emits a bundle that spreads over the
-  // YAML and erases the partner field already configured there.
-  //
-  // The "required pair" is the minimum a complete bundle needs:
-  //   server    -> { url, token }   (libraryTitleFilter is optional)
-  //   basicAuth -> { userName, password }
-  //   tlsConfig -> { certFile, keyFile }
-  //
-  // Anything outside the pair (libraryTitleFilter, etc.) goes in only
-  // when the pair already qualifies; otherwise the env contribution to
-  // that bundle is dropped entirely.
-  //
-  // readDockerSecret is async (audit 12 #209) so loadFromEnv is too;
-  // loadConfig awaits it. Sequential awaits are fine -- the two secret
-  // reads are cheap and run-once at startup.
-  const url   = normalizeUrl(getTrimmedEnv('PLEX_URL'));
+  // Each bundle is emitted only when both halves of its required pair are set
+  // (server needs url+token, basicAuth userName+password, tlsConfig
+  // certFile+keyFile). Otherwise setting just one env var emits a half bundle
+  // that spreads over the YAML and erases the partner field configured there.
+  // Optional fields ride along only once the pair qualifies.
+  const url = normalizeUrl(getTrimmedEnv('PLEX_URL'));
   const token = (await readDockerSecret('plex_token')) ?? getTrimmedEnv('PLEX_TOKEN');
   const server = (url && token)
     ? trimRecord({

@@ -12,24 +12,15 @@ import type {
 import type { Client } from './client';
 import type { RouteContext } from './types';
 
-// Shared empty-set sentinel for the `userRated` reverse-index fallback
-// (audit 14 #359). Re-using a single frozen Set avoids allocating a
-// fresh one on every getMediaForUser call for users who haven't rated
-// anything. Frozen so a future caller can't accidentally mutate it.
+// Shared fallback for the userRated index: avoids allocating a Set per
+// getMediaForUser call for users who haven't rated. Frozen so nobody mutates
+// the shared instance.
 const EMPTY_SET: ReadonlySet<string> = Object.freeze(new Set<string>());
 
-// Divide-by-zero-safe progress fraction. Audit 15 #384 consolidated
-// three duplicated sites (client.ts handleJoinRoom, room.ts storeRating,
-// room.ts getUsers) so they all guard the same way: return 0 when total
-// is 0 or negative so the wire value can't become Infinity / NaN on a
-// degenerate empty-media room.
-//
-// Clamped to 1 (audit 16 #439): applyFilters deliberately preserves
-// userProgress while media.size can shrink, so count > total is a
-// legitimate post-filter state -- without the clamp, fractions like
-// 51/40 reached the wire, persisted to disk, and rendered as "128%" in
-// UsersPopup (UserPill clamped independently; consumers shouldn't have
-// to defend against server-originated bad data one by one).
+// Progress fraction, safe on both ends. 0 when total <= 0, so an empty-media
+// room can't put Infinity / NaN on the wire. Clamped to 1 because applyFilters
+// preserves userProgress while media.size can shrink, so count > total is
+// legitimate; unclamped, 51/40 reaches the wire, persists, and renders "128%".
 export const safeProgress = (count: number, total: number): number =>
   total > 0 ? Math.min(1, count / total) : 0;
 
@@ -37,13 +28,9 @@ export class RoomExistsError extends Error { name = 'RoomExistsError'; }
 export class RoomLimitError extends Error { name = 'RoomLimitError'; }
 export class RoomNotFoundError extends Error { name = 'RoomNotFoundError'; }
 export class NoMediaError extends Error { name = 'NoMediaError'; }
-// Thrown when a join request tries to add a connection under a username
-// that's already taken by a DIFFERENT live connection in the same room.
-// Audit 16 / 0.5.22: production reely saw one username used on two devices
-// simultaneously (Android phone + tablet); the prior behavior silently
-// displaced the older client + left it dead-looking. The named error
-// surfaces through the join path so the UI can show a clear "name taken"
-// message and prompt for a different name.
+// A username already held by a DIFFERENT live connection in the same room.
+// Named so the join path can prompt for a different name rather than silently
+// displacing the older client and leaving it dead-looking.
 export class UsernameTakenError extends Error { name = 'UsernameTakenError'; }
 
 export class Room {
@@ -51,12 +38,9 @@ export class Room {
   // Canonical name (lowercased, allowlist-stripped). The Map key, filename,
   // and URL parameter value all use this form.
   roomName: string;
-  // Display name (case preserved). Used for UI rendering. Falls back to
-  // roomName when undefined (legacy persisted rooms).
+  // Display name (case preserved). Falls back to roomName for legacy rooms.
   displayName: string;
-  // Connected clients. Mutated by Client.handle*Room to add/remove the
-  // current connection; broadcast iterates this map. Not for external use
-  // outside the Client/Room pair.
+  // Connected clients. Owned by the Client/Room pair; nothing else mutates it.
   users = new Map<string, Client>();
   filters?: Filter[];
   media: Promise<Map</* mediaId */ string, Media>>;
@@ -66,65 +50,40 @@ export class Room {
     Array<[userName: string, rating: Rate['rating'], time: number]>
   >();
 
-  // Reverse index: userName -> set of mediaIds that user has rated
-  // (audit 14 #359). Maintained incrementally in `storeRating`; rebuilt
-  // from `ratings` when a room is loaded from disk (`roomStore.ts:
-  // loadRoom`). `getMediaForUser` reads this directly instead of
-  // walking every rating tuple, turning per-call cost from O(ratings.
-  // size) into O(1) lookup + O(media.size) filter. The prior 0.4.2
-  // #146 fix already collapsed the inner per-media find() into a Set
-  // build; this is the next step (don't even build the Set each call).
+  // Reverse index: userName -> mediaIds rated. Maintained in storeRating,
+  // rebuilt from `ratings` by roomStore's loadRoom. Turns getMediaForUser from
+  // O(ratings.size) into an O(1) lookup.
   userRated = new Map</* userName */ string, Set</* mediaId */ string>>();
 
   createdAt: number = Date.now();
 
-  // Timestamp of the most recent rating in this room. Drives the 6h TTL
-  // expiry: a room with no swipes for ROOM_TTL_MS gets cleaned up by the
-  // periodic sweep in roomStore. Initialized to now so a freshly-created
-  // empty room starts the clock from creation -- otherwise a room never
-  // swiped in would never expire.
+  // Most recent rating; drives the 6h TTL sweep in roomStore. Initialized to
+  // now so a room nobody ever swipes in still expires.
   lastSwipeAt: number = Date.now();
 
-  // Server-side cooldown on applyFilters, shared across every client connected
-  // to this room. Belongs here (not on Client) so two browser windows for the
-  // same user -- or two different users hammering apply -- can't bypass the
-  // cap by being separate WS connections.
+  // applyFilters cooldown. On the room, not the Client, so two browser windows
+  // can't bypass it by being separate connections.
   lastApplyAt: number = 0;
 
-  // Media for items that have already matched, kept so a later filter change
-  // cannot make an existing match unrenderable.
+  // Media for already-matched items, so a later filter change can't make an
+  // existing match unrenderable: applyFilters keeps `ratings` while narrowing
+  // `media`, and getMatches resolves through the current media map, so without
+  // this a filtered-out match vanishes from the UI on the next rejoin.
   //
-  // applyFilters deliberately preserves `ratings` while narrowing `media`,
-  // because "a match the room has already found is a piece of shared history,
-  // not something a filter change should wipe out". getMatches broke that:
-  // it resolved each match through the CURRENT media map and silently skipped
-  // misses, so a match outside the new filter survived in room state but
-  // vanished from the UI on the next rejoin -- and rejoin fires on every WS
-  // blip, with the reducer overwriting the client's list wholesale.
-  //
-  // In-memory only. A match whose media falls outside the room's filters still
-  // drops after a restart, since persisting the media objects would mean a
-  // room-file schema change; the ratings themselves are persisted either way.
+  // In-memory only: persisting the Media objects would need a room-file schema
+  // change, so a filtered-out match still drops on restart.
   matchedMedia = new Map</* mediaId */ string, Media>();
 
-  // Deduplication keys for notifyMatch: `${mediaId}:${sortedLikers.join(',')}`.
-  // Today each storeRating call produces a unique like-set, so this set is
-  // belt-and-suspenders against a future code path (or audit-followup
-  // regression) that could call notifyMatch twice for the same like-set.
-  //
-  // FIFO-capped to NOTIFIED_MATCH_KEYS_CAP entries (audit 11 #190): on a
-  // hypothetical max-utilization room (~4000 movies, 10 users) the set
-  // could grow to ~40k strings. The 6h TTL keeps real rooms small, but
-  // capping is cheap defense in depth.
+  // notifyMatch dedupe keys: `${mediaId}:${sortedLikers.join(',')}`. Each
+  // storeRating produces a unique like-set today, so this guards a future path
+  // that double-notifies. FIFO-capped because a max-utilization room (~4000
+  // movies, 10 users) could reach ~40k strings.
   private notifiedMatchKeys = new Set<string>();
   private static readonly NOTIFIED_MATCH_KEYS_CAP = 8000;
 
-  // FIFO cap for matchedMedia, for the same reason its string-keyed neighbour
-  // above has one. This map holds full Media objects rather than keys, so
-  // leaving the cheap structure capped and the expensive one unbounded would
-  // be exactly backwards. Entries still present in room.media share the same
-  // object reference and cost nothing extra; only filtered-out titles retain
-  // bytes, and a room cannot match more titles than its library holds.
+  // FIFO cap for matchedMedia: it holds full Media objects, so capping the
+  // cheap key set above and not this one would be backwards. Only filtered-out
+  // titles retain bytes; the rest share references with room.media.
   private static readonly MATCHED_MEDIA_CAP = 2000;
 
   constructor(req: CreateRoomRequest, ctx: RouteContext) {
@@ -143,17 +102,11 @@ export class Room {
       throw new NoMediaError('There are no items with the specified filters applied.');
     }
 
-    // Copy the array before shuffling (audit 13 #280). provider.getMedia()
-    // returns a memoized array cached inside the provider (memo1TTL on
-    // getMediaCached, 5-min TTL). Shuffling in place mutates that cached
-    // array, so two concurrent rooms hitting the same cache slot end up
-    // working from partially-shuffled lists -- and each subsequent
-    // fetchMedia call sees a list that's *more* shuffled than the last,
-    // accumulating bias toward whatever's been swept to the front. The
-    // copy is cheap (O(n) reference copies of the array of Media handles,
-    // not the Media objects themselves).
+    // Copy before shuffling: provider.getMedia() returns an array memoized
+    // inside the provider (5-min TTL), so an in-place shuffle mutates the
+    // shared cache and each fetchMedia accumulates bias from the last.
     const media = [...sourceMedia];
-    // Durstenfeld shuffle -- unbiased O(n) Fisher-Yates variant.
+    // Durstenfeld shuffle: unbiased O(n) Fisher-Yates variant.
     for (let i = media.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [media[i], media[j]] = [media[j], media[i]];
@@ -162,37 +115,25 @@ export class Room {
     return new Map<string, Media>(media.map((m) => [m.id, m]));
   }
 
-  // Monotonic token for applyFilters. Two applies racing (the per-room 3s
-  // cooldown makes this rare, but a slow fetchMedia can still overlap) used to
-  // be last-RESOLVED-wins; the token makes it last-REQUESTED-wins.
+  // Makes racing applies last-REQUESTED-wins instead of last-RESOLVED-wins; a
+  // slow fetchMedia can overlap despite the 3s cooldown.
   private applySeq = 0;
 
   async applyFilters(newFilters: Filter[]): Promise<Media[] | null> {
-    // Fetch with new filters before mutating state -- if it throws (e.g. NoMediaError)
-    // the room is left intact and this.media remains the previous resolved promise.
-    //
-    // Ratings + userProgress + matches are preserved across filter changes: a
-    // match the room has already found is a piece of shared history, not
-    // something a filter change should wipe out. Already-rated media simply
-    // won't reappear in the next swipe queue (getMediaForUser filters them).
+    // Fetch before mutating state: a throw (NoMediaError) must leave the room
+    // intact. Ratings, userProgress and matches survive filter changes;
+    // already-rated media just won't reappear in the swipe queue.
     const seq = ++this.applySeq;
     const mediaMap = await this.fetchMedia(newFilters);
-    // Only commit if no newer applyFilters started while we were fetching --
-    // otherwise we'd clobber the newer (last-requested) result with a stale one.
-    // Returning null on the losing branch tells the caller not to broadcast
-    // a filterChangeApplied for media the room never adopted (the previous
-    // code returned the losing media unconditionally, so every client got
-    // the stale set even though this.media was on the newer one).
+    // Commit only if no newer apply started mid-fetch. null tells the caller
+    // not to broadcast filterChangeApplied for media the room never adopted.
     if (seq !== this.applySeq) {
       return null;
     }
-    // Archive the media for matches the NEW set can no longer serve, before
-    // swapping it in. Archiving every match at formation time instead (the
-    // first shape of this fix) spent the whole budget on titles the current
-    // media set still resolves, so a busy room's FIFO evicted precisely the
-    // filtered-out entries the archive exists for. Here the write happens only
-    // when a title is actually about to disappear, so the archive holds only
-    // what nothing else can serve.
+    // Archive matches the NEW set can't serve, before swapping it in.
+    // Archiving at match-formation time instead spends the FIFO budget on
+    // titles room.media still resolves, evicting exactly the entries the
+    // archive exists for.
     const previousMedia = await this.media;
     for (const [mediaId, rating] of this.ratings.entries()) {
       if (mediaMap.has(mediaId)) continue;
@@ -202,28 +143,20 @@ export class Room {
     }
     this.filters = newFilters;
     this.media = Promise.resolve(mediaMap);
-    // Applying filters is room activity -- refresh the TTL clock so a room
-    // where users actively filter (but haven't swiped) isn't expired.
+    // Filtering is activity: refresh the TTL so an actively-filtered room lives.
     this.lastSwipeAt = Date.now();
     return [...mediaMap.values()];
   }
 
   async getMediaForUser(userName: string): Promise<Media[]> {
     const media = await this.media;
-    // O(1) lookup of the user's rated-set via the reverse index (audit
-    // 14 #359). The prior implementation walked every rating tuple in
-    // the room to build the same set on every call -- fine for small
-    // rooms, real cost on the ~4000-movie / few-hundred-rating case.
-    // Empty-set fallback for a user who hasn't rated anything yet (no
-    // entry in userRated at all).
+    // O(1) rated-set lookup via the reverse index.
     const ratedByUser = this.userRated.get(userName) ?? EMPTY_SET;
     return [...media.values()].filter((m) => !ratedByUser.has(m.id));
   }
 
-  // Adds (userName, mediaId) to the reverse index. Called from
-  // storeRating's two branches (new rating + adding to existing
-  // ratings tuple) so the index stays in sync with `this.ratings`
-  // without duplicating the Set construction.
+  // Keeps userRated in sync with `ratings`; called from both storeRating
+  // branches.
   private recordUserRated(userName: string, mediaId: string): void {
     const existing = this.userRated.get(userName);
     if (existing) {
@@ -233,19 +166,15 @@ export class Room {
     }
   }
 
-  // INVARIANT: `this.room` must never be published to a Client while
-  // `room.media` is still pending. Both createRoom and loadRoom await it before
-  // the room becomes reachable, and applyFilters installs an already-resolved
-  // promise, so the read in Client.handleRate and the read below always agree.
-  // If a future path ever publishes a room with a pending media promise, a
-  // rate racing a filter change would write into `ratings` a match that is
-  // never notified and never archived, and getMatches could then resolve it
-  // from neither map.
+  // INVARIANT: a Room must never be published to a Client while `room.media` is
+  // still pending. createRoom and loadRoom await it; applyFilters installs an
+  // already-resolved promise. Otherwise a rate racing a filter change writes a
+  // match that is never notified, never archived, and unresolvable later.
   async storeRating(userName: string, rating: Rate, matchedAt: number) {
     // Every accepted rating refreshes the TTL clock.
     this.lastSwipeAt = matchedAt;
-    // Snapshot the media map once: this.media is reassignable (applyFilters),
-    // so awaiting it twice could observe two different maps mid-operation.
+    // Snapshot once: applyFilters reassigns this.media, so awaiting it twice
+    // could observe two different maps mid-operation.
     const media = await this.media;
     const existingRatings = this.ratings.get(rating.mediaId);
     const progress = (this.userProgress.get(userName) ?? 0) + 1;
@@ -259,25 +188,19 @@ export class Room {
       existingRatings.push([userName, rating.rating, matchedAt]);
       this.recordUserRated(userName, rating.mediaId);
       const likes = existingRatings.filter(([, r]) => r === 'like');
-      // Only notify when the rating just added is a like: a like is the only
-      // thing that can grow the like set. Without the rating.rating guard, a
-      // later dislike on an already-matched item re-evaluates likes.length and
-      // re-broadcasts the same match. (A 3rd/4th liker still notifies -- the
-      // match genuinely gained a member, and that user sees their own match.)
+      // Only a like can grow the like set. Without this guard a later dislike
+      // on an already-matched item re-broadcasts the same match. A 3rd liker
+      // still notifies: the match genuinely gained a member.
       if (rating.rating === 'like' && likes.length > 1) {
         const matchedMedia = media.get(rating.mediaId);
         if (matchedMedia) {
           const likers = likes.map(([u]) => u);
-          // Dedupe by (mediaId, sorted-liker-set) so a re-invocation for the
-          // same set can't double-broadcast. Each natural storeRating call
-          // produces a unique set today (a like grows the set by one), so
-          // this is defense-in-depth rather than a current-behavior fix.
+          // Dedupe by (mediaId, sorted likers) so a re-invocation for the same
+          // set can't double-broadcast.
           const matchKey = `${rating.mediaId}:${[...likers].sort().join(',')}`;
           if (!this.notifiedMatchKeys.has(matchKey)) {
-            // FIFO cap: drop the oldest key when at the cap so the set
-            // can't grow unbounded across a long-lived room. Map/Set
-            // iteration order is insertion order in JS, so keys().next()
-            // is the oldest entry.
+            // FIFO: Set iteration is insertion order, so values().next() is
+            // the oldest key.
             if (this.notifiedMatchKeys.size >= Room.NOTIFIED_MATCH_KEYS_CAP) {
               const oldest = this.notifiedMatchKeys.values().next().value;
               if (oldest !== undefined) this.notifiedMatchKeys.delete(oldest);
@@ -293,21 +216,17 @@ export class Room {
     }
 
     this.userProgress.set(userName, progress);
-    // safeProgress guards media.size === 0 -- normally non-zero (fetchMedia
-    // throws on empty) but defensive against a future empty-media code path
-    // producing Infinity / NaN on the wire.
+    // safeProgress guards media.size === 0 (Infinity / NaN on the wire).
     this.notifyProgress({ userName } as User, safeProgress(progress, media.size));
   }
 
   async getMatches(userName: string, allLikes: boolean): Promise<Match[]> {
     const matches: Match[] = [];
-    // Snapshot once -- not per loop iteration -- so a concurrent applyFilters
-    // can't swap this.media out from under the loop.
+    // Snapshot once so a concurrent applyFilters can't swap it mid-loop.
     const media = await this.media;
 
-    // Single pass over each rating tuple (audit 15 #378). Collects likers,
-    // tracks the latest matchedAt, and detects whether userName is among the
-    // likers -- previously three traversals (filter + reduce + find).
+    // One pass per rating tuple: likers, latest matchedAt, and whether userName
+    // liked it.
     for (const [mediaId, rating] of this.ratings.entries()) {
       let matchedAt = 0;
       let userIsLiker = false;
@@ -319,8 +238,7 @@ export class Room {
         if (u === userName) userIsLiker = true;
       }
       if (likers.length > 1 && (allLikes || userIsLiker)) {
-        // Current media first, then the archive: a match the room already
-        // found stays visible even once a filter excludes its title.
+        // Archive as fallback: a match stays visible once a filter excludes it.
         const matchedMedia = media.get(mediaId) ?? this.matchedMedia.get(mediaId);
         if (matchedMedia) {
           matches.push({ matchedAt, media: matchedMedia, users: likers });
@@ -368,15 +286,10 @@ export class Room {
   }
 
   notifyMatch(match: Match) {
-    // Deliver to the likers only, so the live event stream agrees with the
-    // rejoin snapshot. The join path uses getMatches(userName, false), which
-    // returns only matches the requesting user liked -- but this broadcast had
-    // no liker filter, so a member who disliked the title (or never rated it)
-    // got the match frame and the celebration, then lost the entry with no
-    // explanation on their next refresh or WS blip when the reducer overwrote
-    // the list wholesale. Worse, the seen-match id survived a same-room
-    // rejoin, so if that user later became a liker the match never
-    // re-celebrated for them.
+    // Likers only, so the live stream agrees with the rejoin snapshot from
+    // getMatches(userName, false). Unfiltered, a non-liker gets the celebration
+    // and then loses the entry on the next WS blip, and the seen-match id
+    // survives rejoin so it never re-celebrates if they later like it.
     const likers = new Set(match.users);
     for (const [userName, client] of this.users.entries()) {
       if (likers.has(userName)) client.sendMessage({ type: 'match', payload: match });
@@ -384,16 +297,11 @@ export class Room {
   }
 
   notifyFilterApplied(appliedBy: string, media: Media[], filters: Filter[]) {
-    // Personalized per-user broadcast (audit 16 #433). The raw applyFilters
-    // result contains every item in the new media set, but a recipient who
-    // has already rated some of them must not get those cards back: the
-    // join/rejoin path filters through getMediaForUser, and this broadcast
-    // previously didn't -- so any filter apply resurrected every
-    // recipient's rated cards as dead swipes (re-rates are silently
-    // dropped server-side) until their next rejoin. Filter through the
-    // same O(1) userRated index getMediaForUser uses. This message type
-    // forgoes broadcastMessage's stringify-once optimization (audit 12
-    // #201) deliberately: each user's payload genuinely differs.
+    // Per-user payload: the raw applyFilters result holds every item in the new
+    // set, so without the userRated filter an apply resurrects each recipient's
+    // rated cards as dead swipes (re-rates are dropped server-side). Skips
+    // broadcastMessage's stringify-once path deliberately: every payload
+    // differs.
     for (const [userName, client] of this.users.entries()) {
       const ratedByUser = this.userRated.get(userName);
       const userMedia = ratedByUser?.size
@@ -407,15 +315,8 @@ export class Room {
   }
 
   broadcastMessage(msg: ClientMessage, sourceUserName?: string) {
-    // Stringify once and forward the raw frame to every recipient
-    // (audit 12 #201). The prior per-client `sendMessage(msg)` re-ran
-    // JSON.stringify for each user -- O(M * payload_size) for a single
-    // broadcast. With Media-bearing messages (match, filterChangeApplied)
-    // the per-user payload is multi-KB, so the savings compound.
-    //
-    // Dropped the `if (client && ...)` falsy guard the prior version
-    // had (audit 12 #254): Map iteration never yields a falsy value
-    // for a present entry, so the check was dead.
+    // Stringify once and forward the raw frame: re-encoding per client is
+    // O(M * payload_size), and Media-bearing messages are multi-KB each.
     const json = JSON.stringify(msg);
     for (const [userName, client] of this.users.entries()) {
       if (userName !== sourceUserName) {
@@ -428,35 +329,28 @@ export class Room {
 type RoomName = string;
 const rooms = new Map<RoomName, Room>();
 
-// Hard cap on concurrently-tracked rooms. A backstop so a flood of createRoom
-// calls can't exhaust memory/disk -- far above any legitimate use, since the
-// 6h TTL sweep keeps the real in-memory count low.
+// Backstop so a createRoom flood can't exhaust memory/disk. Far above real use;
+// the 6h TTL sweep keeps the live count low.
 const MAX_ROOMS = 500;
 
 export const hasRoom = (roomName: string): boolean => rooms.has(roomName);
 
 export const addRoom = (room: Room): void => {
-  // The disk-load join path adds rooms here -- enforce the same MAX_ROOMS cap
-  // createRoom does, or a directory of persisted rooms could load past it and
-  // defeat the memory-exhaustion backstop. Overwriting an existing key is not
-  // a new room, so it isn't capped.
+  // The disk-load join path comes through here, so it needs createRoom's cap or
+  // a directory of persisted rooms loads past it. Overwriting an existing key
+  // isn't a new room.
   if (!rooms.has(room.roomName) && rooms.size >= MAX_ROOMS) {
     throw new RoomLimitError(`Room limit reached (${MAX_ROOMS}). Try again later.`);
   }
   rooms.set(room.roomName, room);
 };
 
-// Snapshot iteration of all in-memory rooms. Returns an array (not the
-// live iterator) so callers can safely call removeRoom() while iterating.
+// An array, not the live iterator, so callers can removeRoom() while iterating.
 export const getAllRooms = (): Room[] => [...rooms.values()];
 
-// MEMORY-ONLY removal -- does NOT unlink the persisted JSON file. Callers
-// that want the room gone for good must also unlink `roomFilePath(name)`
-// themselves (or call the higher-level cleanup path in roomStore which
-// bundles both). Today only `cleanupExpiredRooms` calls this, and it
-// performs the unlink explicitly. Audit 12 #203 flagged that any future
-// caller of `removeRoom` alone would leak the on-disk file -- which then
-// resurrects the room on the next startup via `loadRoom`.
+// MEMORY-ONLY: does NOT unlink the persisted JSON. Callers must unlink
+// roomFilePath(name) themselves, or the file leaks and loadRoom resurrects the
+// room on the next startup.
 export const removeRoom = (roomName: string): boolean => rooms.delete(roomName);
 
 export const createRoom = async (
@@ -471,10 +365,8 @@ export const createRoom = async (
   }
   const room = new Room(createRequest, ctx);
   await room.media;
-  // Re-check after the await: two concurrent createRoom calls for the same
-  // name can both pass the initial has() check (each yields on room.media
-  // before setting). Without this guard the later writer silently overwrites
-  // the earlier room's Map entry and the earlier client ends up orphaned.
+  // Two concurrent creates both pass the initial has() check (each yields on
+  // room.media), and the later writer would orphan the earlier room's client.
   if (rooms.has(room.roomName)) {
     throw new RoomExistsError(`${createRequest.roomName} already exists.`);
   }
@@ -482,19 +374,13 @@ export const createRoom = async (
   return room;
 };
 
-// Accepts a bare roomName -- audit 12 #256: the prior `JoinRoomRequest`
-// parameter type made every caller pass a full request object even though
-// only `.roomName` was read. The callers in client.ts pass the sanitized
-// canonical name; nothing needed the surrounding object shape.
 /**
  * True when `room` is still the instance registered under its name.
  *
- * Distinct from hasRoom(name): after an await, the name can be occupied by a
- * DIFFERENT Room. The TTL sweep can collect a room while a joiner is parked in
- * the liveness probe, and a later joiner then builds a second Room under the
- * same name -- the first joiner is left holding an orphan whose queued saves
- * overwrite the live room's file, and which no sweep can ever reach because it
- * is not in the registry. Identity, not presence, is the question.
+ * Identity, not presence: after an await the name can hold a DIFFERENT Room
+ * (the TTL sweep collects one while a joiner is parked, a later joiner rebuilds
+ * it), leaving the first joiner on an orphan whose saves overwrite the live
+ * room's file and which no sweep can reach.
  */
 export const isRegisteredRoom = (room: Room): boolean => rooms.get(room.roomName) === room;
 
@@ -502,11 +388,8 @@ export const getRoom = (roomName: string): Room => {
   const room = rooms.get(roomName);
   if (!room) throw new RoomNotFoundError(`The room "${roomName}" does not exist.`);
 
-  // The same user rejoining (e.g. after a page refresh) is handled by the
-  // caller: joinRoomFromSanitized probes a colliding entry's socket liveness
-  // and displaces a dead holder (a stale WS entry can outlive the TCP close),
-  // while a demonstrably live holder rejects the join with
-  // UsernameTakenError (0.5.22 + audit 16 #421). handleLeaveRoom guards its
-  // delete by identity so a displaced WS's close won't evict the new one.
+  // Username collisions are the caller's job: joinRoomFromSanitized probes the
+  // holder's socket, displaces a dead one, and rejects a live one with
+  // UsernameTakenError.
   return room;
 };

@@ -23,9 +23,8 @@ describe('ReelyError', () => {
 });
 
 describe('ReelyUnknownError', () => {
-  // Subtle: ReelyUnknownError extends Error directly (not ReelyError) and
-  // pins its name via a class-field initializer. A subclass would override
-  // the name automatically; this one is the "default" thrown by `assert`.
+  // It extends Error directly, not ReelyError, and pins its name in a class
+  // field rather than inheriting the subclass-name behaviour.
   it('has its name pinned to "ReelyUnknownError"', () => {
     const err = new ReelyUnknownError('x');
     expect(err).toBeInstanceOf(Error);
@@ -67,9 +66,8 @@ describe('isRecord', () => {
     expect(() => isRecord({ a: 1, b: 'x' })).not.toThrow();
   });
 
-  // Arrays satisfy `typeof === 'object'` AND `!== null`, so isRecord
-  // accepts them (matches `Record<string, unknown>` only loosely).
-  // Documented here because it'd surprise a reader expecting POJO-only.
+  // Arrays are `typeof 'object'` and non-null, so they pass. Pinned because a
+  // reader would expect POJO-only.
   it('accepts arrays (typeof object && !== null)', () => {
     expect(() => isRecord([])).not.toThrow();
   });

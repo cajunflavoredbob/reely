@@ -4,11 +4,8 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { UserPillRow } from '../../../../web/app/src/components/molecules/UserPillRow';
 import type { UserProgress } from '../../../../types/reely';
 
-// UserPillRow renders a clickable button containing up to maxVisible
-// UserPills + an overflow "+N" badge for the rest. The audit-14 #333
-// memoization (useMemo around the sort) is an internal optimization;
-// the behavioral surface is the ordering + the overflow math + the
-// onClick + the aria-label.
+// A clickable button holding up to maxVisible UserPills plus a "+N" overflow
+// badge. Behavioral surface: ordering, overflow math, onClick, aria-label.
 
 const u = (userName: string, progress = 0): UserProgress => ({
   user: { userName },
@@ -40,7 +37,7 @@ describe('UserPillRow', () => {
         onClick={vi.fn()}
       />,
     );
-    // Default maxVisible = 4, so 6 users -> 2 overflow.
+    // maxVisible defaults to 4, so 6 users leaves 2.
     expect(screen.getByText('+2')).toBeDefined();
   });
 
@@ -54,9 +51,7 @@ describe('UserPillRow', () => {
     expect(container.textContent).not.toContain('+');
   });
 
-  // Pin: the current user's pill is always inline (even in a crowded room
-  // where it might otherwise have landed in overflow). Other users keep
-  // server order.
+  // The current user must never fall into overflow in a crowded room.
   it('pins the current user to the front of the visible pills', () => {
     const { container } = render(
       <UserPillRow
@@ -67,7 +62,7 @@ describe('UserPillRow', () => {
       />,
     );
     const pillSpans = container.querySelectorAll('button > span[title]');
-    // Expect "me" first, then the first two non-me users in server order.
+    // "me" first, then the first two non-me users in server order.
     const visibleNames = Array.from(pillSpans).map((s) => s.getAttribute('title'));
     expect(visibleNames).toEqual(['me', 'alice', 'bob']);
   });
@@ -83,7 +78,7 @@ describe('UserPillRow', () => {
     const visibleNames = Array.from(container.querySelectorAll('button > span[title]')).map(
       (s) => s.getAttribute('title'),
     );
-    // bob pinned first, then alice + carol in their original order.
+    // bob pinned first, alice and carol in their original order.
     expect(visibleNames).toEqual(['bob', 'alice', 'carol']);
   });
 
@@ -96,7 +91,6 @@ describe('UserPillRow', () => {
       />,
     );
     const pills = container.querySelectorAll('button > span[title]');
-    // The pill carrying the pillMe class is the one for "me".
     const mePill = Array.from(pills).find((p) => p.getAttribute('title') === 'me');
     const otherPill = Array.from(pills).find((p) => p.getAttribute('title') === 'alice');
     expect(mePill?.getAttribute('class')).toMatch(/pillMe/);

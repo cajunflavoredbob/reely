@@ -1,24 +1,18 @@
 services:
   reely:
-    # Uses the published image so this file works copied on its own (the
-    # README quick-start). Building from source instead: replace with `build: .`
-    # (requires the full repo checked out).
+    # Published image, so this file works copied on its own. To build from
+    # source, replace with `build: .` (needs the full repo checked out).
     #
-    # Tag pinned to the current release (audit 10 #164 / audit 11 #180).
-    # IMPORTANT (workflow rule, added 0.4.8): this pin tracks VERSION on
-    # every release bump alongside package.json + CHANGELOG. Without that,
-    # the example file drifts (it went 13 releases stale between 0.4.7
-    # and 0.4.8 -- audit 11 #180 / audit 12 #197 caught it). Operators
-    # following the README quick-start get whatever this file says, so
-    # leaving it stale ships a stale image. Latest tags:
+    # Pinned to an exact release so a pull can't move you to a different
+    # version: upgrading means editing this tag yourself. Available tags:
     #   https://hub.docker.com/r/cajunflavoredbob/reely/tags
-    image: cajunflavoredbob/reely:1.1.5
+    image: cajunflavoredbob/reely:1.1.6
     ports:
       - "8000:8000"
     environment:
       PLEX_URL: "http://your-plex-server:32400"
-      # PLEX_TOKEN is injected via secrets below.
-      # Remove the secrets block and use env vars if you prefer (less secure).
+      # PLEX_TOKEN comes from the secrets block below. You can drop that block
+      # and pass it as an env var instead, which is less secure.
       LOG_LEVEL: INFO
       # Uncomment to enable basic auth (also uncomment auth_pass below):
       # AUTH_USER: admin
@@ -30,18 +24,13 @@ services:
       # - ./config.yaml:/app/config.yaml:ro
       - reely_data:/app/data
     restart: unless-stopped
-    # The image carries a HEALTHCHECK on /health (Dockerfile). `docker
-    # compose ps` surfaces it as `(healthy)` / `(unhealthy)` after the
-    # start-period elapses (~15s). If you add a dependent service that
-    # should wait until reely is actually serving requests, gate it with:
+    # The image healthchecks /health; `docker compose ps` reports (healthy)
+    # after a ~15s start period. To make another service wait for it:
     #
     #   your_service:
     #     depends_on:
     #       reely:
     #         condition: service_healthy
-    #
-    # (audit 12 #219.) The single-service quick-start above doesn't need
-    # depends_on.
 
 volumes:
   reely_data:

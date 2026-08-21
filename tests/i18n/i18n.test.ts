@@ -4,25 +4,20 @@ import type { Request } from 'express';
 import { loggerMockFactory } from '../helpers';
 vi.mock('../../internal/app/reely/logger', () => loggerMockFactory());
 
-// getTranslations references getAvailableLocales / loadTranslation via
-// closure inside the i18n module, so vi.mock with importOriginal wouldn't
-// re-route those internal calls. Instead we run against the real
-// configs/localization/ directory; the JSON files are checked into the repo
-// and contain a stable set of locales (en, de, es, fr, nl, pl).
+// Runs against the real configs/localization/ files: getTranslations calls
+// getAvailableLocales and loadTranslation through closure, which vi.mock
+// cannot re-route.
 import { getTranslations, loadTranslation } from '../../internal/app/reely/i18n';
 
-// Local to this file; distinct shape from helpers.ts's `makeReq`
-// (which stubs `socket.remoteAddress` for rate-limit tests). Renamed to
-// avoid the shadowing flagged by audit 13 #339 -- the shared helper
-// keys on a different field, so a future contributor could import the
-// shared one and get a request without an Accept-Language header.
+// Named apart from helpers.ts's `makeReq`, which stubs socket.remoteAddress
+// instead and would yield a request with no Accept-Language header.
 const makeAcceptLanguageReq = (acceptLanguage?: string): Request =>
   ({
     headers: acceptLanguage ? { 'accept-language': acceptLanguage } : {},
   } as unknown as Request);
 
-// Each locale's FILTERS_LOADING string is distinct, so we use it as the
-// signal that the negotiation picked the file we expected.
+// FILTERS_LOADING differs per locale, so it identifies the file negotiation
+// picked.
 const FILTERS_LOADING_BY_LOCALE = {
   en: 'Loading filters...',
   de: 'Filter werden geladen...',
@@ -47,7 +42,7 @@ describe('getTranslations Accept-Language negotiation', () => {
   });
 
   it('respects q-weighted preference order', async () => {
-    // German has the highest q; should win even though English appears first.
+    // German has the highest q, though English appears first.
     const t = await getTranslations(makeAcceptLanguageReq('en;q=0.5,de;q=1.0'));
     expectLocale(t as unknown as Record<string, string>, 'de');
   });
@@ -65,13 +60,12 @@ describe('getTranslations Accept-Language negotiation', () => {
 });
 
 describe('loadTranslation path-traversal guard', () => {
-  // `setLocale` is an unauthenticated WS message; its language string flows
-  // straight into loadTranslation. Without validation, join() resolving `../`
-  // would let it read any .json on disk (e.g. data/rooms/*.json). A traversal
-  // payload must be rejected and fall through to the safe `en` default.
+  // `setLocale` is an unauthenticated WS message and its language string
+  // reaches loadTranslation directly, so an unguarded join() would read any
+  // .json on disk, data/rooms/*.json included.
   it('falls back to en for a `../`-traversal locale', async () => {
-    // Unguarded, this resolves to <cwd>/package.json -- which parses as JSON
-    // but has no FILTERS_LOADING key, so expectLocale would fail.
+    // Unguarded this resolves to <cwd>/package.json, which parses but has no
+    // FILTERS_LOADING key.
     const t = await loadTranslation('../../package');
     expectLocale(t, 'en');
   });
@@ -82,11 +76,9 @@ describe('loadTranslation path-traversal guard', () => {
   });
 });
 
-// Audit 16 #461: nothing pinned key parity across the six locale files --
-// a locale edit dropping a key from one file (e.g. the 0.5.22
-// RATE_SECTION_EXHAUSTED_CARDS_FILTERED addition) failed nothing and
-// surfaced as a raw key name in that language's UI.
-describe('locale key parity (audit 16 #461)', () => {
+// A locale edit that drops a key from one file fails nothing else, and
+// surfaces as a raw key name in that language's UI.
+describe('locale key parity', () => {
   it('all six locale files share an identical key set', async () => {
     const { readFile, readdir } = await import('node:fs/promises');
     const { join } = await import('node:path');

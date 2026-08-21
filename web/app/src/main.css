@@ -1,4 +1,4 @@
-/* ── Legacy tokens (used by Config, Loading, Toast, etc.) ── */
+/* Legacy tokens, still used by Config, Loading, Toast. */
 :root {
   --ry-blue-hue: 240;
   --ry-red-hue: 360;
@@ -37,7 +37,7 @@
 
   --ry-transition-duration: 100ms;
 
-  /* ── Reely design tokens ── */
+  /* Reely design tokens */
   --ry-bg-0: oklch(0.14 0.012 25);
   --ry-bg-1: oklch(0.19 0.015 25);
   --ry-bg-2: oklch(0.24 0.02 25);
@@ -90,8 +90,8 @@ input, button, textarea, select {
 body {
   background: var(--ry-bg-0);
   color: var(--ry-text-0);
-  /* dvh follows the mobile address bar's collapse/expand automatically;
-     supported by every browser reely targets (audit 10 #171). */
+  /* dvh tracks the mobile address bar collapsing; no fallback needed, every
+     browser reely targets supports it. */
   min-height: 100dvh;
   text-rendering: optimizeLegibility;
   line-height: 1.5;
@@ -105,31 +105,13 @@ body:not(.show-focus-ring) *:focus {
   outline: none;
 }
 
-/* ── Shared utilities ── */
+/* -webkit- rule covers Chrome/Safari; scrollbar-width covers Firefox. */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { scrollbar-width: none; }
 
-/* ────────────────────────────────────────────────────────────────────
- * IMPORTANT: Do NOT add @keyframes here if they're referenced from a
- * .module.css file. Vite's CSS Modules implementation hashes the
- * `animation-name` reference inside module files (`animation: foo
- * 200ms` becomes `animation: _foo_<hash>_<n> 200ms`) but does NOT
- * hash @keyframes defined in this global stylesheet. The names don't
- * match -> the animation silently no-ops. No error, no warning, no
- * test failure.
- *
- * Found 0.5.5 (cycle 4 audit). Every animation that used to live
- * here (ry-pop-in, ry-float-up, ry-slide-fade-in, ry-slide-fade-out)
- * had been silently dead since they were written -- the bug only
- * became visible when 0.5.1-0.5.4 chased phantom positioning issues
- * that weren't the real problem. Fix: keyframes live in the SAME
- * .module.css that references them. ry-confetti-fall already worked
- * this way -- that's why it was the only MatchMoment animation
- * visibly firing.
- *
- * For a shared keyframe, DUPLICATE it into each module that uses it
- * (ry-float-up is currently duplicated 4x, ~16 lines total).
- * Redundant but isolated; the alternative is project-wide CSS
- * Modules config (riskier) or the :global() escape hatch (vite +
- * postcss-modules support varies).
- * ──────────────────────────────────────────────────────────────── */
+/* Do NOT put @keyframes here if a .module.css references them. Vite hashes the
+ * animation-name inside module files but not @keyframes in this global sheet,
+ * so the names never match and the animation silently no-ops: no error, no
+ * warning, no test failure. Keyframes belong in the same .module.css that uses
+ * them; duplicate a shared one into each module. The alternatives are
+ * project-wide CSS Modules config or :global(), both less reliable. */

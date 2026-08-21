@@ -2,12 +2,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
 
-// Mock the Zustand store (config slice only) and the plexLinks utility's
-// useLocalPlexReachable hook + the isIOS platform flag. buildPlexLinks
-// itself is a pure function with its own coverage in
-// tests/web/plexLinks.test.ts -- importActual keeps the real impl so the
-// URL-building behavior under test (local vs app.plex.tv branch) isn't
-// re-mocked here.
+// Mocks the store's config slice, useLocalPlexReachable and isIOS.
+// importActual keeps the real buildPlexLinks (covered in
+// tests/web/plexLinks.test.ts) so the local vs app.plex.tv branch stays real.
 const { useStoreMock, useLocalPlexReachableMock, isIOSMock } = vi.hoisted(() => ({
   useStoreMock: vi.fn(),
   useLocalPlexReachableMock: vi.fn(),
@@ -31,10 +28,9 @@ vi.mock('../../../../web/app/src/utils/plexLinks', async () => {
   };
 });
 
-// `isIOS` is a module-level const evaluated at import time. We can't stub
-// navigator after-the-fact here (the module's already loaded by the time
-// the first test runs), so we mock the whole platform module and proxy
-// the value through an object the tests can mutate per case.
+// `isIOS` is a module-level const evaluated at import time, so stubbing
+// navigator later is too late. Mock the platform module and proxy the value
+// through an object tests can mutate per case.
 vi.mock('../../../../web/app/src/utils/platform', () => ({
   get isIOS() {
     return isIOSMock.current;
@@ -106,9 +102,8 @@ describe('PlexLinks', () => {
     expect(container.querySelector('a')?.getAttribute('href')).toContain('app.plex.tv');
   });
 
-  // iOS Safari quirk: target="_blank" opens a blank tab that never loads;
-  // _self is required for the navigation to actually fire. Other platforms
-  // get the standard new-tab behavior. Pinned for both directions.
+  // iOS Safari quirk: target="_blank" opens a blank tab that never loads; _self
+  // is required for the navigation to fire. Both directions pinned.
   it('uses target="_self" on iOS (Safari new-tab quirk)', () => {
     isIOSMock.current = true;
     withConfig({ plexServerId: 'SRV123' });
@@ -123,11 +118,8 @@ describe('PlexLinks', () => {
     expect(container.querySelector('a')?.getAttribute('target')).toBe('_blank');
   });
 
-  // The wrapper div has a click handler that stopPropagation()s so clicks
-  // on "Open in Plex" don't bubble up to parent overlays (MatchMoment's
-  // overlay onClick dismisses the celebration). Verify the bubble is
-  // stopped by clicking the link and observing a parent listener was NOT
-  // notified.
+  // The wrapper stopPropagation()s so "Open in Plex" clicks never reach parent
+  // overlays (MatchMoment's overlay onClick dismisses the celebration).
   it('stops click propagation so parent overlay handlers do not fire', () => {
     withConfig({ plexServerId: 'SRV123' });
     const parentClick = vi.fn();

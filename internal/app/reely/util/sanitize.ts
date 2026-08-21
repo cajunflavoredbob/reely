@@ -1,24 +1,19 @@
-// Server-side sanitizers. Pattern constants live in types/sanitize.ts
-// (audit 15 #392) so the web's per-keystroke sanitizer can share them
-// -- previously each side maintained its own copy and they had drifted
-// on flag use + alternation-vs-sequential strip form.
+// Server-side sanitizers. Patterns live in types/sanitize.ts so the web's
+// per-keystroke sanitizer shares them instead of drifting.
 import {
   ROOM_NAME_ALLOWLIST,
   ROOM_NAME_MAX_LEN,
   stripDangerous,
 } from '../../../../types/sanitize';
 
-// Applied to user input that touches the filesystem or untrusted code
-// paths (usernames). Strips via the shared fixpoint helper (audit 16
-// #440 -- a single pass reconstructed '..' from inputs like './.');
-// trims and length-caps locally (web omits trim because trimming
-// per-keystroke prevents typing spaces).
+// For input that touches the filesystem (usernames). stripDangerous runs to a
+// fixpoint because one pass reconstructs '..' from inputs like './.'. Trim is
+// local: the web omits it, since trimming per keystroke blocks typing spaces.
 export const sanitizeInput = (raw: string, maxLength = 64): string =>
   stripDangerous(raw).trim().slice(0, maxLength);
 
-// Display form of a room name -- what the UI shows. Trim and apply the
-// allowlist but preserve case. Returns the empty string if the input has
-// no valid characters.
+// Display form: allowlisted and trimmed, case preserved. Empty if nothing
+// valid survives.
 export const sanitizeRoomNameDisplay = (raw: string): string =>
   raw
     .replace(ROOM_NAME_ALLOWLIST, '')
@@ -26,8 +21,7 @@ export const sanitizeRoomNameDisplay = (raw: string): string =>
     .trim()
     .slice(0, ROOM_NAME_MAX_LEN);
 
-// Canonical form -- used as Map key, filename, and URL parameter value.
-// Lowercased so case-variant inputs ("Movie Night" / "MOVIE NIGHT") match
-// the same room.
+// Canonical form: Map key, filename, and URL parameter. Lowercased so
+// "Movie Night" and "MOVIE NIGHT" reach the same room.
 export const sanitizeRoomNameCanonical = (raw: string): string =>
   sanitizeRoomNameDisplay(raw).toLowerCase();

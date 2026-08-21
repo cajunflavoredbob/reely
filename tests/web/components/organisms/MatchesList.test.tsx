@@ -2,12 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
-// Mock the Zustand store (for room + config) and useLocalPlexReachable
-// (the hook that probes whether the local Plex web UI is reachable).
-// buildPlexLinks itself is real via importActual -- it's a pure function
-// with its own coverage in tests/web/plexLinks.test.ts.
-//
-// Same pattern as the PlexLinks atom test in 0.4.36.
+// Mocks the store (room + config) and useLocalPlexReachable. importActual
+// keeps the real buildPlexLinks, covered in tests/web/plexLinks.test.ts.
 const { useStoreMock, useLocalPlexReachableMock } = vi.hoisted(() => ({
   useStoreMock: vi.fn(),
   useLocalPlexReachableMock: vi.fn(),
@@ -102,8 +98,7 @@ describe('MatchesList: populated state', () => {
     expect(container.querySelector('h1')?.textContent).toContain('3');
   });
 
-  // Sort: newest match first (descending matchedAt). The render order
-  // matters because the UI animates each row in with a staggered delay.
+  // Render order drives the staggered row-in animation below.
   it('sorts matches by descending matchedAt (newest first)', () => {
     withState({
       matches: [
@@ -119,9 +114,7 @@ describe('MatchesList: populated state', () => {
     expect(titles).toEqual(['Title new', 'Title mid', 'Title old']);
   });
 
-  // Animation delay: each row gets `${i * 40}ms` so the stagger is
-  // consistent. Pin the formula in case a future refactor changes the
-  // multiplier and breaks the cascade timing.
+  // Each row gets `${i * 40}ms`; a changed multiplier breaks the cascade.
   it('applies a sequential 40ms animationDelay per row', () => {
     withState({
       matches: [
@@ -152,15 +145,12 @@ describe('MatchesList: populated state', () => {
     withState({ matches: [m] });
     const { container } = render(<MatchesList onClose={vi.fn()} />);
     expect(container.querySelector('img')).toBeNull();
-    // Title appears both as the placeholder AND the matchTitle p; either is fine.
+    // Title appears as both the placeholder and the matchTitle p.
     expect(screen.getAllByText('Title a').length).toBeGreaterThan(0);
   });
 
-  // Genres are capped at 2 visible pills per row regardless of how many
-  // the media has (rest hidden). Cap is a deliberate layout decision.
-  // Select via the genrePills wrapper > span -- a `[class*="genrePill"]`
-  // attribute selector would also catch the genrePills container itself
-  // (substring match), inflating the count by one.
+  // Query through the wrapper: `[class*="genrePill"]` substring-matches the
+  // genrePills container too, inflating the count by one.
   it('caps visible genre pills at 2 per row', () => {
     withState({
       matches: [
@@ -174,7 +164,6 @@ describe('MatchesList: populated state', () => {
     expect(pills[1]?.textContent).toBe('Drama');
   });
 
-  // Avatar count is capped at 3 per row regardless of match.users length.
   it('caps visible avatars at 3 per row', () => {
     withState({
       matches: [
@@ -183,7 +172,7 @@ describe('MatchesList: populated state', () => {
     });
     const { container } = render(<MatchesList onClose={vi.fn()} />);
     const avatarRow = container.querySelector('[class*="avatarRow"]');
-    // Avatars render as svg; count those inside the avatar row.
+    // Avatars render as svg.
     const avatars = avatarRow?.querySelectorAll('svg') ?? [];
     expect(avatars.length).toBe(3);
   });

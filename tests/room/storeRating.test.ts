@@ -7,7 +7,6 @@ import { Room } from '../../internal/app/reely/room';
 import type { RouteContext } from '../../internal/app/reely/types';
 import type { Rate } from '../../types/reely';
 
-// A Room backed by a stub provider that returns two media items.
 const ALL_MEDIA = [
   { id: 'm1', type: 'movie', title: 'Film One' },
   { id: 'm2', type: 'movie', title: 'Film Two' },
@@ -17,9 +16,8 @@ const makeRoom = (): Room => {
   const ctx = {
     providers: [
       {
-        // Honours a `title` filter so applyFilters actually narrows the set.
-        // A stub that ignored filters would let the archive test pass without
-        // ever exercising the path it is meant to cover.
+        // Must honour `title`: a filter-ignoring stub lets the archive test
+        // pass without narrowing anything.
         getMedia: async (opts?: { filters?: { key: string; value: string[] }[] }) => {
           const titles = opts?.filters?.find((f) => f.key === 'title')?.value;
           return titles ? ALL_MEDIA.filter((m) => titles.includes(m.title)) : ALL_MEDIA;
@@ -46,7 +44,7 @@ describe('Room.storeRating notifyMatch (audit #2)', () => {
     expect(notifyMatch).toHaveBeenCalledTimes(1);
   });
 
-  // The bug: any later rating re-evaluated likes.length > 1 and re-broadcast.
+  // Guards against every later rating re-broadcasting an existing match.
   it('does not re-fire when a later dislike lands on an already-matched item', async () => {
     const room = makeRoom();
     await room.media;
@@ -60,8 +58,7 @@ describe('Room.storeRating notifyMatch (audit #2)', () => {
     expect(notifyMatch).toHaveBeenCalledTimes(1);
   });
 
-  // A third liker still notifies: the match genuinely gained a member, and
-  // that user should see their own match moment.
+  // The match gained a member, and that user should see their own match.
   it('re-fires for a third liker', async () => {
     const room = makeRoom();
     await room.media;
@@ -79,8 +76,7 @@ describe('Room.storeRating notifyMatch (audit #2)', () => {
 // ---------------------------------------------------------------------------
 
 describe('Room match visibility', () => {
-  // broadcastMessage uses sendRaw (stringify-once); notifyMatch targets
-  // individual likers via sendMessage. The stub needs both.
+  // broadcastMessage uses sendRaw, notifyMatch uses sendMessage: stub both.
   const fakeClient = () => ({ sendMessage: vi.fn(), sendRaw: vi.fn() });
 
   it('delivers a match only to the users who liked it', async () => {
@@ -101,9 +97,9 @@ describe('Room match visibility', () => {
 
     expect(matchFrames(alice)).toHaveLength(1);
     expect(matchFrames(bob)).toHaveLength(1);
-    // Carol never rated it. She used to receive the frame and the celebration,
-    // then lose the entry with no explanation on her next rejoin, because the
-    // join snapshot only returns matches the requesting user liked.
+    // Guards against a match reaching someone who never rated it: the join
+    // snapshot only returns matches the requesting user liked, so they would
+    // lose the entry on rejoin.
     expect(matchFrames(carol)).toHaveLength(0);
   });
 
@@ -114,15 +110,12 @@ describe('Room match visibility', () => {
 
     await room.storeRating('alice', like('m1'), Date.now());
     await room.storeRating('bob', like('m1'), Date.now());
-    // Nothing is archived yet: the current media set still serves the match,
-    // so spending archive budget on it would be waste. Archiving happens at
-    // the filter boundary, where a title actually becomes unservable.
+    // Archiving only happens at the filter boundary, where a title becomes
+    // unservable; the current media set still serves this one.
     expect(room.matchedMedia.has('m1')).toBe(false);
 
-    // A real filter change, through applyFilters, that excludes the matched
-    // title. applyFilters deliberately preserves ratings for exactly this
-    // reason; getMatches used to drop the match anyway because it resolved
-    // through the current media map, so the match vanished on the next rejoin.
+    // Guards against a match vanishing on rejoin once a filter excludes its
+    // title: getMatches must not resolve through the current media map alone.
     await room.applyFilters([{ key: 'title', operator: '=', value: ['Film Two'] }]);
     expect(room.matchedMedia.has('m1')).toBe(true);
 

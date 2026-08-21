@@ -2,30 +2,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
-// CardStack's animation surface (@react-spring/web Controller +
-// @use-gesture/react useGesture) couldn't be intercepted via vi.mock --
-// the SUT's imports resolve through the web/app pnpm tree which vitest
-// externalizes past where the mock factory runs. (Aliasing the modules
-// to web/app installs + installing at root + deps.optimizer.web.include
-// were all tried 0.4.43; none caused the mock factory to fire.)
-//
-// Concretely this means the dismissal-callback fire path
-// (rateItem -> dispatch remove -> controller.start().then(onCardDismissed))
-// can't be exercised end-to-end here: the real react-spring Controller's
-// animation needs a requestAnimationFrame loop that jsdom doesn't advance,
-// so the .then(cb) never fires. The tests below cover everything that's
-// reachable without intercepting Controller: empty state, populated
-// rendering, the connection-status early-returns in the button + keyboard
-// handlers, and the memo() `() => true` invariant. Driving the dismissal
-// callback would need either: a Controller mock that DOES intercept (likely
-// requires deeper vitest config work, or restructuring the SUT to inject
-// the Controller factory), or moving to a real-browser harness (Playwright).
+// vi.mock cannot intercept @react-spring/web's Controller or
+// @use-gesture/react here: the SUT resolves them through the web/app pnpm
+// tree, which vitest externalizes past where the mock factory runs. So the
+// dismissal path (rateItem -> dispatch remove -> controller.start().then(
+// onCardDismissed)) is unreachable; the real Controller needs a rAF loop
+// jsdom never advances, so .then(cb) never fires. Driving it would need an
+// injectable Controller factory or a real-browser harness. Everything else
+// is covered below.
 const { useStoreMock } = vi.hoisted(() => ({ useStoreMock: vi.fn() }));
 
 vi.mock('../../../../web/app/src/store', () => ({
   useStore: useStoreMock,
-  // useStoreComputed (audit 16 #432) runs the component's selector against
-  // the same slice withState() configured, so tests keep one state knob.
+  // Runs the component's selector against the slice withState() configured,
+  // so tests keep a single state knob.
   useStoreComputed: (selector: (s: Record<string, unknown>) => unknown) => {
     const [slice] = useStoreMock();
     return selector(slice);
@@ -60,9 +50,8 @@ const withState = (slice: any = {}) => {
   useStoreMock.mockReturnValue([{ connectionStatus: 'connected', ...slice }, vi.fn()]);
 };
 
-// jsdom doesn't ship ResizeObserver; CardStack's useElementWidth hook
-// constructs one. Stub a no-op class so the constructor + observe/disconnect
-// calls don't crash. We're not testing the resize-driven width updates here.
+// jsdom has no ResizeObserver and useElementWidth constructs one. No-op stub;
+// resize-driven width updates are not under test.
 class ResizeObserverStub {
   observe() {}
   unobserve() {}
@@ -86,18 +75,14 @@ describe('CardStack: empty state', () => {
     expect(screen.getByText("That's everything.")).toBeDefined();
   });
 
-  // The empty subtext uses <Tr name="RATE_SECTION_EXHAUSTED_CARDS" />. Tr
-  // falls back to rendering the name itself when no translation matches
-  // (translations slice is absent from our store mock), so the raw key
-  // appears as the text.
+  // Tr renders the raw key when no translation matches, and the store mock
+  // carries no translations slice.
   it('renders the RATE_SECTION_EXHAUSTED_CARDS Tr key in the empty subtext', () => {
     render(<CardStack cards={[]} renderCard={renderCard} onCardDismissed={vi.fn()} />);
     expect(screen.getByText('RATE_SECTION_EXHAUSTED_CARDS')).toBeDefined();
   });
 
-  // Audit 16 #461: the 0.5.22 filtered-empty-stack branch had no coverage
-  // -- the hasActiveFilters ternary switching to the FILTERED key could
-  // regress and fail nothing.
+  // Without this the hasActiveFilters ternary can regress and fail nothing.
   it('renders the FILTERED Tr key when the room has active filters', () => {
     withState({ room: { activeFilters: [{ key: 'genre', operator: '=', value: ['Action'] }] } });
     render(<CardStack cards={[]} renderCard={renderCard} onCardDismissed={vi.fn()} />);
@@ -121,9 +106,8 @@ describe('CardStack: populated rendering', () => {
   it('renders renderCard output for each card up to INITIAL_COUNT (5)', () => {
     const cards = Array.from({ length: 7 }, (_, i) => card(`c${i}`));
     render(<CardStack cards={cards} renderCard={renderCard} onCardDismissed={vi.fn()} />);
-    // Only the first 5 should be initially mounted; INITIAL_COUNT is 5
-    // (cardStackGeometry.ts). Cards 6+ are deferred until the reducer
-    // dispatches 'add' as earlier cards get removed.
+    // INITIAL_COUNT is 5 (cardStackGeometry.ts); later cards mount only as the
+    // reducer dispatches 'add'.
     expect(screen.getByTestId('card-c0')).toBeDefined();
     expect(screen.getByTestId('card-c4')).toBeDefined();
     expect(screen.queryByTestId('card-c5')).toBeNull();
@@ -141,12 +125,9 @@ describe('CardStack: populated rendering', () => {
 });
 
 describe('CardStack: connection-status gates (button + keyboard early-return)', () => {
-  // The dismissal flow short-circuits at the very top of rateItem when
-  // connectionStatus !== "connected", so the controller is never touched
-  // and onCardDismissed never gets a chance to fire. Pinning this prevents
-  // the local deck from diverging from the server (rate() is dropped when
-  // disconnected -- without the gate, the local stack would move on while
-  // the server stays put).
+  // rateItem short-circuits when connectionStatus is not "connected". Without
+  // the gate the local deck advances while the dropped rate() leaves the
+  // server behind.
   it('Pass button while disconnected does NOT fire onCardDismissed', () => {
     withState({ connectionStatus: 'disconnected' });
     const onCardDismissed = vi.fn();
@@ -178,10 +159,8 @@ describe('CardStack: connection-status gates (button + keyboard early-return)', 
     expect(onCardDismissed).not.toHaveBeenCalled();
   });
 
-  // Non-arrow keys also never fire the dismissal -- the keydown handler's
-  // first guard is the connection status, the second is the arrow-key
-  // check. Pin the arrow-key gating direction (Space / Enter / letters
-  // should never trigger a swipe).
+  // The keydown handler guards on connection first, arrow key second: Space,
+  // Enter and letters must never swipe.
   it('non-arrow keys never fire onCardDismissed even when connected', () => {
     const onCardDismissed = vi.fn();
     render(
@@ -194,18 +173,15 @@ describe('CardStack: connection-status gates (button + keyboard early-return)', 
   });
 });
 
-// Audit 16 #420: the window-level arrow-key handler must ignore keydown
-// events that originate from editable/interactive elements. FilterPanel's
-// text inputs and operator <select>s stay mounted alongside the stack on
-// both layouts, and a caret move inside them must not swipe (ratings are
-// permanent server-side; a stray like can false-match the whole room).
+// The window-level arrow-key handler must ignore keydown from editable or
+// interactive elements: FilterPanel's inputs and operator <select>s stay
+// mounted beside the stack, and a caret move must not swipe. Ratings are
+// permanent server-side and a stray like false-matches the whole room.
 //
-// Observable signal: rateItem dispatches remove+add, and 'add' mounts the
-// next deferred card past INITIAL_COUNT (5). With 7 cards, card-c5 appearing
-// means the arrow key rated; card-c5 staying unmounted means it was ignored.
-// (onCardDismissed can't fire in jsdom -- see the header comment -- so the
-// deferred-mount side effect is the reachable assertion.)
-describe('CardStack: arrow keys from editable elements are ignored (audit 16 #420)', () => {
+// Signal: rateItem dispatches remove+add, and 'add' mounts the next deferred
+// card past INITIAL_COUNT. With 7 cards, card-c5 appearing means it rated.
+// (onCardDismissed cannot fire in jsdom; see the header comment.)
+describe('CardStack: arrow keys from editable elements are ignored', () => {
   const sevenCards = () => Array.from({ length: 7 }, (_, i) => card(`c${i}`));
 
   it('ArrowRight from the window/body rates (mounts the next deferred card)', () => {
@@ -258,16 +234,10 @@ describe('CardStack: arrow keys from editable elements are ignored (audit 16 #42
 });
 
 describe('CardStack: memo blocks all prop-change re-renders (documented invariant)', () => {
-  // INVARIANT documented in the source: the memo's areEqual returns true
-  // unconditionally. Spring controllers own their animation state
-  // internally; re-rendering on a prop change would tear down + recreate
-  // them mid-animation. The parent (Room.tsx) forces a full remount via
-  // `key={room.mediaVersion}` when the card set genuinely changes -- that
-  // is the ONLY supported path for new cards to enter this component.
-  //
-  // Pin the invariant so a future contributor who removes the memo (or
-  // changes areEqual) breaks this test loudly + has to think through the
-  // animation-safety consequences listed in the source comment.
+  // areEqual returns true unconditionally: spring controllers own their
+  // animation state, and re-rendering on a prop change tears them down
+  // mid-animation. Room.tsx remounts via `key={room.mediaVersion}` when the
+  // card set changes; that is the only supported path for new cards.
   it('updating the cards prop after mount does NOT add new cards', () => {
     const { rerender } = render(
       <CardStack cards={[card('a')]} renderCard={renderCard} onCardDismissed={vi.fn()} />,
@@ -277,9 +247,7 @@ describe('CardStack: memo blocks all prop-change re-renders (documented invarian
     rerender(
       <CardStack cards={[card('a'), card('b')]} renderCard={renderCard} onCardDismissed={vi.fn()} />,
     );
-    // The new 'b' card MUST NOT appear -- the memo blocks the re-render.
-    // Verified by the absence; the parent would have to remount the whole
-    // CardStack (via `key=`) to get a fresh card set in.
+    // The memo blocks the re-render, so 'b' must not appear.
     expect(screen.queryByTestId('card-b')).toBeNull();
   });
 });

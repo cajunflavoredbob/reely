@@ -18,10 +18,8 @@ export const UserPillRow = ({
   onClick,
   maxVisible = 4,
 }: UserPillRowProps) => {
-  // Pin the current user's pill to the front so they're always inline, even
-  // in a crowded room. Other users keep server order. Memoized (audit
-  // 14 #333) so the clone-and-sort only re-runs when the input list or
-  // myUserName actually changes -- not on every parent re-render.
+  // Pin the current user's pill to the front so it stays inline in a crowded
+  // room; everyone else keeps server order.
   const ordered = useMemo(
     () =>
       [...users].sort((a, b) => {

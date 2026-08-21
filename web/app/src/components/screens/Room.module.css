@@ -9,9 +9,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* Bottom padding (added 0.5.1) gives the avatar pills breathing room
-     from the header's bottom edge + visually separates the header from
-     the cardstack below. Symmetric with the 12px top padding. */
+  /* Symmetric padding keeps the avatar pills clear of the header's bottom
+     edge and separates the header from the cardstack. */
   padding: 12px 20px 12px;
   flex-shrink: 0;
 }
@@ -44,7 +43,7 @@
   justify-content: space-between;
 }
 
-/* Share + Filter buttons -- 20% larger than desktop pill buttons */
+/* Share + Filter buttons: 20% larger than the desktop pills */
 .mobileShareBtn {
   display: inline-flex;
   align-items: center;
@@ -169,8 +168,8 @@
 }
 
 .mobileMatchEmpty {
-  /* Match the strip's vertical footprint (52px poster + 4px gap + 9px title
-     + 4px pad) so the bottom bar height is stable across the first match. */
+  /* The strip's footprint (52px poster + 4px gap + 9px title + 4px pad), so
+     the bottom bar height holds steady across the first match. */
   height: 73px;
   display: flex;
   align-items: center;
@@ -513,13 +512,12 @@
   border-left: 1px solid var(--ry-line);
   box-shadow: -20px 0 40px -10px rgba(0, 0, 0, 0.5);
   transform: translateX(100%);
-  /* visibility:hidden removes the closed drawer from the tab order and
-     the accessibility tree -- transform + pointer-events alone left every
-     control Tab-reachable while invisible, and Enter on the hidden (but
-     enabled) "Clear filters" button cleared filters for the whole room
-     (audit 16 #431). The visibility flip is DELAYED by the slide duration
-     on close so the panel stays visible while it animates out; on open
-     the delay is zeroed so it appears immediately. */
+  /* visibility:hidden takes the closed drawer out of the tab order and the
+     accessibility tree. transform and pointer-events alone leave every
+     control Tab-reachable, so Enter on the hidden "Clear filters" button
+     clears filters for the whole room. The flip is delayed by the slide
+     duration on close so the panel stays visible while animating out;
+     .desktopFilterDrawerOpen zeroes the delay. */
   visibility: hidden;
   transition:
     transform 280ms cubic-bezier(0.4, 0, 0.2, 1),
@@ -536,13 +534,9 @@
   pointer-events: auto;
 }
 
-/* Share button label stabilizer -- grid-stack both label strings
-   ("Share" + "Copied!") in one cell so the button width is the
-   max of the two. The inactive span is visibility:hidden so it
-   doesn't draw but still contributes to the cell's intrinsic
-   width; the button no longer pops when "Share" flips to "Copied!"
-   on press. Both call sites (.desktopShareBtn / .mobileShareBtn)
-   use the same <ShareButton> component, so this rule covers both. */
+/* Stacks both label strings in one grid cell so the button width is the max
+   of the two and doesn't pop when "Share" flips to "Copied!". The hidden span
+   still contributes intrinsic width. */
 .shareBtnLabel {
   display: inline-grid;
   grid-template-columns: 1fr;

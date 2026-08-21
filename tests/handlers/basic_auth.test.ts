@@ -4,10 +4,8 @@ vi.mock('../../internal/app/reely/config/main', () => ({
   getConfig: vi.fn(),
 }));
 
-// The handler warns on failed attempts and the throttle warns on budget
-// exhaustion (audit 16 #425). The mock must be declared BEFORE the SUT
-// import below: vi.mock factories are hoisted, and the handler's import
-// chain pulls the logger in during the first import's initialization.
+// Declared before the SUT import: the handler's import chain pulls the logger
+// in during initialization.
 import { loggerMockFactory } from '../helpers';
 vi.mock('../../internal/app/reely/logger', () => loggerMockFactory());
 
@@ -21,7 +19,7 @@ import { getConfig } from '../../internal/app/reely/config/main';
 import type { BasicAuth } from '../../types/reely';
 
 const creds: BasicAuth = { userName: 'admin', password: 's3cret' };
-// The base64 of "admin:s3cret".
+// base64 of "admin:s3cret".
 const token = Buffer.from('admin:s3cret').toString('base64');
 
 describe('checkBasicAuth', () => {
@@ -51,8 +49,8 @@ describe('checkBasicAuth', () => {
     expect(checkBasicAuth(creds, undefined)).toBe(false);
   });
 
-  // #57: empty configured credentials must never authenticate, even if the
-  // request presents the matching empty-password header.
+  // Empty configured credentials must never authenticate, even against a
+  // matching empty-password header.
   it('fails closed when the configured password is empty', () => {
     const emptyPw = { userName: 'admin', password: '' };
     const header = `Basic ${Buffer.from('admin:').toString('base64')}`;
@@ -60,13 +58,11 @@ describe('checkBasicAuth', () => {
   });
 });
 
-// Audit 16 #425: failed Basic Auth attempts are throttled per-IP so the
-// only access gate can't be brute-forced at line rate. The budget is
-// module-scoped (shared between the HTTP middleware and the WS upgrade
-// handler), so tests reset it explicitly.
+// Failed attempts are throttled per IP so the only access gate cannot be
+// brute-forced at line rate. The budget is module-scoped (shared with the WS
+// upgrade handler), so tests reset it explicitly.
 const mockedGetConfig = vi.mocked(getConfig);
 
-// Minimal Express req/res doubles for the handler.
 const makeReq = (authorization?: string, ip = '10.0.0.1') =>
   ({
     headers: { authorization },
@@ -92,7 +88,7 @@ const makeRes = () => {
   return res as unknown as Parameters<typeof handler>[1] & typeof res;
 };
 
-describe('failed-auth throttle (audit 16 #425)', () => {
+describe('failed-auth throttle', () => {
   beforeEach(() => {
     resetAuthFailureThrottle();
     mockedGetConfig.mockReturnValue({
@@ -137,7 +133,6 @@ describe('failed-auth throttle (audit 16 #425)', () => {
       handler(makeReq(`Basic ${token}`), makeRes(), next);
     }
     expect(next).toHaveBeenCalledTimes(20);
-    // Still no throttle for this IP.
     expect(authFailureRetryAfter('10.0.0.1')).toBe(0);
   });
 
@@ -146,7 +141,7 @@ describe('failed-auth throttle (audit 16 #425)', () => {
     for (let i = 0; i < 10; i++) {
       handler(makeReq('Basic d3Jvbmc=', '10.0.0.1'), makeRes(), next);
     }
-    // The flooded IP is throttled; a different IP is not.
+    // The flooded IP is throttled, another is not.
     expect(authFailureRetryAfter('10.0.0.1')).toBeGreaterThan(0);
     const res = makeRes();
     handler(makeReq(`Basic ${token}`, '10.0.0.2'), res, next);

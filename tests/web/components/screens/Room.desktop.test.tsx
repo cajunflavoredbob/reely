@@ -2,17 +2,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 
-// Companion to Room.test.tsx (mobile coverage from 0.4.44). Same
-// heavy-children-stub harness; matchMedia stubbed TRUE to take the
-// desktop branch. The desktop layout has a substantially different
-// DOM: top bar with room name + UserPillRow + share/filter buttons;
-// left sidebar with inline match cards (NO MatchesList component --
-// the sidebar IS the matches list); center swipe stage; the
-// FilterPanel always rendered inside a drawer (visibility driven by
-// CSS class on the drawer wrapper, NOT by conditional rendering).
-//
-// Closes the 0.4.45 #338 caveat "Room desktop layout warrants its
-// own pass" before the 0.5.0 close-out.
+// Desktop companion to Room.test.tsx: same stub harness, matchMedia stubbed
+// TRUE. The desktop DOM differs substantially: a top bar, a left sidebar that
+// renders match cards inline (no MatchesList), a center swipe stage, and a
+// FilterPanel always mounted inside a drawer whose visibility comes from a CSS
+// class rather than conditional rendering.
 
 const {
   useStoreMock,
@@ -36,10 +30,7 @@ vi.mock('../../../../web/app/src/utils/plexLinks', async () => {
   return { ...actual, useLocalPlexReachable: useLocalPlexReachableMock };
 });
 
-// Heavy children stubs (carry useful props on data-attrs) -- same as
-// the mobile test file. The desktop layout also pulls in FilterPanel
-// + UsersPopup + MatchMoment + CardStack + Card; MatchesList is NOT
-// used on desktop (sidebar renders the cards inline).
+// Same stubs as the mobile file. MatchesList goes unused on desktop.
 vi.mock('../../../../web/app/src/components/organisms/CardStack', () => ({
   CardStack: ({ cards }: { cards: { id: string }[] }) => (
     <div data-testid="card-stack-stub" data-card-count={cards.length} />
@@ -153,8 +144,7 @@ const makeMatch = (id: string, matchedAt = 100, posterUrl: string | undefined = 
     // biome-ignore lint/suspicious/noExplicitAny: extra Match fields.
   }) as any;
 
-// matchMedia stubbed TRUE so the SUT takes the desktop branch. This
-// is the only configuration difference vs Room.test.tsx (mobile).
+// TRUE takes the desktop branch: the only config difference from Room.test.tsx.
 const stubMatchMedia = (matches = true) => {
   vi.stubGlobal('matchMedia', () =>
     ({
@@ -236,7 +226,7 @@ describe('RoomScreen (desktop): matches sidebar', () => {
   it('shows the empty placeholder when no matches yet', () => {
     withState({ room: { name: 'r', users: [], matches: [], media: [] } });
     render(<RoomScreen />);
-    // Copy split across a <br />; assert via partial text matching.
+    // A <br /> splits the copy, so match partial text.
     expect(screen.getByText(/Movies two or more/)).toBeDefined();
     expect(screen.getByText(/of you love will land here\./)).toBeDefined();
   });
@@ -250,13 +240,9 @@ describe('RoomScreen (desktop): matches sidebar', () => {
         media: [],
       },
     });
-    render(<RoomScreen />);
-    // Sidebar count is rendered as the bare number inside the sidebar header.
+    const { container } = render(<RoomScreen />);
     expect(screen.getByRole('heading', { level: 2, name: 'Matches' })).toBeDefined();
-    // The count is in a sibling span. Find via the desktopSidebarCount class.
-    const { container } = render(
-      <RoomScreen />,
-    );
+    // The bare count sits in a sibling span.
     const countSpan = container.querySelector('[class*="desktopSidebarCount"]');
     expect(countSpan?.textContent).toBe('3');
   });
@@ -275,8 +261,7 @@ describe('RoomScreen (desktop): matches sidebar', () => {
       },
     });
     const { container } = render(<RoomScreen />);
-    // Match cards have title text; assert all three titles render in
-    // newest-first order via the desktopMatchTitle class.
+    // Titles carry the desktopMatchTitle class; DOM order is render order.
     const titles = Array.from(container.querySelectorAll('[class*="desktopMatchTitle"]')).map(
       (n) => n.textContent,
     );
@@ -291,9 +276,7 @@ describe('RoomScreen (desktop): matches sidebar', () => {
     useLocalPlexReachableMock.mockReturnValue(true);
     const windowOpen = vi.fn();
     vi.stubGlobal('open', windowOpen);
-    render(<RoomScreen />);
-    // The match card is a button with the match title inside; find via
-    // the desktopMatchCard class.
+    // The card is an unlabeled button, so query by class.
     const { container } = render(<RoomScreen />);
     const card = container.querySelector('[class*="desktopMatchCard"]') as HTMLButtonElement;
     fireEvent.click(card);
@@ -312,17 +295,15 @@ describe('RoomScreen (desktop): matches sidebar', () => {
     const { container } = render(<RoomScreen />);
     const card = container.querySelector('[class*="desktopMatchCard"]') as HTMLButtonElement;
     fireEvent.click(card);
-    // No URL -> the `webUrl && window.open(...)` short-circuit prevents the open.
+    // No URL, so the `webUrl && window.open(...)` short-circuit blocks it.
     expect(windowOpen).not.toHaveBeenCalled();
   });
 });
 
 describe('RoomScreen (desktop): filter drawer', () => {
-  // Desktop renders FilterPanel ALWAYS (inside the drawer wrapper) --
-  // visibility is driven by the desktopFilterDrawerOpen class on the
-  // drawer wrapper, not by conditional rendering. The FilterPanel
-  // receives isOpen={filterPanelOpen} so it knows when to re-sync
-  // its draft from room.activeFilters (audit 13 #258).
+  // The panel is always mounted; the desktopFilterDrawerOpen class drives
+  // visibility. isOpen still tells it when to re-sync its draft from
+  // room.activeFilters.
   it('always renders the FilterPanel sentinel inside the drawer', () => {
     withState({ room: { name: 'r', users: [], matches: [], media: [] } });
     render(<RoomScreen />);

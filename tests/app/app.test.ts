@@ -2,18 +2,11 @@ import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loggerMockFactory } from '../helpers';
 
-// app.ts boots the entire server: TLS read, room TTL sweep, providers,
-// express middleware, HTTP/HTTPS server, WS upgrade, ping/sweep timers,
-// shutdown wiring. We mock everything below express (Node net + ws +
-// roomStore + providers + fs + handlers/api) so the tests assert app.ts's
-// orchestration without actually opening sockets or hitting the disk.
+// Everything below express (net, ws, fs, roomStore, providers, handlers/api)
+// is mocked, so startup touches no socket or disk.
 //
-// vi.hoisted lifts only the mock vi.fn() handles; the actual fake-server
-// instances (which need EventEmitter at construction) are built in
-// beforeEach. The hoisted factory runs BEFORE imports resolve, so anything
-// touching imported symbols (EventEmitter, Buffer, etc.) has to live
-// outside it. Same constraint root as the loggerMockFactory closure-form
-// pattern from audit 13 / 0.4.24.
+// vi.hoisted runs before imports resolve, so it holds only vi.fn() handles;
+// anything needing an imported symbol is built in beforeEach.
 const {
   createHttpServerMock,
   createHttpsServerMock,
@@ -45,9 +38,8 @@ const {
 vi.mock('node:http', () => ({ createServer: createHttpServerMock }));
 vi.mock('node:https', () => ({ createServer: createHttpsServerMock }));
 vi.mock('node:fs/promises', async () => {
-  // Other tests (load_yaml) use real fs/promises -- this mock only fires
-  // for files that resolve this mocked module spec. importActual preserves
-  // mkdtemp/chmod/etc. for transitive code paths; we only override readFile.
+  // importActual keeps mkdtemp/chmod live for transitive callers; only
+  // readFile is overridden.
   const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
   return { ...actual, readFile: readFileMock };
 });
@@ -65,15 +57,13 @@ vi.mock('../../internal/app/reely/handlers/api', () => ({
   createWsUpgradeHandler: createWsUpgradeHandlerMock,
 }));
 
-// Imports BELOW the vi.mock calls so the mocks are in place at import-bind time.
+// Below the vi.mock calls so mocks are in place at import-bind time.
 import { Application, ProviderUnavailableError } from '../../internal/app/reely/app';
 import { logger } from '../../internal/app/reely/logger';
 import type { Config } from '../../types/reely';
 
-// Fake HTTP(S) server. Built per-test so each test gets fresh listener
-// state. `listen` fires its callback asynchronously (setImmediate) to keep
-// the microtask order realistic. `close` likewise fires its callback so
-// shutdown's `httpServer.close(cb)` resolves the statusCode promise.
+// listen and close fire their callbacks async, so shutdown's `close(cb)`
+// resolves the statusCode promise.
 type FakeServer = EventEmitter & {
   listen: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
@@ -97,7 +87,7 @@ const makeFakeServer = (): FakeServer => {
 let fakeHttpServer: FakeServer;
 let fakeHttpsServer: FakeServer;
 
-// Minimum viable config. Tests override specific fields per case.
+// Tests override fields per case.
 const baseConfig = (): Config =>
   ({
     hostname: '127.0.0.1',
@@ -106,14 +96,11 @@ const baseConfig = (): Config =>
     rootPath: '',
     servers: [],
     exposePlexBaseUrl: true,
-    // biome-ignore lint/suspicious/noExplicitAny: Config in tests; missing fields are validator-enforced elsewhere, not the orchestration code under test.
+    // biome-ignore lint/suspicious/noExplicitAny: missing fields are enforced by the validator, not by app.ts.
   }) as any;
 
-// Build a provider stub matching the ReelyProvider surface app.ts touches.
-// Only `isAvailable` + `options.url` actually matter for startup; the rest
-// satisfy the type. Tests override isAvailable per case to drive the
-// availability branches.
-// biome-ignore lint/suspicious/noExplicitAny: provider stub for orchestration tests; full ReelyProvider surface not exercised.
+// Only `isAvailable` and `options.url` matter; the rest satisfy the type.
+// biome-ignore lint/suspicious/noExplicitAny: partial provider stub.
 const makeProviderStub = (opts: { isAvailable?: boolean; url?: string } = {}): any => ({
   type: 'plex',
   options: { url: opts.url ?? 'http://plex.local:32400' },
@@ -152,10 +139,8 @@ describe('Application: provider config branches', () => {
     expect(createProviderMock).not.toHaveBeenCalled();
   });
 
-  // Audit 12 #233 / #239 / #273: `servers` stays an array for the 1.0
-  // multi-PROVIDER extension (Plex + Emby + JF), but multi-server is NOT
-  // a supported configuration TODAY. An operator who pasted two server
-  // blocks gets a warn + only [0] is used.
+  // `servers` is an array for future multi-provider support, but multiple
+  // servers are not supported today.
   it('warns when more than one server is configured and uses only the first', async () => {
     const config = baseConfig();
     config.servers = [
@@ -174,7 +159,7 @@ describe('Application: provider config branches', () => {
 
   it('rejects (statusCode -> 1) on a non-plex server type', async () => {
     const config = baseConfig();
-    // biome-ignore lint/suspicious/noExplicitAny: deliberately off-spec server type to exercise the runtime guard that catches what TS would reject upstream.
+    // biome-ignore lint/suspicious/noExplicitAny: off-spec type, to reach the runtime guard behind TS.
     config.servers = [{ type: 'emby', url: 'http://emby', token: 't' } as any];
     const { statusCode } = Application(config);
     await expect(statusCode).resolves.toBe(1);
@@ -193,11 +178,9 @@ describe('Application: provider config branches', () => {
   });
 });
 
-describe('Application: TLS read order (audit 13 #293)', () => {
-  // TLS cert/key are read at the TOP of the IIFE so a bad path fails fast
-  // BEFORE express setup + provider probes + the room TTL sweep. The
-  // pre-fix ordering burned every startup side effect before surfacing
-  // ENOENT, leaving dangling state to clean up.
+describe('Application: TLS read order', () => {
+  // Guards against a bad cert path failing only after express setup, provider
+  // probes and the TTL sweep have left state to clean up.
   it('surfaces a TLS readFile failure as statusCode -> 1', async () => {
     const config = baseConfig();
     config.tlsConfig = { certFile: '/nope/cert.pem', keyFile: '/nope/key.pem' };
@@ -218,8 +201,7 @@ describe('Application: TLS read order (audit 13 #293)', () => {
     expect(cleanupExpiredRoomsMock).not.toHaveBeenCalled();
   });
 
-  // Conversely, when TLS isn't configured, the readFile path is skipped
-  // and cleanupExpiredRooms runs as part of normal startup.
+  // No TLS: readFile is skipped and startup reaches the sweep.
   it('runs cleanupExpiredRooms on startup when TLS is not configured', async () => {
     Application(baseConfig());
     await new Promise((r) => setImmediate(r));
@@ -229,17 +211,15 @@ describe('Application: TLS read order (audit 13 #293)', () => {
 });
 
 describe('Application: bind-all-interfaces warn', () => {
-  // The room model is gated only by knowledge of the room name. On a
-  // routable network without Basic Auth, that's effectively no gate at
-  // all. Operators who bind to 0.0.0.0/:: without basicAuth get a warn
-  // in the container log.
+  // Rooms are gated only by knowing the room name, so binding all interfaces
+  // without basicAuth is effectively open.
   it.each([['0.0.0.0'], ['::'], ['']])(
     'warns when bound to "%s" without basicAuth',
     async (hostname) => {
       const config = baseConfig();
       config.hostname = hostname;
       Application(config);
-      // Wait through listen-callback + microtasks.
+      // Wait through the listen callback and its microtasks.
       await new Promise((r) => setImmediate(r));
       await new Promise((r) => setImmediate(r));
       const warnCalls = (logger.warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
@@ -291,23 +271,15 @@ describe('Application: HTTP vs HTTPS server selection', () => {
   });
 });
 
-// `signal.addEventListener('abort', ...)` is registered LATE in the IIFE
-// (after express setup + listen + interval creation + shutdown definition).
-// A single setImmediate cycle isn't enough -- if abort() fires before the
-// listener is registered, the listener never gets the event (AbortController
-// only dispatches to listeners present at abort time; addEventListener
-// after-the-fact does NOT fire). Wait until the listener is actually
-// installed by polling its presence on the signal.
+// AbortController only dispatches to listeners present at abort time, and the
+// abort listener is registered late in startup, so an early abort is lost.
 const waitForAbortListener = async (signal: AbortSignal): Promise<void> => {
-  // EventTarget doesn't expose listener counts, so we use a behavior probe:
-  // create a sibling listener, observe whether the signal-emit path is set
-  // up by waiting through enough microtask cycles for the IIFE to settle.
-  // 50 cycles is well past startup's actual depth (~6 awaits) without
-  // ballooning test time.
+  // EventTarget exposes no listener count, so the wait is time-based. 50
+  // cycles is well past startup's ~6 awaits.
   for (let i = 0; i < 50; i++) {
     await new Promise((r) => setImmediate(r));
   }
-  void signal; // arg present to document intent; the wait is time-based here
+  void signal; // unused: the wait is time-based
 };
 
 describe('Application: shutdown via abort signal', () => {
@@ -328,11 +300,8 @@ describe('Application: shutdown via abort signal', () => {
     await waitForAbortListener(controller.signal);
     controller.abort();
     await statusCode;
-    // AbortController only fires once, so we can't dispatch a second abort
-    // directly. The idempotency guard exists for the case where the
-    // listener fires twice (defensive). Smoke-check by asserting the
-    // single-call counts after the abort -- if shuttingDown weren't
-    // guarded, future re-entry would double them.
+    // AbortController fires once, so a second abort can't be dispatched.
+    // Single-call counts stand in: re-entry would double them.
     expect(flushPendingSavesMock).toHaveBeenCalledTimes(1);
     expect(fakeHttpServer.close).toHaveBeenCalledTimes(1);
   });
@@ -343,8 +312,7 @@ describe('Application: WS upgrade wiring', () => {
     Application(baseConfig());
     await new Promise((r) => setImmediate(r));
     expect(createWsUpgradeHandlerMock).toHaveBeenCalledTimes(1);
-    // The handler is attached via httpServer.on('upgrade', handler);
-    // verify the EventEmitter actually has an 'upgrade' listener.
+    // Attached via httpServer.on('upgrade', handler).
     expect(fakeHttpServer.listenerCount('upgrade')).toBe(1);
   });
 });

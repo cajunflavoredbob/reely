@@ -26,22 +26,12 @@ export interface ApplicationInstance {
 }
 
 export const Application = (config: Config, signal?: AbortSignal): ApplicationInstance => {
-  // statusCode resolves to:
-  //   - undefined: clean shutdown via the abort signal (main.ts exits 0)
-  //   - number:    process should exit with that code (catch-all errors -> 1)
-  // statusCode rejects with ProviderUnavailableError so main.ts can log that
-  // case specifically.
+  // statusCode: undefined = clean shutdown via abort signal, number = exit
+  // code. Rejects with ProviderUnavailableError so main.ts can log that case.
   const statusCode = new Promise<number | undefined>((resolveStatus, rejectStatus) => {
     (async () => {
-      // Read TLS cert + key FIRST when TLS is configured (audit 13 #293).
-      // The prior ordering read these only when constructing the https
-      // server, way past express setup + middleware mount + provider
-      // probes + cleanupExpiredRooms -- so a bad certFile / keyFile path
-      // burned every startup side effect (room TTL sweep + Plex
-      // isAvailable check + middleware allocation) before surfacing the
-      // ENOENT. Reading early surfaces the path error immediately and
-      // leaves no dangling state to clean up. The buffers are held in
-      // closure scope and re-used when createHttpsServer runs below.
+      // Read TLS cert + key FIRST so a bad path fails before the TTL sweep,
+      // the Plex probe and the middleware mounts run. Buffers re-used below.
       let tlsBundle: { cert: Buffer; key: Buffer } | undefined;
       if (config.tlsConfig) {
         const [cert, key] = await Promise.all([
@@ -51,23 +41,15 @@ export const Application = (config: Config, signal?: AbortSignal): ApplicationIn
         tlsBundle = { cert, key };
       }
 
-      // Drop anything past the 6h active-room TTL at startup so a restart
-      // after long downtime cleans stale state immediately, not after the
-      // next periodic sweep.
+      // Sweep at startup so a restart after downtime clears stale rooms at
+      // once instead of waiting for the periodic sweep.
       await cleanupExpiredRooms(ROOM_TTL_MS);
 
       const providers: ReelyProvider[] = [];
 
-      // Provider/server abstraction note (audit 12 #233 / #239 / #273):
-      // reely is single-server BY DESIGN today; the `servers` Config field
-      // stays as an array (and the loop / `[0]` indexing here stays) so
-      // 1.0 can grow into multi-PROVIDER (Plex + Emby + Jellyfin as a
-      // narrow set of `type` values) without a wire-format change.
-      // `type: "plex"` is the only valid value today; the `ProviderType`
-      // union in types/reely.ts is the extension point. The warn below
-      // catches an operator who accidentally pasted two server blocks,
-      // which is the realistic "config typo" case; multi-server is not
-      // a supported configuration.
+      // Single-server by design. `servers` stays an array (and the `[0]`
+      // indexing with it) so multi-PROVIDER can land later without a
+      // wire-format change; multi-server is not supported.
       if (config.servers.length > 0) {
         if (config.servers.length > 1) {
           logger.warn(
@@ -90,32 +72,18 @@ export const Application = (config: Config, signal?: AbortSignal): ApplicationIn
       }
 
       const app = express();
-      // Explicit (audit 12 #275): reely's rate limiter keys on
-      // `socket.remoteAddress` (the real TCP peer) rather than `req.ip`,
-      // and `req.ip` only follows `X-Forwarded-For` when `trust proxy` is
-      // set. Setting `trust proxy` to false here makes the no-proxy
-      // assumption explicit so a future contributor can't toggle it
-      // accidentally and quietly enable IP-spoofing via headers.
+      // Explicit no-proxy assumption. Enabling `trust proxy` makes `req.ip`
+      // follow X-Forwarded-For, which opens IP spoofing via headers.
       app.disable('trust proxy');
-      // Structured per-request access logs (audit 12 #274): deliberately
-      // not wired today. pino-http would mount here and emit one log line
-      // per HTTP response with method / path / status / duration. The
-      // 429 + 401 paths log explicitly via the rate-limit / basic-auth
-      // middleware, so the practical visibility gap is mostly 2xx/3xx
-      // noise. Revisit if an operator needs full request-trail logs.
+      // Per-request access logs deliberately not wired: 429 and 401 already
+      // log explicitly, so the gap is 2xx/3xx noise.
 
-      // Content Security Policy. useDefaults:false is deliberate -- helmet's
-      // default CSP includes `upgrade-insecure-requests`, which would force
-      // the browser to upgrade reely's plain-http LAN traffic to https and
-      // break the whole app. We spell out the full directive set instead.
+      // useDefaults:false because helmet's default CSP adds
+      // `upgrade-insecure-requests`, which breaks plain-http LAN serving.
       //
-      // script-src is strict 'self' (the Vite bundle and the PWA
-      // registerSW.js are both self-hosted external files -- no inline
-      // scripts in the production build). style-src needs 'unsafe-inline'
-      // for React's style={{...}} attributes and Google Fonts CSS; inline
-      // styles are not a meaningful XSS vector. connect-src 'self' covers
-      // the same-origin WebSocket (CSP3 treats ws/wss as same-origin to the
-      // http/https page).
+      // script-src 'self': no inline scripts in the production build.
+      // style-src needs 'unsafe-inline' for React style={{...}} and Google
+      // Fonts. connect-src 'self' covers the same-origin WebSocket.
       app.use(helmet({
         contentSecurityPolicy: {
           useDefaults: false,
@@ -136,10 +104,8 @@ export const Application = (config: Config, signal?: AbortSignal): ApplicationIn
         },
       }));
 
-      // Gzip the SPA shell + static assets. Skip /api/poster (binary Plex
-      // thumbs, already encoded -- gzipping a JPEG only wastes CPU). The
-      // compression module also auto-skips responses without a compressible
-      // mime, so this is mostly a CPU guard for the poster proxy.
+      // Gzip the SPA shell and static assets. Skip /api/poster: gzipping
+      // already-compressed JPEGs only burns CPU.
       app.use(compression({
         filter: (req, res) => {
           if (req.path.startsWith('/api/poster/')) return false;
@@ -147,12 +113,11 @@ export const Application = (config: Config, signal?: AbortSignal): ApplicationIn
         },
       }));
 
-      // Inject providers into res.locals so all downstream route handlers can access them.
+      // Inject providers into res.locals for downstream route handlers.
       app.use((_req, res, next) => { res.locals.providers = providers; next(); });
 
-      // Per-route per-IP rate limits. Generous enough not to interfere with
-      // legitimate use (poster fan-out on room join, healthcheck polling),
-      // tight enough to short-circuit a flood.
+      // Per-route per-IP limits: loose enough for poster fan-out on room join
+      // and healthcheck polling, tight enough to short-circuit a flood.
       const healthLimit   = rateLimit({ windowMs: 60_000, max: 60,  name: 'health' });
       const posterLimit   = rateLimit({ windowMs: 60_000, max: 600, name: 'poster' });
       const templateLimit = rateLimit({ windowMs: 60_000, max: 60,  name: 'template' });
@@ -161,41 +126,31 @@ export const Application = (config: Config, signal?: AbortSignal): ApplicationIn
       app.use(basicAuthHandler);
       app.get('/api/poster/:providerIndex/:metadataId/:thumbId', posterLimit, posterHandler);
       app.use(serveStaticHandler);
-      // Express 5 (path-to-regexp v8) rejects the bare '*' catch-all;
-      // '/{*splat}' is the v5 spelling that matches '/' and every deeper
-      // path identically.
+      // Express 5 rejects the bare '*' catch-all; '/{*splat}' is the spelling
+      // that matches '/' and every deeper path.
       app.get('/{*splat}', templateLimit, templateHandler);
 
-      // Terminal error handler (audit 17 #1). Express 5 forwards rejected
-      // async handler promises here (v4 left them as unhandled rejections
-      // that hung the socket). Without this, finalhandler takes over: it
-      // console.error()s the stack (bypassing the redacting pino logger)
-      // and, when NODE_ENV is not 'production', echoes the stack --
-      // filesystem paths included -- into the 500 body. Log through pino,
-      // answer with a bare 500. The 4-arity signature is what marks this
-      // as error middleware; the unused `next` must stay.
+      // Terminal error handler for rejected async handlers. Without it
+      // finalhandler console.error()s the stack past the redacting logger and,
+      // outside production, echoes filesystem paths into the 500 body.
+      // The unused `next` must stay: 4-arity is what marks error middleware.
       app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-        // Non-Error rejections (a thrown string) have no .stack/.message;
-        // String() keeps the log line meaningful for those too.
+        // Non-Error rejections have no .stack/.message; String() still logs.
         const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
         logger.error(`Unhandled handler error: ${detail}`);
         if (!res.headersSent) res.status(500).send('Internal Server Error');
         else res.destroy();
       });
 
-      // Build the underlying http/https server so we can attach the WS upgrade listener.
-      // TLS bundle was already read at the top of this IIFE (audit 13
-      // #293) so a bad cert/key path failed-fast before any startup
-      // side effects. Re-use it here.
+      // Underlying http/https server, so the WS upgrade listener can attach.
       const httpServer: ReturnType<typeof createHttpServer> = tlsBundle
         ? createHttpsServer({ cert: tlsBundle.cert, key: tlsBundle.key }, app)
         : createHttpServer(app);
 
       const wss = new WebSocketServer({ noServer: true, maxPayload: 65536 });
 
-      // Track liveness per-socket. We tag the WS via (ws as unknown as ...) to
-      // avoid extending the ws type globally; the property is private to this
-      // module.
+      // Per-socket liveness tag, cast in rather than extending the ws type
+      // globally.
       type LivenessTagged = { isAlive?: boolean };
 
       wss.on('connection', (ws) => {
@@ -213,10 +168,8 @@ export const Application = (config: Config, signal?: AbortSignal): ApplicationIn
         httpServer.listen(config.port, config.hostname, () => {
           const proto = config.tlsConfig ? 'https' : 'http';
           logger.info(`Server listening on ${proto}://${config.hostname}:${config.port}`);
-          // Visible flag in the container log for admins who bound to all
-          // interfaces without Basic Auth. The app's room model is gated only
-          // by knowledge of the room name -- on a routable network without
-          // auth, that's effectively no gate at all.
+          // Rooms are gated only by knowing the room name, so binding to all
+          // interfaces without Basic Auth is effectively no gate at all.
           const bindsAllInterfaces =
             config.hostname === '0.0.0.0' || config.hostname === '::' || config.hostname === '';
           if (bindsAllInterfaces && !config.basicAuth) {
@@ -231,13 +184,9 @@ export const Application = (config: Config, signal?: AbortSignal): ApplicationIn
         httpServer.once('error', rejectListening);
       });
 
-      // Ping all connected clients every 30 seconds to keep connections alive
-      // through reverse proxies that close idle WebSocket connections, AND to
-      // detect zombie connections: any socket that hasn't responded to the
-      // previous ping (still tagged isAlive=false) gets terminated. Created
-      // only after listen() succeeds so a listen failure (which throws out of
-      // this block) can't leak the interval -- _shutdownFn, the only thing
-      // that clears it, is assigned further down.
+      // Keep sockets alive through idle-closing reverse proxies, and terminate
+      // zombies that missed the previous ping. Created after listen() succeeds:
+      // a listen failure throws past the only code that clears the interval.
       const pingInterval = setInterval(() => {
         for (const ws of wss.clients) {
           const tagged = ws as unknown as LivenessTagged;
@@ -251,18 +200,15 @@ export const Application = (config: Config, signal?: AbortSignal): ApplicationIn
         }
       }, 30_000);
 
-      // Periodic sweep of rooms that have been idle past the TTL. Runs every
-      // 10 minutes -- frequent enough that expiry is visible within reasonable
-      // time, infrequent enough that the disk scan cost is trivial.
+      // Periodic TTL sweep. 10 minutes keeps expiry timely and the disk scan
+      // cost trivial.
       const ttlSweepInterval = setInterval(() => {
         cleanupExpiredRooms(ROOM_TTL_MS).catch((err) => {
           logger.error(`TTL sweep failed: ${String(err)}`);
         });
       }, 10 * 60 * 1000);
 
-      // Shutdown is idempotent: the abort signal can only fire once, but
-      // guard anyway. State is local to this Application instance -- no
-      // module-global, so nothing leaks across instances.
+      // Idempotent shutdown; the flag is per-Application, not module-global.
       let shuttingDown = false;
       const shutdown = async () => {
         if (shuttingDown) return;
@@ -270,16 +216,12 @@ export const Application = (config: Config, signal?: AbortSignal): ApplicationIn
         logger.info('Shutting down...');
         clearInterval(pingInterval);
         clearInterval(ttlSweepInterval);
-        // Drain the room-save debounce queue before tearing down -- otherwise
-        // a swipe within the 2s window before the abort signal arrived would
-        // be in pendingSaves with no chance to fire (the timers are about to
-        // become orphaned as the process exits).
+        // Drain the save queue first: pending timers are orphaned once the
+        // process exits, losing any swipe still inside the debounce window.
         await flushPendingSaves();
-        // wss.close() only stops accepting new connections; existing sockets
-        // stay open. httpServer.close() then waits for all connections to end.
-        // Terminate WS clients, then closeAllConnections() drops any lingering
-        // plain-HTTP sockets (e.g. a slow poster-proxy stream) so the close
-        // callback fires promptly instead of hanging until those drain.
+        // wss.close() only stops new connections and httpServer.close() waits
+        // for every socket to end, so terminate WS clients and drop lingering
+        // HTTP sockets or the close callback hangs on a slow poster stream.
         for (const ws of wss.clients) ws.terminate();
         wss.close();
         httpServer.close(() => {
@@ -291,23 +233,17 @@ export const Application = (config: Config, signal?: AbortSignal): ApplicationIn
 
       signal?.addEventListener('abort', () => {
         logger.info('Abort signal received. Closing server.');
-        // Fire-and-forget: the listener can't await. shutdown() guards
-        // itself against re-entry, and any flush errors are logged within
-        // saveRoom.
+        // Fire-and-forget: the listener can't await. shutdown() guards re-entry.
         void shutdown();
       });
-      // A SIGINT/SIGTERM that arrived during async startup (TLS read, disk
-      // sweep, provider probe, listen) fired abort() before the listener
-      // above existed -- and an already-aborted signal does NOT invoke
-      // listeners added after the fact (the exact semantics
-      // tests/app/app.test.ts's waitForAbortListener works around). Without
-      // this check, a docker stop mid-boot is logged by main.ts then
-      // ignored: the server finishes starting and runs until SIGKILL, and
-      // flushPendingSaves never fires. (audit 16 #423)
+      // An abort during async startup fires before the listener above exists,
+      // and an already-aborted signal never invokes listeners added later.
+      // Without this check a stop mid-boot is ignored: the server finishes
+      // starting, runs until SIGKILL, and never flushes pending saves.
       if (signal?.aborted) void shutdown();
     })().catch((err) => {
-      // ProviderUnavailableError flows up to main.ts so it can log it
-      // specifically; everything else becomes a generic startup-error exit.
+      // ProviderUnavailableError flows up to main.ts for its own message;
+      // everything else is a generic startup-error exit.
       if (err instanceof ProviderUnavailableError) {
         rejectStatus(err);
         return;

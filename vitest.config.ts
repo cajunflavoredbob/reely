@@ -34,48 +34,23 @@ export default defineConfig({
     },
   },
   test: {
-    // Default environment is 'node' (server-side tests + the existing web
-    // tests that exercise pure logic with stubbed DOM globals). React
-    // component tests under tests/web/components/ opt into jsdom per file
-    // via the `// @vitest-environment jsdom` directive at the top of the
-    // file (audit 13 #338 web-layer setup, 0.4.34). Per-file override
-    // keeps the rest of the suite on the faster node env.
+    // React component tests opt into jsdom per file with a
+    // `// @vitest-environment jsdom` directive; the rest stay on faster node.
     environment: 'node',
-    // Node 26 ships the Web Storage API as a built-in: `localStorage`
-    // becomes an own getter on globalThis that yields `undefined` unless
-    // node runs with --localstorage-file. That pre-existing key stops
-    // vitest's jsdom environment from installing jsdom's localStorage,
-    // so every `@vitest-environment jsdom` test touching localStorage
-    // broke on node 26 while passing on node 24. Disabling node's
-    // webstorage in the worker processes restores the jsdom
-    // implementation. The legacy `--no-experimental-webstorage`
-    // spelling is accepted by node 24 (harmless no-op there) AND node
-    // 26 (where the stable alias is --no-webstorage, which node 24
-    // rejects as a bad option) -- the one spelling that covers both.
+    // Node 26's built-in localStorage shadows the one jsdom would install, so
+    // every jsdom test touching it breaks. This spelling is the only one both
+    // node 24 and 26 accept.
     execArgv: ['--no-experimental-webstorage'],
-    // `.tsx` added 0.4.34 so React component tests under tests/web/components/
-    // are picked up alongside the existing `.test.ts` files.
+    // `.tsx` so React component tests are picked up alongside `.test.ts`.
     include: ['tests/**/*.test.{ts,tsx}'],
-    // Behavior knobs (audit 12 #251):
-    //   clearMocks   -- before each test, clear all spy/mock call history.
-    //                   Stops one test's calls from showing up in another's
-    //                   `expect(fn).toHaveBeenCalledWith(...)` assertions.
-    //   restoreMocks -- before each test, restore any spied-on implementations
-    //                   to their originals. Catches a test that monkey-patched
-    //                   a module-level export and forgot to undo it.
-    //   testTimeout  -- per-test deadline. Our suite is all sub-second; any
-    //                   test that takes >5s is hung (e.g. an unhandled await
-    //                   on a never-resolving promise) and should fail loud.
+    // clearMocks: one test's calls must not show up in another's assertions.
+    // restoreMocks: catches a test that monkey-patched an export and forgot.
+    // testTimeout: the suite is sub-second, so 5s means hung, not slow.
     clearMocks: true,
     restoreMocks: true,
     testTimeout: 5000,
-    // Coverage configuration (audit 13 #346). `v8` provider is the
-    // built-in fast option; `text` is what the operator sees, `lcov`
-    // feeds GitHub Actions / Codecov integrations if those land
-    // later. Run with `pnpm test --coverage`. No thresholds set yet
-    // because the existing surface is partial (per audit 13 #338);
-    // adding thresholds without first scoping the uplift would
-    // either fail CI immediately or pretend the gaps don't exist.
+    // `pnpm test --coverage`. No thresholds: the covered surface is partial,
+    // so a threshold would either fail CI at once or be set low enough to lie.
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov', 'html'],

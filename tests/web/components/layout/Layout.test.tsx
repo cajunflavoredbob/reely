@@ -3,9 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { Layout } from '../../../../web/app/src/components/layout/Layout';
 
-// Layout is a thin wrapper: <section> + optional Logo + children +
-// optional className override. The component lives on its own so the
-// brand mark stays consistent across every full-screen view.
+// Thin wrapper: <section> + optional Logo + children + className override.
 
 afterEach(() => {
   cleanup();
@@ -23,7 +21,7 @@ describe('Layout', () => {
 
   it('renders the Logo by default (hideLogo defaults to false)', () => {
     render(<Layout>x</Layout>);
-    // Logo renders the "reely" wordmark by default.
+    // Logo renders the "reely" wordmark.
     expect(screen.getByText('reely')).toBeDefined();
   });
 
@@ -38,11 +36,7 @@ describe('Layout', () => {
     expect(section?.getAttribute('class')).toContain('extra-class');
   });
 
-  // Default class still applied even with no override (the screenLayout
-  // CSS module class). The string-concat in the source includes an
-  // empty trailing space when className is undefined -- pin the no-crash
-  // behavior so a future change to template-literal building doesn't
-  // accidentally drop the default class.
+  // The class string is built by concat; a rewrite must not drop the default.
   it('keeps the screenLayout default class when no className is provided', () => {
     const { container } = render(<Layout>x</Layout>);
     const section = container.querySelector('section');

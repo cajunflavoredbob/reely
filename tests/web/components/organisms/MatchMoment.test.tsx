@@ -2,9 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
-// Stub PlexLinks (uses the Zustand store) as a sentinel so this test
-// file doesn't need to re-establish the store mock; PlexLinks has its
-// own coverage in tests/web/components/atoms/PlexLinks.test.tsx.
+// PlexLinks needs the Zustand store, so stub it to a sentinel. It has its own
+// coverage in tests/web/components/atoms/PlexLinks.test.tsx.
 vi.mock('../../../../web/app/src/components/atoms/PlexLinks', () => ({
   PlexLinks: () => <div data-testid="plex-links-stub" />,
 }));
@@ -46,7 +45,6 @@ describe('MatchMoment: toast variant (isBig=false)', () => {
     expect(screen.getByText('New match')).toBeDefined();
     expect(screen.getByText('Dune')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Dismiss' })).toBeDefined();
-    // Poster img is in the toast variant too.
     const img = screen.getByAltText('Dune') as HTMLImageElement;
     expect(img.getAttribute('src')).toBe('/api/poster/0/123/thumb');
   });
@@ -59,22 +57,17 @@ describe('MatchMoment: toast variant (isBig=false)', () => {
     expect(screen.queryByAltText('Dune')).toBeNull();
   });
 
-  // 0.5.2: onDismiss now fires AFTER the slide-fade exit animation
-  // completes (was synchronous). 0.5.4: exit duration bumped 200 ->
-  // 350ms (ry-slide-fade-out). Test advances the auto-dismiss timer
-  // (3s) THEN the exit timer (350ms) to observe the parent's
-  // onDismiss callback. Drift between this value and TOAST_EXIT_MS
-  // in MatchMoment.tsx would break this test loudly.
+  // onDismiss fires only after the exit slide-fade, so the 350ms here must
+  // track TOAST_EXIT_MS in MatchMoment.tsx.
   it('auto-dismisses the toast after 3 seconds (plus the 350ms exit slide+fade)', () => {
     const onDismiss = vi.fn();
     render(<MatchMoment match={match()} isBig={false} onDismiss={onDismiss} />);
     expect(onDismiss).not.toHaveBeenCalled();
     vi.advanceTimersByTime(2_999);
     expect(onDismiss).not.toHaveBeenCalled();
-    // Cross the 3s threshold -- exit animation starts, onDismiss not yet fired.
+    // Crossing 3s starts the exit animation, nothing more.
     vi.advanceTimersByTime(2);
     expect(onDismiss).not.toHaveBeenCalled();
-    // Advance through the exit-slide+fade duration -- now onDismiss fires.
     vi.advanceTimersByTime(350);
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
@@ -86,23 +79,18 @@ describe('MatchMoment: toast variant (isBig=false)', () => {
     expect(onDismiss).not.toHaveBeenCalled();
   });
 
-  // 0.5.2: dismiss-button click triggers exit animation; onDismiss
-  // fires after the slide-fade (was synchronous). 0.5.4: 200 -> 350ms.
   it('clicking the Dismiss button fires onDismiss after the 350ms exit slide+fade', () => {
     const onDismiss = vi.fn();
     render(<MatchMoment match={match()} isBig={false} onDismiss={onDismiss} />);
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
-    // Exit animation in flight; onDismiss not yet fired.
+    // Exit animation in flight.
     expect(onDismiss).not.toHaveBeenCalled();
     vi.advanceTimersByTime(350);
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
-  // 0.5.2: re-entry guard on requestDismiss. A double-click on the X
-  // (or the auto-timer firing during a manual click) MUST NOT fire
-  // onDismiss twice. Without the `if (exiting) return;` guard, the
-  // second trigger would schedule a duplicate setTimeout that fires
-  // independently.
+  // Without requestDismiss's `if (exiting) return;` guard, a second trigger
+  // schedules a duplicate setTimeout that fires independently.
   it('does NOT fire onDismiss twice when dismiss is triggered repeatedly', () => {
     const onDismiss = vi.fn();
     render(<MatchMoment match={match()} isBig={false} onDismiss={onDismiss} />);
@@ -114,11 +102,8 @@ describe('MatchMoment: toast variant (isBig=false)', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
-  // 0.5.7: replaced=true means a new match has arrived and is sliding
-  // in on top of this one. The auto-dismiss timer is intentionally
-  // skipped -- the parent (Room.tsx) auto-prunes the demoted instance
-  // ~400ms after demotion, so starting an exit slide that the unmount
-  // would cut short is wasted motion + visual jank.
+  // replaced means a newer match is sliding in on top. Room.tsx prunes the
+  // demoted instance ~400ms later, so an exit slide would only be cut short.
   it('does NOT auto-dismiss when replaced is true', () => {
     const onDismiss = vi.fn();
     render(<MatchMoment match={match()} isBig={false} onDismiss={onDismiss} replaced />);
@@ -126,23 +111,17 @@ describe('MatchMoment: toast variant (isBig=false)', () => {
     expect(onDismiss).not.toHaveBeenCalled();
   });
 
-  // 0.5.7: replaced applies .toastReplaced on the toast div so the CSS
-  // fade-out animation kicks in (200ms opacity 1 -> 0). Without the
-  // class, no fade. CSS Module hashing means we match on substring.
+  // The class is what drives the CSS fade-out; no class, no fade.
   it('applies the toastReplaced class when replaced is true', () => {
     const { container } = render(
       <MatchMoment match={match()} isBig={false} onDismiss={vi.fn()} replaced />,
     );
-    // The toast div is the one with .toast (NOT .toastSlot which is its
-    // parent wrapper). Both classes are on the rendered tree; the
-    // :not() filter selects the inner toast.
+    // :not() picks the inner toast over its .toastSlot parent wrapper.
     const toast = container.querySelector('[class*="toast_"]:not([class*="toastSlot"])');
     expect(toast?.className).toMatch(/toastReplaced/);
   });
 
-  // useEscape gates on isBig (passed as the second arg). The toast variant
-  // intentionally does NOT respond to Escape -- only the big celebration
-  // overlay does. Pin both directions.
+  // useEscape gates on isBig: only the big overlay answers Escape.
   it('does NOT respond to Escape in the toast variant', () => {
     const onDismiss = vi.fn();
     render(<MatchMoment match={match()} isBig={false} onDismiss={onDismiss} />);
@@ -157,7 +136,7 @@ describe('MatchMoment: big variant (isBig=true)', () => {
       <MatchMoment match={match()} isBig={true} onDismiss={vi.fn()} />,
     );
     expect(screen.getByRole('heading', { level: 1 }).textContent).toMatch(/match/);
-    // Confetti is a fixed 20-piece array.
+    // Confetti is a fixed 20 pieces.
     const confetti = container.querySelectorAll('[class*="confettiPiece"]');
     expect(confetti.length).toBe(20);
   });
@@ -176,9 +155,7 @@ describe('MatchMoment: big variant (isBig=true)', () => {
     const { container } = render(
       <MatchMoment match={match({ users: ['alice', 'bob', 'carol'] })} isBig={true} onDismiss={vi.fn()} />,
     );
-    // Each Avatar is its own <svg>. There may be other svgs (the toast
-    // dismiss icon doesn't render in big mode); count those inside the
-    // avatar row container.
+    // Each Avatar is its own <svg>; scope to the row to exclude other icons.
     const avatarSvgs = container.querySelectorAll('[class*="avatarRow"] svg');
     expect(avatarSvgs.length).toBe(3);
   });
@@ -189,7 +166,6 @@ describe('MatchMoment: big variant (isBig=true)', () => {
     (m.media as any).posterUrl = undefined;
     const { container } = render(<MatchMoment match={m} isBig={true} onDismiss={vi.fn()} />);
     expect(container.querySelector('img')).toBeNull();
-    // Placeholder div contains the title.
     expect(screen.getByText('Dune')).toBeDefined();
   });
 
@@ -205,13 +181,11 @@ describe('MatchMoment: big variant (isBig=true)', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
-  // Backdrop click dismisses; clicks inside the actions wrapper do NOT
-  // bubble (stopPropagation), so the "Open in Plex" link doesn't double-
-  // fire onDismiss when clicked.
+  // The actions wrapper stopPropagation()s, so "Open in Plex" does not also
+  // dismiss the overlay.
   it('clicking the overlay backdrop fires onDismiss', () => {
     const onDismiss = vi.fn();
     render(<MatchMoment match={match()} isBig={true} onDismiss={onDismiss} />);
-    // The overlay has role=dialog.
     fireEvent.click(screen.getByRole('dialog'));
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });

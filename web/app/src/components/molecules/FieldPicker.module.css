@@ -1,9 +1,4 @@
-/* FieldPicker -- searchable list of available filter fields.
- *
- * Extracted from FilterPanel.module.css in 0.4.47 (audit 13 #321 split,
- * Option B). The classes here are byte-identical to the originals --
- * the move is purely an organizational refactor.
- */
+/* FieldPicker: searchable list of available filter fields. */
 
 .pickerCard {
   background: var(--ry-bg-1);

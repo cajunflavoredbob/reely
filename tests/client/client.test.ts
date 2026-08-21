@@ -18,9 +18,8 @@ vi.mock('../../internal/app/reely/i18n', () => ({
   getTranslations: vi.fn().mockResolvedValue({}),
 }));
 
-// Partial mock: replace the room registry functions with vi.fn()s but keep
-// the real Room class and the error class hierarchy (RoomExistsError etc.)
-// so the client's instanceof checks still work against thrown errors.
+// Registry functions become vi.fn()s; the real Room and error classes stay so
+// the client's instanceof checks still match.
 vi.mock('../../internal/app/reely/room', async () => {
   const actual = await vi.importActual<typeof import('../../internal/app/reely/room')>(
     '../../internal/app/reely/room',
@@ -31,9 +30,8 @@ vi.mock('../../internal/app/reely/room', async () => {
     createRoom: vi.fn(),
     getRoom: vi.fn(),
     addRoom: vi.fn(),
-    // Orthogonal to routing: these tests hand the client fake Rooms that were
-    // never put in the real registry, so the real predicate would refuse every
-    // commit. The sweep-race behaviour it guards has its own test below.
+    // These fake Rooms are never in the real registry, so the real predicate
+    // would refuse every commit. Its own tests are below.
     isRegisteredRoom: vi.fn().mockReturnValue(true),
   };
 });
@@ -51,7 +49,6 @@ import { getConfig } from '../../internal/app/reely/config/main';
 import type { ReelyProvider } from '../../internal/app/reely/providers/types';
 import { makeWs, push, sent, flush } from '../helpers';
 
-// Cast helpers for the mocked exports.
 const mockedHasRoom = vi.mocked(hasRoom);
 const mockedCreateRoom = vi.mocked(createRoom);
 const mockedGetRoom = vi.mocked(getRoom);
@@ -70,9 +67,9 @@ describe('Client login handling', () => {
     ws.send.mockClear(); // discard the initial config message
   });
 
-  // Finding 13: sanitizeInput('///') → ''; the server must reject the empty result
-  // instead of logging in with an empty username and creating data/rooms/.json.
-  it('sends loginError when the username is empty after sanitization (Finding 13)', async () => {
+  // sanitizeInput('///') is ''. Guards against logging in with an empty
+  // username, which created data/rooms/.json.
+  it('sends loginError when the username is empty after sanitization', async () => {
     await push(ws, { type: 'login', payload: { userName: '///' } });
     const msgs = sent(ws);
     expect(msgs).toHaveLength(1);
@@ -89,9 +86,9 @@ describe('Client login handling', () => {
     expect(client.isLoggedIn).toBe(false);
   });
 
-  // Finding 24: loginSuccess was sending the raw (unsanitized) login.userName
-  // back to the client instead of the sanitized version stored server-side.
-  it('sends loginSuccess with the sanitized username, not the raw input (Finding 24)', async () => {
+  // Guards against loginSuccess echoing the raw userName instead of the
+  // sanitized one stored server-side.
+  it('sends loginSuccess with the sanitized username, not the raw input', async () => {
     await push(ws, { type: 'login', payload: { userName: '  alice../  ' } });
     const msgs = sent(ws);
     expect(msgs).toHaveLength(1);
@@ -125,10 +122,8 @@ describe('Client rate handling', () => {
     storeRating = vi.fn().mockResolvedValue(undefined);
     const media = new Map([['media-1', { id: 'media-1', title: 'Film' }]]);
 
-    // Set up a logged-in user in a room. `users` mirrors the active-connection
-    // bookkeeping handleRate now asserts against (0.4.1, audit 8 #85): the
-    // Client must be the live entry for its username in room.users before any
-    // rating is accepted.
+    // handleRate accepts a rating only if this Client is the live entry for
+    // its username, so `users` has to carry it.
     client.userName = 'alice';
     client.room = {
       media: Promise.resolve(media),
@@ -137,9 +132,8 @@ describe('Client rate handling', () => {
     } as unknown as Room;
   });
 
-  // Finding 12: handleRate did not validate that the mediaId exists in the room
-  // before storing. A client could rate arbitrary IDs, polluting the ratings map.
-  it('drops a rating for an unknown mediaId (Finding 12)', async () => {
+  // Guards against a client polluting the ratings map with arbitrary IDs.
+  it('drops a rating for an unknown mediaId', async () => {
     await push(ws, { type: 'rate', payload: { rating: 'like', mediaId: 'bogus-id' } });
     await flush();
     expect(storeRating).not.toHaveBeenCalled();
@@ -155,14 +149,9 @@ describe('Client rate handling', () => {
     );
   });
 
-  // Audit 8 #85: prior to 0.4.1, handleLeaveRoom (and handleLogout) removed
-  // the user from room.users but never nulled this.room, so the connection
-  // could keep emitting `rate` messages that mutated the old room's ratings
-  // map without the user actually being a member. Two-part fix in 0.4.1:
-  // (1) this.room = undefined on leave/logout; (2) handleRate asserts
-  // active-connection membership before mutating. Either alone would close
-  // the path; both together is belt-and-suspenders.
-  it('drops a rating after leaveRoom (audit 8 #85)', async () => {
+  // Guards against a rating landing for a user who left. Two defences: leave
+  // detaches this.room, and handleRate asserts membership.
+  it('drops a rating after leaveRoom', async () => {
     await push(ws, { type: 'leaveRoom' });
     await flush();
     await push(ws, { type: 'rate', payload: { rating: 'like', mediaId: 'media-1' } });
@@ -170,13 +159,10 @@ describe('Client rate handling', () => {
     expect(storeRating).not.toHaveBeenCalled();
   });
 
-  it('drops a rating from a stale connection (audit 8 #85)', async () => {
-    // Simulate a soft-refresh race: a newer Client takes over the user slot
-    // before the old socket's handleRate fires. The membership assertion in
-    // handleRate is the second half of the #85 fix and must drop the rating.
+  it('drops a rating from a stale connection', async () => {
+    // Soft-refresh race: a newer Client takes the slot before the old socket's
+    // handleRate fires.
     const newerClient = {} as unknown as Client;
-    // client.room is set in the beforeEach; the test wouldn't reach
-    // here without it. Non-null + Map-narrow are the right shape.
     // biome-ignore lint/style/noNonNullAssertion: room set by beforeEach.
     (client.room!.users as Map<string, Client>).set('alice', newerClient);
     await push(ws, { type: 'rate', payload: { rating: 'like', mediaId: 'media-1' } });
@@ -210,10 +196,9 @@ describe('Client applyFilters handling', () => {
     } as unknown as Room;
   });
 
-  // Finding 14: handleApplyFilters trusts the payload shape at runtime. An
-  // attacker could send a filter with a path-traversal key that gets
-  // interpolated into a Plex API URL path -- the validator must reject it.
-  it('rejects a filter payload with an invalid key (Finding 14)', async () => {
+  // Filter keys are interpolated into a Plex API URL path, so a
+  // path-traversal key must never reach it.
+  it('rejects a filter payload with an invalid key', async () => {
     await push(ws, {
       type: 'applyFilters',
       payload: { filters: [{ key: '../evil', operator: '=', value: ['x'] }] },
@@ -257,7 +242,6 @@ describe('Client applyFilters handling', () => {
     );
   });
 
-  // Bounds added in 0.2.9.
   it('rejects a key longer than 64 chars', async () => {
     await push(ws, {
       type: 'applyFilters',
@@ -303,7 +287,6 @@ describe('Client applyFilters handling', () => {
     expect(applyFilters).not.toHaveBeenCalled();
   });
 
-  // Payload-shape validation added in 0.2.9.
   it('rejects an applyFilters message with null payload', async () => {
     await push(ws, { type: 'applyFilters', payload: null });
     await flush();
@@ -326,9 +309,8 @@ describe('Client requestFilters handling', () => {
     ws = makeWs();
   });
 
-  // B1+B2: a getFilters() throw used to send nothing back, leaving the
-  // frontend's waitForAnyMessage unresolved and the FilterPanel stuck on
-  // "Loading filters..." forever. The handler must emit requestFiltersError.
+  // Guards against a getFilters() throw sending nothing back, which leaves
+  // the FilterPanel stuck loading forever.
   it('sends requestFiltersError when getFilters() rejects (B1+B2)', async () => {
     const provider = {
       getFilters: vi.fn().mockRejectedValue(new Error('plex unreachable')),
@@ -381,10 +363,8 @@ describe('Client malformed-payload handling', () => {
     ws = makeWs();
   });
 
-  // Finding 4: message.payload is untrusted JSON. A malformed message used to
-  // throw inside the handler, get swallowed by the handleRawMessage catch, and
-  // hang the client awaiting a response. Each handler must answer with its
-  // own error message instead.
+  // Guards against a malformed payload throwing, being swallowed by the
+  // handleRawMessage catch, and hanging the client awaiting a reply.
   it('answers a login with no userName with loginError, not silence', async () => {
     new Client(ws, []);
     ws.send.mockClear();
@@ -431,7 +411,7 @@ describe('Client malformed-payload handling', () => {
 
 // ---------------------------------------------------------------------------
 
-// Builds a minimal Room-shaped object that handleJoinOrCreateRoom can use.
+// The Room surface handleJoinOrCreateRoom touches.
 const makeFakeRoom = (roomName: string) => ({
   roomName,
   users: new Map<string, Client>(),
@@ -483,9 +463,7 @@ describe('Client joinOrCreateRoom routing', () => {
     expect(sent(ws).some((m) => m.type === 'createRoomSuccess')).toBe(true);
   });
 
-  // If another client wins the create race between our probe and our create
-  // attempt (rare, but possible), handleJoinOrCreateRoom should catch the
-  // RoomExistsError and retry as a join.
+  // Another client can win the race between the probe and the create.
   it('retries as join when create loses a RoomExistsError race', async () => {
     mockedHasRoom.mockReturnValue(false);
     mockedCreateRoom.mockRejectedValueOnce(new RoomExistsError('movie-night already exists.'));
@@ -504,20 +482,15 @@ describe('Client joinOrCreateRoom routing', () => {
 
 // ---------------------------------------------------------------------------
 
-// Audit 16 #419 + #421: username-collision handling on join. #419 -- a
-// rejected joiner must not keep a this.room reference (it let a follow-up
-// login-rename wipe the ACTIVE user's userProgress through
-// leaveRoomCleanup's returned room). #421 -- the 0.5.22 UsernameTakenError
-// guard must probe the holder's liveness so a user's own zombie connection
-// (unclean drop; socket looks OPEN until the ping sweep) can't block their
-// auto-rejoin: only a demonstrably live holder rejects.
-describe('Client join username collision (audit 16 #419 + #421)', () => {
+// Two regressions. A rejected joiner that keeps this.room lets a later rename
+// wipe the active user's progress. And a holder must be probed for liveness,
+// or a user's own zombie connection (still OPEN until the ping sweep) blocks
+// their rejoin: only a demonstrably live holder rejects.
+describe('Client join username collision', () => {
   let ws: ReturnType<typeof makeWs>;
   let client: Client;
 
-  // Holder-socket double: EventEmitter (once/off for the pong listener) plus
-  // the probe surface. `pong: true` answers the liveness ping synchronously
-  // (a live connection); `pong: false` never answers (half-open zombie).
+  // `pong: true` answers the ping (live); `pong: false` never does (zombie).
   const makeHolderWs = (opts: { pong?: boolean; readyState?: number } = {}) => {
     const holderWs = makeWs();
     return Object.assign(holderWs, {
@@ -560,11 +533,11 @@ describe('Client join username collision (audit 16 #419 + #421)', () => {
     expect(msgs.some((m) => m.type === 'joinRoomError' && m.payload.name === 'UsernameTakenError')).toBe(true);
     expect(room.users.get('alice')).toBe(holder);
     expect(holderWs.terminate).not.toHaveBeenCalled();
-    // #419: the rejected joiner holds no reference to the room.
+    // The rejected joiner holds no reference to the room.
     expect(client.room).toBeUndefined();
   });
 
-  it('a rejected joiner cannot wipe the active user\'s progress via a rename (audit 16 #419)', async () => {
+  it('a rejected joiner cannot wipe the active user\'s progress via a rename', async () => {
     const holderWs = makeHolderWs({ pong: true });
     const holder = { ws: holderWs } as unknown as Client;
     const room = makeCollisionRoom(holder);
@@ -573,10 +546,9 @@ describe('Client join username collision (audit 16 #419 + #421)', () => {
     await flush();
     ws.send.mockClear();
 
-    // The rejected user follows the "pick a different name" prompt: a login
-    // rename on the same connection. Pre-fix, handleLogin's cleanup got the
-    // never-joined room back from leaveRoomCleanup and deleted the ACTIVE
-    // alice's userProgress from it.
+    // The rejected user follows the "pick a different name" prompt. Guards
+    // against handleLogin's cleanup getting the never-joined room back from
+    // leaveRoomCleanup and deleting the active alice's userProgress.
     await push(ws, { type: 'login', payload: { userName: 'bob' } });
     await flush();
 
@@ -585,7 +557,7 @@ describe('Client join username collision (audit 16 #419 + #421)', () => {
     expect(room.users.get('alice')).toBe(holder);
   });
 
-  it('displaces a holder whose socket is already closed (audit 16 #421)', async () => {
+  it('displaces a holder whose socket is already closed', async () => {
     const holderWs = makeHolderWs({ readyState: 3 }); // WebSocket.CLOSED
     const holder = { ws: holderWs } as unknown as Client;
     const room = makeCollisionRoom(holder);
@@ -599,7 +571,7 @@ describe('Client join username collision (audit 16 #419 + #421)', () => {
     expect(holderWs.terminate).toHaveBeenCalled();
   });
 
-  it('displaces a holder that never answers the liveness probe (audit 16 #421)', async () => {
+  it('displaces a holder that never answers the liveness probe', async () => {
     vi.useFakeTimers();
     try {
       const holderWs = makeHolderWs({ pong: false }); // OPEN but half-open zombie
@@ -607,7 +579,7 @@ describe('Client join username collision (audit 16 #419 + #421)', () => {
       const room = makeCollisionRoom(holder);
 
       await push(ws, { type: 'joinRoom', payload: { roomName: 'movie-night' } });
-      // Probe deadline is 2s; advance past it and drain the async join.
+      // Past the 2s probe deadline, draining the async join.
       await vi.advanceTimersByTimeAsync(2100);
 
       expect(holderWs.ping).toHaveBeenCalled();
@@ -622,9 +594,7 @@ describe('Client join username collision (audit 16 #419 + #421)', () => {
 
 // ---------------------------------------------------------------------------
 
-// 0.4.15: EXPOSE_PLEX_BASE_URL opt-out (audit 10 #165 / audit 12 #226).
-// Verifies the WS `config` frame respects the flag at the gating point in
-// Client.sendConfig().
+// The WS `config` frame must respect the EXPOSE_PLEX_BASE_URL opt-out.
 describe('Client sendConfig plexBaseUrl exposure', () => {
   const makeFakePlexProvider = (url = 'http://192.168.1.20:32400'): ReelyProvider => ({
     type: 'plex',
@@ -640,8 +610,6 @@ describe('Client sendConfig plexBaseUrl exposure', () => {
     const msgs = sent(ws);
     const config = msgs.find((m) => m.type === 'config');
     expect(config, 'no config message sent').toBeTruthy();
-    // expect().toBeTruthy() above guarantees the non-null; TypeScript
-    // doesn't track expect-style assertions.
     // biome-ignore lint/style/noNonNullAssertion: asserted truthy above.
     return config!.payload;
   };
@@ -672,15 +640,14 @@ describe('Client sendConfig plexBaseUrl exposure', () => {
     const payload = await firstConfigPayload(ws);
 
     expect(payload.plexBaseUrl).toBeUndefined();
-    // Other fields still ship -- the gate is scoped to plexBaseUrl only.
+    // Other fields still ship; the gate covers plexBaseUrl only.
     expect(payload.providerType).toBe('plex');
     expect(payload.plexServerId).toBe('server-machine-id');
   });
 
   it('includes plexBaseUrl when exposePlexBaseUrl is undefined (no default applied)', async () => {
-    // applyDefaults normally fills `true`, but the gate is `!== false`, so
-    // a missing field still exposes. Belt-and-suspenders against any code
-    // path that constructs a Client before defaults run.
+    // The gate is `!== false`, so a Client built before applyDefaults runs
+    // still exposes the URL.
     mockedGetConfig.mockReturnValue({
       servers: [{ url: 'http://192.168.1.20:32400', token: 'tok' }],
       basicAuth: undefined,
@@ -694,12 +661,9 @@ describe('Client sendConfig plexBaseUrl exposure', () => {
   });
 });
 
-// Audit 16 #449: applyFilters validation failures previously logged a
-// warning and returned SILENTLY -- the client's applyFilters is
-// fire-and-forget, so the panel looked applied while the room never
-// changed. Both validation paths now answer with filterChangeError like
-// the cooldown + fetch-error paths always did.
-describe('Client applyFilters validation errors answer (audit 16 #449)', () => {
+// applyFilters is fire-and-forget, so a validation failure that returns
+// silently leaves the panel looking applied while the room never changed.
+describe('Client applyFilters validation errors answer', () => {
   let ws: ReturnType<typeof makeWs>;
 
   beforeEach(() => {
@@ -737,11 +701,9 @@ describe('Client applyFilters validation errors answer (audit 16 #449)', () => {
 
 // ---------------------------------------------------------------------------
 
-// Handlers used to run concurrently: ws.on('message') fires per frame and the
-// handlers are async, so a single TCP read carrying several frames started
-// several overlapping handler chains. Every room-mutating handler captures
-// state before a multi-second await and commits it after, so an interleaved
-// frame could change the world underneath one that was parked.
+// Room-mutating handlers capture state before a multi-second await and commit
+// after. One TCP read can carry several frames, so unserialised handlers let
+// an interleaved frame change the world underneath a parked one.
 describe('Client dispatch serialisation', () => {
   let ws: ReturnType<typeof makeWs>;
 
@@ -771,15 +733,14 @@ describe('Client dispatch serialisation', () => {
       throw new RoomExistsError('stop here');
     }) as unknown as typeof createRoom);
 
-    // Two frames arriving in one read: a create that parks, then a login.
+    // One read, two frames: a create that parks, then a login.
     ws.emit('message', JSON.stringify({ type: 'createRoom', payload: { roomName: 'movies' } }));
     ws.emit('message', JSON.stringify({ type: 'login', payload: { userName: 'bob' } }));
     for (let i = 0; i < 25; i += 1) await Promise.resolve();
 
-    // The login is queued behind the parked create, so it has not touched
-    // userName yet. Before serialisation it ran during the await and the
-    // create committed its room entry under a username no cleanup path
-    // could match, leaving a member nothing could ever remove.
+    // The login is queued behind the parked create, so userName is untouched.
+    // Running it during the await made the create commit its entry under a
+    // username no cleanup path could match: an unremovable member.
     expect(order).toEqual(['create:start']);
     expect(client.getUsername()).toBe('alice');
 
@@ -810,10 +771,10 @@ describe('Client dispatch serialisation', () => {
     ws.emit('message', JSON.stringify({ type: 'setLocale', payload: { language: 'en' } }));
     for (let i = 0; i < 25; i += 1) await Promise.resolve();
 
-    // setLocale touches no connection state, so it must not be charged for the
-    // create's Plex fetch. Serialising everything turned the filter panel's
-    // deliberately-parallel value fetches into a queue that outran the client's
-    // own 15s timeout, and let swipes be dropped behind a slow applyFilters.
+    // setLocale touches no connection state, so it must not wait on the
+    // create's Plex fetch. Serialising everything pushed the filter panel's
+    // parallel value fetches past the client's 15s timeout and dropped swipes
+    // behind a slow applyFilters.
     expect(order).toEqual(['create:start']);
     expect(sent(ws).some((m) => m.type === 'translations')).toBe(true);
 
@@ -825,9 +786,8 @@ describe('Client dispatch serialisation', () => {
     const client = new Client(ws, []);
     client.userName = 'alice';
     client.isLoggedIn = true;
-    // Already a member of an earlier room, so handleClose has real work to do
-    // and its ordering is observable. Without this the test asserted only on
-    // the mocked createRoom and passed whether close was queued or not.
+    // Pre-existing membership gives handleClose real work, so its ordering is
+    // observable; without it the test passes either way.
     const oldRoom = {
       roomName: 'old',
       users: new Map<string, Client>([['alice', client]]),
@@ -849,14 +809,14 @@ describe('Client dispatch serialisation', () => {
     }) as unknown as typeof createRoom);
 
     await push(ws, { type: 'createRoom', payload: { roomName: 'movies' } });
-    // Socket drops mid-create, the exact window where handleClose used to run
-    // while this.room was still undefined -- cleanup found nothing to do, and
-    // the create then committed a member that no later event could remove.
+    // Socket drops mid-create. If handleClose runs while this.room is still
+    // undefined it cleans up nothing, and the create then commits a member no
+    // later event can remove.
     (ws as unknown as { readyState: number }).readyState = 3;
     ws.emit('close');
     for (let i = 0; i < 25; i += 1) await Promise.resolve();
 
-    // Close is queued behind the parked create, so cleanup has NOT run yet.
+    // Close is queued behind the parked create: cleanup has not run yet.
     expect(order).toEqual(['create:start']);
     expect(oldRoom.users.get('alice')).toBe(client);
     expect(vi.mocked(oldRoom.notifyLeave)).not.toHaveBeenCalled();
@@ -864,7 +824,7 @@ describe('Client dispatch serialisation', () => {
     releaseCreate?.();
     for (let i = 0; i < 25; i += 1) await Promise.resolve();
 
-    // Only once the create settles does close run, and it evicts.
+    // Once the create settles, close runs and evicts.
     expect(order).toEqual(['create:start', 'create:end']);
     expect(oldRoom.users.has('alice')).toBe(false);
     expect(vi.mocked(oldRoom.notifyLeave)).toHaveBeenCalled();
@@ -873,10 +833,8 @@ describe('Client dispatch serialisation', () => {
 
 // ---------------------------------------------------------------------------
 
-// The filter handlers were the only provider-touching handlers with no login
-// gate, so anyone who completed the WS upgrade could read the library's filter
-// schema and drive Plex calls without ever identifying themselves. On a
-// deployment without basicAuth that is reachable from the network.
+// Without a login gate, anyone who completes the WS upgrade can read the
+// library's filter schema and drive Plex calls anonymously.
 describe('Client filter handlers require login', () => {
   let ws: ReturnType<typeof makeWs>;
 
@@ -898,7 +856,7 @@ describe('Client filter handlers require login', () => {
     await push(ws, { type: 'requestFilters' });
 
     expect(sent(ws)[0].type).toBe('requestFiltersError');
-    // The point of the gate: Plex is never consulted for an anonymous peer.
+    // Plex is never consulted for an anonymous peer.
     expect(getFilters).not.toHaveBeenCalled();
   });
 
@@ -919,10 +877,9 @@ describe('Client filter handlers require login', () => {
 
 // ---------------------------------------------------------------------------
 
-// Filters on a createRoom/joinRoom request bypassed every cap isValidFilter
-// enforces on the applyFilters path -- and the create path is the one that
-// persists what it is given, so a bad filter set replayed from disk on every
-// restart.
+// Filters on createRoom/joinRoom must hit the same caps as the applyFilters
+// path. The create path persists what it is given, so a bad filter set
+// replays from disk on every restart.
 describe('Client validates filters on the create path', () => {
   let ws: ReturnType<typeof makeWs>;
   let client: Client;
@@ -963,8 +920,7 @@ describe('Client validates filters on the create path', () => {
     await push(ws, { type: 'createRoom', payload: { roomName: 'movies', filters } });
 
     expect(sent(ws)[0].type).toBe('createRoomError');
-    // The room is never built, so the bad filter set never reaches Plex and
-    // never lands in the room's JSON file.
+    // No room built, so the bad filters reach neither Plex nor the JSON file.
     expect(mockedCreateRoom).not.toHaveBeenCalled();
   });
 
@@ -983,10 +939,9 @@ describe('Client validates filters on the create path', () => {
 
 // ---------------------------------------------------------------------------
 
-// Both room paths commit membership only after multi-second awaits (a Plex
-// library fetch, a disk load, the liveness probe). Committing unconditionally
-// created members that nothing could ever remove, which pinned the room past
-// the TTL sweep and leaked it, and its file, until restart.
+// Both room paths commit membership after multi-second awaits (Plex fetch,
+// disk load, liveness probe). An unconditional commit creates an unremovable
+// member, pinning the room past the TTL sweep and leaking it until restart.
 describe('Client membership commit guard', () => {
   let ws: ReturnType<typeof makeWs>;
   let client: Client;
@@ -1020,9 +975,8 @@ describe('Client membership commit guard', () => {
     const room = fakeRoom('movies');
     mockedHasRoom.mockReturnValue(false);
     mockedCreateRoom.mockImplementation((async () => {
-      // The tab closes while the Plex library fetch is in flight. handleClose
-      // has already run and found this.room undefined, so it cleaned up
-      // nothing -- this commit is the last chance to notice.
+      // Tab closes mid-fetch. handleClose already ran and saw no room, so
+      // this commit is the last chance to notice.
       (ws as unknown as { readyState: number }).readyState = 3;
       return room;
     }) as unknown as typeof createRoom);
@@ -1037,9 +991,8 @@ describe('Client membership commit guard', () => {
     const room = fakeRoom('movienight');
     mockedHasRoom.mockReturnValue(true);
     mockedGetRoom.mockReturnValue(room);
-    // The TTL sweep collected this room while the join was parked. The Room
-    // object is still reachable through the local, but it is no longer the
-    // instance registered under that name.
+    // The TTL sweep collected the room while the join was parked: still
+    // reachable through the local, no longer registered under that name.
     mockedIsRegisteredRoom.mockReturnValue(false);
 
     await push(ws, { type: 'joinRoom', payload: { roomName: 'movienight' } });
@@ -1063,9 +1016,8 @@ describe('Client membership commit guard', () => {
 
 // ---------------------------------------------------------------------------
 
-// The rename path deleted the previous name's userProgress and nothing else,
-// and it acted on leaveRoomCleanup's return value even when that helper's
-// identity guard had declined to evict.
+// A rename must clear all of the old name's state, and must do nothing when
+// leaveRoomCleanup's identity guard declined to evict.
 describe('Client login rename cleanup', () => {
   let ws: ReturnType<typeof makeWs>;
   let client: Client;
@@ -1097,9 +1049,9 @@ describe('Client login rename cleanup', () => {
   it('leaves progress and rated state consistent after a rename', async () => {
     await push(ws, { type: 'login', payload: { userName: 'alicia' } });
 
-    // Both survive or neither does. Deleting progress alone reported 0 while
-    // the deck stayed filtered by the rated set, so the bar could never reach
-    // 100%; deleting the ratings instead would dissolve other users' matches.
+    // Both survive or neither does. Progress alone reports 0 while the deck
+    // stays filtered by the rated set, so the bar never reaches 100%; ratings
+    // alone dissolves other users' matches.
     const hasProgress = room.userProgress.has('alice');
     const hasRated = room.userRated.has('alice');
     expect(hasProgress).toBe(hasRated);
@@ -1113,8 +1065,7 @@ describe('Client login rename cleanup', () => {
 
     await push(ws, { type: 'login', payload: { userName: 'alicia' } });
 
-    // The active connection's state is untouched, and no spurious leave went
-    // out on its behalf.
+    // No state change and no spurious leave on the active connection's behalf.
     expect(room.userProgress.get('alice')).toBe(50);
     expect(room.users.get('alice')).toBe(newer);
     expect(vi.mocked(room.notifyLeave)).not.toHaveBeenCalled();

@@ -25,20 +25,16 @@ describe('rateLimit middleware', () => {
   it('returns 429 with Retry-After when over the limit', () => {
     const mw = rateLimit({ windowMs: 30_000, max: 2 });
     const next = makeNext();
-    // Burn through the budget.
+    // Burn the budget.
     mw(makeReq(), makeRes(), next);
     mw(makeReq(), makeRes(), next);
-    // Next request should be denied.
     const res = makeRes();
     mw(makeReq(), res, next);
     expect(res.statusCode).toBe(429);
     expect(res.send).toHaveBeenCalledWith('Too many requests');
-    // The makeRes helper exposes a captured `headers` field on the
-    // returned Response; the union type covers it but the rule
-    // doesn't accept the access without a cast.
     // biome-ignore lint/suspicious/noExplicitAny: helper-exposed captured headers.
     expect((res as any).headers['retry-after']).toBeDefined();
-    // Should be roughly windowMs/1000 (30) at most.
+    // At most windowMs/1000.
     // biome-ignore lint/suspicious/noExplicitAny: helper-exposed captured headers.
     const ra = Number((res as any).headers['retry-after']);
     expect(ra).toBeGreaterThan(0);
@@ -52,7 +48,6 @@ describe('rateLimit middleware', () => {
     const denied = makeRes();
     mw(makeReq(), denied, next);
     expect(denied.statusCode).toBe(429);
-    // Advance past the window.
     vi.advanceTimersByTime(10_001);
     const allowed = makeRes();
     mw(makeReq(), allowed, next);
@@ -68,7 +63,6 @@ describe('rateLimit middleware', () => {
     const bRes = makeRes();
     mw(makeReq('10.0.0.2'), bRes, next);
     expect(bRes.statusCode).toBe(200);
-    // Second hit on the same IP gets 429.
     const aDenied = makeRes();
     mw(makeReq('10.0.0.1'), aDenied, next);
     expect(aDenied.statusCode).toBe(429);
@@ -77,7 +71,7 @@ describe('rateLimit middleware', () => {
   it('uses "unknown" key when the socket address is missing', () => {
     const mw = rateLimit({ windowMs: 60_000, max: 1 });
     const next = makeNext();
-    // Two requests with no socket address share the 'unknown' bucket.
+    // Both requests share the 'unknown' bucket.
     const noAddr = () => ({ socket: {} } as unknown as Request);
     const a = makeRes();
     mw(noAddr(), a, next);

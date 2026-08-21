@@ -5,16 +5,9 @@ import { UserPill } from "../atoms/UserPill";
 import { useEscape } from "../../hooks/useEscape";
 import styles from "./UsersPopup.module.css";
 
-// Build-time version from index.html's <body data-version="${version}">.
-// Server substitutes ${version} at request time (cmd/reely/main.ts);
-// vite dev substitutes via injectDevVars in vite.config.ts. Undefined
-// in jsdom tests (no template substitution) -- the span renders only
-// when a real value is present so test DOM stays clean.
-// Hoisted to module scope: document.body.dataset doesn't change at
-// runtime, no need to re-read per render.
-// (0.5.4) Added so users can confirm what version they're running
-// without dev tools -- lives in the room-roster popup because that's
-// the existing "info about this session" surface.
+// From index.html's <body data-version="${version}">, substituted by
+// cmd/reely/main.ts in prod and injectDevVars in dev. Undefined under jsdom,
+// where nothing substitutes it. Module scope: the dataset never changes.
 const APP_VERSION =
   typeof document !== "undefined" ? document.body.dataset.version : undefined;
 
@@ -31,13 +24,11 @@ export const UsersPopup = ({
   onClose,
   onLeave,
 }: UsersPopupProps) => {
-  // Close on Escape -- matches FilterPanel + MatchMoment behavior so users
-  // don't have to remember which overlays support it.
+  // Escape closes, matching every sibling overlay.
   useEscape(onClose);
 
-  // "Me" first, then descending progress -- most-engaged users sit near
-  // the top of the list. Memoized (audit 14 #333) so the clone-and-sort
-  // doesn't re-run on every parent render.
+  // "Me" first, then descending progress, so the most-engaged users sit at
+  // the top.
   const ordered = useMemo(
     () =>
       [...users].sort((a, b) => {
@@ -49,8 +40,7 @@ export const UsersPopup = ({
   );
 
   return (
-    // Backdrop click-to-close + dialog stopPropagation: keyboard
-    // dismissal is the Esc handler in useEscape above.
+    // Backdrop click-to-close; keyboard dismissal is the useEscape handler.
     // biome-ignore lint/a11y/noStaticElementInteractions: backdrop, Esc handles keyboard dismissal.
     // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop, Esc handles keyboard dismissal.
     <div className={styles.backdrop} onClick={onClose}>
@@ -66,12 +56,8 @@ export const UsersPopup = ({
           <h2 id="users-popup-title" className={styles.title}>
             In this room <span className={styles.count}>({users.length})</span>
           </h2>
-          {/* Right-side cluster: version label + close button. 0.5.4
-              added the version label so users can confirm what they're
-              running without dev tools. Lives next to the close button
-              because (a) it's passive metadata, not a primary action,
-              and (b) the right-edge is where the header already
-              terminates -- no new visual anchor needed. */}
+          {/* Version label sits with the close button: passive metadata, and
+              the header already terminates at that edge. */}
           <div className={styles.headerActions}>
             {APP_VERSION && (
               <span className={styles.version}>v{APP_VERSION}</span>

@@ -1,7 +1,4 @@
-// Shared test helpers (audit 9 #125). Each helper was previously inline in
-// the one test file that used it; centralizing them gives a single place
-// to widen / fix the stub shapes when a future test wants the same scaffold.
-// Only consumed from `tests/**`; not part of the production build.
+// Shared test helpers. Test-only; not part of the production build.
 
 import { EventEmitter } from 'node:events';
 import { vi } from 'vitest';
@@ -10,19 +7,13 @@ import type { WebSocket } from 'ws';
 
 // ─── Express stubs (rateLimit, future middleware tests) ─────────────────
 
-/**
- * Minimal Express `Request` stub. Only `socket.remoteAddress` is populated
- * because `rateLimit` -- the current sole consumer -- keys off it. Widen
- * with additional headers/path/method as new callers need them.
- */
+/** Express `Request` stub. Only `socket.remoteAddress`: all `rateLimit` reads. */
 export const makeReq = (ip = '192.168.1.10'): Request =>
   ({ socket: { remoteAddress: ip } } as unknown as Request);
 
 /**
- * Minimal Express `Response` stub. `setHeader`/`status`/`send` are mocked;
- * `statusCode` + a captured `headers` map are surfaced for assertions.
- * Returns the union so callers can both pass it to middleware (as
- * `Response`) and inspect the recorded state.
+ * Express `Response` stub. Returns the union so callers can pass it as
+ * `Response` and still read `statusCode` / `headers`.
  */
 export const makeRes = () => {
   const headers: Record<string, string> = {};
@@ -36,17 +27,15 @@ export const makeRes = () => {
   return r as unknown as Response & typeof r;
 };
 
-/** Minimal Express `NextFunction` stub returned as a vi mock. */
+/** Express `NextFunction` stub, as a vi mock. */
 export const makeNext = () =>
   vi.fn() as unknown as NextFunction & ReturnType<typeof vi.fn>;
 
 // ─── WebSocket stubs (client tests) ─────────────────────────────────────
 
 /**
- * Minimal fake WebSocket: EventEmitter + readyState + send.
- * `readyState = 1` matches `WebSocket.OPEN` from the real `ws` package, so
- * `client.ts`'s `this.ws.readyState !== WebSocket.OPEN` check works without
- * mocking the `ws` module.
+ * Fake WebSocket. `readyState = 1` is `WebSocket.OPEN`, so client.ts's OPEN
+ * check passes without mocking the `ws` module.
  */
 export const makeWs = () => {
   const ee = new EventEmitter();
@@ -56,25 +45,16 @@ export const makeWs = () => {
 };
 
 /**
- * Push a raw WS message into the fake client and wait for it to be handled.
- *
- * Client serialises the room- and identity-mutating handlers on a
- * per-connection promise queue, so that work no longer happens synchronously
- * inside `emit`. Turning the microtask queue drains the chain (the queue plus
- * any resolved-promise awaits inside the handler) before the caller asserts.
- * Deliberately NOT a macrotask: several of these tests install fake timers,
- * under which a setTimeout/setImmediate flush never resolves and the test hangs
- * to its 5s limit. Handlers that await a real timer need fake timers on top.
+ * Push a raw WS message and wait for the handler. Handlers run on a promise
+ * queue, so `emit` is not synchronous; turning microtasks drains it.
+ * Microtasks, not a timer: fake timers make a timer-based flush hang.
  */
 export const push = async (ws: ReturnType<typeof makeWs>, msg: object) => {
   ws.emit('message', JSON.stringify(msg));
   for (let i = 0; i < 25; i += 1) await Promise.resolve();
 };
 
-/**
- * Return all parsed messages sent by the client since construction (or the
- * last `mockClear()` on its `send`).
- */
+/** Parsed messages sent since construction (or the last `send.mockClear()`). */
 export const sent = (ws: ReturnType<typeof makeWs>) =>
   (ws.send as ReturnType<typeof vi.fn>).mock.calls.map((call: unknown[]) =>
     JSON.parse(call[0] as string),
@@ -83,20 +63,13 @@ export const sent = (ws: ReturnType<typeof makeWs>) =>
 /** Drain microtasks + one macrotask tick so async handlers settle. */
 export const flush = () => new Promise<void>((r) => setTimeout(r, 0));
 
-// ─── Logger mock factory (audit 12 #269) ────────────────────────────────
+// ─── Logger mock factory ────────────────────────────────────────────────
 
 /**
- * Factory for the `{ logger: {...}, addRedaction }` mock shape used by 11+
- * test files. Use via a closure so the factory reference resolves at
- * mock-call time (vi.mock is hoisted above imports; passing
- * `loggerMockFactory` directly would TDZ-error before the import
- * completes):
+ * Shared `{ logger, addRedaction }` mock shape. Call it inside the closure:
+ * vi.mock hoists above imports, so passing the reference directly TDZ-errors.
  *
- *   import { loggerMockFactory } from '../helpers';
  *   vi.mock('../../internal/app/reely/logger', () => loggerMockFactory());
- *
- * One source of truth; if the logger surface grows a new level, callers
- * pick up the new mock function automatically.
  */
 export const loggerMockFactory = () => ({
   logger: {
@@ -109,17 +82,11 @@ export const loggerMockFactory = () => ({
   addRedaction: vi.fn(),
 });
 
-// ─── Media factory (audit 12 #196) ──────────────────────────────────────
+// ─── Media factory ──────────────────────────────────────────────────────
 
 /**
- * Build a Media-shaped object with every required field defaulted, so
- * tests that previously cast `{ id, title, type }` partials can construct
- * a real `Media` without the cast. A tightening of the runtime shape
- * (e.g. a new required field) now fails the test by missing the default
- * instead of silently passing because the consumer only read `.id`.
- *
- * Optional fields (year, posterUrl, duration, rating, contentRating,
- * tagline) stay undefined unless the caller overrides them.
+ * Real `Media` with required fields defaulted, so tests need no partial cast
+ * and a newly required field fails them instead of passing silently.
  */
 export const makeMedia = (overrides: Partial<{
   id: string;

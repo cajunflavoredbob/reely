@@ -22,15 +22,11 @@ import {
   TlsConfigKeyFileInvalid,
 } from './errors';
 
-// Valid log level names accepted in configuration.
-// These map to pino log levels internally (see logger.ts).
+// Mapped to pino levels in logger.ts.
 const VALID_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'];
 
-// Audit 15 #383: consolidates the repeated `typeof X !== 'string'` +
-// `errors.push(new ErrorClass(message))` pattern (was 9 sites). The
-// `value is string` predicate also narrows the caller's reference
-// after the check, so the existing follow-on logic (URL.parse,
-// length check, startsWith, etc.) sees a typed string.
+// The `value is string` predicate narrows at the call site, so follow-on logic
+// (URL parse, length, startsWith) sees a typed string.
 const requireString = (
   value: unknown,
   errors: ReelyError[],
@@ -44,11 +40,10 @@ const requireString = (
   return true;
 };
 
-// Normalizes `value` IN PLACE (coerces port to a number, uppercases logLevel)
-// and returns the list of validation errors. The name leads with "normalize"
-// because that mutation is load-bearing, not a side effect: loadConfig()
-// caches and uses the mutated object, and removing the coercion would break
-// YAML configs that supply e.g. `port: "8000"` or `logLevel: info`.
+// Mutates `value` IN PLACE (port to number, logLevel uppercased) and returns
+// the validation errors. The mutation is load-bearing: loadConfig caches the
+// mutated object, and YAML supplying `port: "8000"` or `logLevel: info`
+// depends on it.
 export const normalizeAndValidateConfig = (
   value: unknown,
 ): ReelyError[] => {
@@ -114,10 +109,8 @@ export const normalizeAndValidateConfig = (
           }
 
           if (requireString(server.url, errors, ServerUrlMustBeString, 'a server url must be specified')) {
-            // URL parse is validation; redaction registration moved to
-            // config/redact.ts in 0.4.16 (audit 12 #237 + #276). The
-            // validator is now a pure (unknown) -> ReelyError[] and no
-            // longer imports the logger.
+            // Parse only. Redaction registration lives in config/redact.ts so
+            // this stays a pure (unknown) -> ReelyError[].
             try {
               new URL(server.url);
             } catch {
@@ -152,12 +145,6 @@ export const normalizeAndValidateConfig = (
             }
           }
 
-          // libraryTypeFilter validation removed in 0.4.1: reely is
-          // movies-only by design, so the filter has only one valid value
-          // and the field is no longer part of the Config shape. An
-          // existing YAML/env value is silently ignored (the validator
-          // doesn't error on unknown fields).
-
         } catch (err) {
           errors.push(err as ReelyError);
         }
@@ -174,11 +161,9 @@ export const normalizeAndValidateConfig = (
       }
     }
 
-    // Boolean-only knob (audit 10 #165 / audit 12 #226). The env loader's
-    // EnvBool coerces strings to true booleans before we see them here, so
-    // a non-boolean value originates from YAML -- a YAML `1` or `"true"`
-    // is rejected so the operator can't think they've disabled exposure
-    // when they haven't.
+    // EnvBool has already coerced env strings, so a non-boolean here came from
+    // YAML. Reject `1` / `"true"` rather than let an operator believe they
+    // disabled exposure when they didn't.
     if (value.exposePlexBaseUrl !== undefined && typeof value.exposePlexBaseUrl !== 'boolean') {
       errors.push(
         new ExposePlexBaseUrlInvalid('exposePlexBaseUrl must be a boolean'),
@@ -189,9 +174,8 @@ export const normalizeAndValidateConfig = (
       try {
         isRecord(value.basicAuth, 'basicAuth', BasicAuthInvalid);
 
-        // Must be non-empty. An empty password used to pass the type check,
-        // booting the app "protected" by the guessable base64("user:") --
-        // a silent auth bypass.
+        // Must be non-empty: an empty password passes the type check and boots
+        // the app "protected" by a guessable base64("user:").
         if (requireString(value.basicAuth.userName, errors, BasicAuthUserNameInvalid, 'basicAuth.userName must be a non-empty string')
             && value.basicAuth.userName === '') {
           errors.push(new BasicAuthUserNameInvalid('basicAuth.userName must be a non-empty string'));

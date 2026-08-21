@@ -13,18 +13,14 @@ import { getConfig } from '../../internal/app/reely/config/main';
 
 const mockedGetConfig = vi.mocked(getConfig);
 
-// Minimal IncomingMessage stub: only headers are read.
+// Only headers are read.
 const req = (headers: Record<string, string>): IncomingMessage =>
   ({ headers } as unknown as IncomingMessage);
 
 describe('isOriginAllowed (CSWSH guard)', () => {
   beforeEach(() => {
-    // Explicit reset (audit 12 #247): the vitest.config.ts `clearMocks`
-    // toggle (0.4.13) covers call history but NOT the mockReturnValue
-    // set by a prior test. Without `mockReset`, a test that overrode
-    // `mockReturnValue({ allowedOrigins: ['...'] })` left that value
-    // visible to the next test. Belt-and-suspenders alongside the
-    // global clearMocks/restoreMocks.
+    // The global clearMocks resets call history but not a mockReturnValue set
+    // by a prior test, so it would leak into the next one.
     mockedGetConfig.mockReset();
     mockedGetConfig.mockReturnValue({ allowedOrigins: [] } as never);
   });

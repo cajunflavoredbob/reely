@@ -1,13 +1,12 @@
 // @vitest-environment jsdom
 //
-// biome-ignore-all lint/style/noNonNullAssertion: `screen.getByText('Change').closest('button')!` and `nameInput.closest('form')!` are test-tree assertions -- if the closest ancestor isn't present the test was misconfigured anyway and the immediate TypeError surfaces the same signal a Vitest assertion would.
+// biome-ignore-all lint/style/noNonNullAssertion: a missing ancestor throws a TypeError, as actionable as an assertion failure.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 
-// Login pulls user/error/room/config/connectionStatus from the store +
-// dispatches login + joinOrCreateRoom. Same store-mock pattern as Tr /
-// PlexLinks / MatchesList. Sanitize utils are pure (already tested) so
-// let them run real via importActual.
+// Login reads user/error/room/config/connectionStatus from the store and
+// dispatches login + joinOrCreateRoom. The sanitize utils are pure, so they
+// run unmocked.
 const { useStoreMock } = vi.hoisted(() => ({ useStoreMock: vi.fn() }));
 
 vi.mock('../../../../web/app/src/store', () => ({
@@ -36,9 +35,8 @@ const withState = (slice: any = {}) => {
   ]);
 };
 
-// Set the URL's ?roomName= for the mount-time seed (useState lazy
-// initializer reads location.search once). jsdom provides a real location
-// but it's not assignable; use Object.defineProperty to override.
+// The lazy useState initializer reads location.search once at mount. jsdom's
+// location is real but not assignable, so override it via defineProperty.
 const setRoomNameInUrl = (roomName: string | null) => {
   const search = roomName === null ? '' : `?roomName=${encodeURIComponent(roomName)}`;
   Object.defineProperty(window, 'location', {
@@ -107,7 +105,7 @@ describe('LoginScreen: server chip + error box (store-driven)', () => {
     });
     const { container } = render(<LoginScreen />);
     expect(screen.getByText('My Plex')).toBeDefined();
-    // The connection-status dot carries data-status= for CSS coloring.
+    // The status dot carries data-status for CSS coloring.
     const dot = container.querySelector('[data-status]');
     expect(dot?.getAttribute('data-status')).toBe('connected');
   });
@@ -118,9 +116,7 @@ describe('LoginScreen: server chip + error box (store-driven)', () => {
     expect(screen.getByText('Login failed')).toBeDefined();
   });
 
-  // Defensive fallback: server-supplied error without a `message` field
-  // shouldn't render "undefined" -- the source's `?? "Something went wrong"`
-  // covers it.
+  // A message-less error must not render "undefined".
   it('renders a generic fallback when the error has no message', () => {
     withState({ error: {} });
     render(<LoginScreen />);
@@ -132,13 +128,11 @@ describe('LoginScreen: submit + validation', () => {
   it('shows "Required" + opens edit mode when name is empty at submit', () => {
     localStorage.setItem('userName', 'alice');
     render(<LoginScreen />);
-    // Open the chip to edit, clear the name, then submit.
     fireEvent.click(screen.getByText('Change').closest('button')!);
     const nameInput = screen.getByLabelText('Your name') as HTMLInputElement;
     fireEvent.change(nameInput, { target: { value: '' } });
     fireEvent.submit(nameInput.closest('form')!);
-    // Empty name + empty room both fail validation, so "Required" appears
-    // twice. Use getAllByText so the multiple match doesn't error out.
+    // Name and room both fail, so "Required" appears twice.
     expect(screen.getAllByText('Required').length).toBeGreaterThan(0);
     expect(dispatch).not.toHaveBeenCalled();
   });
@@ -160,8 +154,7 @@ describe('LoginScreen: submit + validation', () => {
     fireEvent.change(roomInput, { target: { value: 'movie-night' } });
     fireEvent.submit(nameInput.closest('form')!);
     expect(dispatch).toHaveBeenCalledWith({ type: 'login', payload: { userName: 'alice' } });
-    // joinOrCreateRoom must NOT fire yet -- it's deferred to the
-    // post-login useEffect.
+    // joinOrCreateRoom is deferred to the post-login effect.
     expect(dispatch).toHaveBeenCalledTimes(1);
   });
 
@@ -179,15 +172,12 @@ describe('LoginScreen: submit + validation', () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
   });
 
-  // Edited-via-chip case: stored userName was edited so trimmedUser differs
-  // from the server-side user. Must (re-)login first so the server identity
-  // matches the new name before joining (otherwise the join would land
-  // under the old server-side username).
+  // An edited chip name differs from the server-side identity, so login has to
+  // run again or the join lands under the old username.
   it('re-dispatches login when the cached chip was edited to a different name', () => {
     localStorage.setItem('userName', 'alice');
     withState({ user: { userName: 'alice' } });
     render(<LoginScreen />);
-    // Open chip, change name to 'alice2', enter a room, submit.
     fireEvent.click(screen.getByText('Change').closest('button')!);
     const nameInput = screen.getByLabelText('Your name') as HTMLInputElement;
     fireEvent.change(nameInput, { target: { value: 'alice2' } });
@@ -198,15 +188,12 @@ describe('LoginScreen: submit + validation', () => {
   });
 });
 
-describe('LoginScreen: deferred-join effect (audit 12 #216)', () => {
-  // After login resolves (user appears in the store) AND a pendingJoinRoom
-  // was captured at submit, the effect fires joinOrCreateRoom with the
-  // snapshotted room name -- NOT whatever the input currently shows. The
-  // string|null ref instead of a boolean lets a user who keeps typing
-  // between submit and login-success ship the room name they clicked with.
+describe('LoginScreen: deferred-join effect', () => {
+  // The effect joins with the room name snapshotted at submit, not whatever
+  // the input shows. It holds a string|null rather than a boolean so typing
+  // between submit and login-success cannot change the room joined.
   it('fires the deferred joinOrCreateRoom when user appears in the store after a pending login', () => {
     const { rerender } = render(<LoginScreen />);
-    // Submit -> captures pendingJoinRoom + dispatches login.
     const nameInput = screen.getByLabelText('Your name') as HTMLInputElement;
     const roomInput = screen.getByLabelText('Room name') as HTMLInputElement;
     fireEvent.change(nameInput, { target: { value: 'alice' } });
@@ -214,7 +201,7 @@ describe('LoginScreen: deferred-join effect (audit 12 #216)', () => {
     fireEvent.submit(nameInput.closest('form')!);
     expect(dispatch).toHaveBeenCalledWith({ type: 'login', payload: { userName: 'alice' } });
 
-    // Simulate the login-success: user now populated in the store.
+    // Login succeeds: user lands in the store.
     act(() => {
       withState({ user: { userName: 'alice' } });
       rerender(<LoginScreen />);
@@ -225,9 +212,8 @@ describe('LoginScreen: deferred-join effect (audit 12 #216)', () => {
     });
   });
 
-  // The deferred slot is cleared on any error so a LATER auto-set of `user`
-  // (e.g. a WS reconnect populating the cached session) doesn't silently
-  // fire a stale joinOrCreateRoom on the user's behalf.
+  // Clearing the slot on error stops a later auto-set of `user` (a WS reconnect
+  // restoring the cached session) from firing a stale join unprompted.
   it('clears the deferred-join slot when an error appears (no stale fire on later user-set)', () => {
     const { rerender } = render(<LoginScreen />);
     const nameInput = screen.getByLabelText('Your name') as HTMLInputElement;
@@ -244,8 +230,7 @@ describe('LoginScreen: deferred-join effect (audit 12 #216)', () => {
     });
     dispatch.mockClear();
 
-    // Later (e.g. reconnect populates the cached session) user is set.
-    // This must NOT fire joinOrCreateRoom because the deferred slot was cleared.
+    // A reconnect sets user later; the cleared slot must swallow it.
     act(() => {
       withState({ user: { userName: 'alice' } });
       rerender(<LoginScreen />);
@@ -301,7 +286,7 @@ describe('LoginScreen: chip <-> input transitions', () => {
     const nameInput = screen.getByLabelText('Your name') as HTMLInputElement;
     fireEvent.change(nameInput, { target: { value: 'alice2' } });
     fireEvent.keyDown(nameInput, { key: 'Escape' });
-    // Back to chip mode showing the original name.
+    // Chip mode again, original name intact.
     expect(screen.queryByLabelText('Your name')).toBeNull();
     expect(screen.getByText('alice')).toBeDefined();
   });

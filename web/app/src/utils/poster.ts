@@ -1,7 +1,5 @@
-// Poster URLs from the server are root-relative (/api/poster/...). Under a
-// reverse-proxy mount (rootPath / X-Forwarded-Prefix) they must be prefixed
-// with document.body.dataset.rootPath, or the browser resolves them against
-// the proxy origin and the image 404s. Every poster <img> goes through here.
+// Server poster URLs are root-relative, so under a reverse-proxy mount they
+// need the rootPath prefix or they resolve against the proxy origin and 404.
 export const posterSrc = (
   posterUrl: string | undefined,
 ): string | undefined =>

@@ -1,34 +1,22 @@
 name: CI
 
-# Trigger surface (audit 13 #343, locked decision per the 0.4.21 design
-# call): push only, no pull_request. reely is a private repo; fork PRs
-# don't exist, so the `pull_request:` trigger was only causing double
-# runs on every PR push (push fires on the branch update, pull_request
-# fires on the same update -- different refs, so the concurrency block
-# below couldn't dedupe them). If reely ever goes public and grows a
-# fork-PR path, switch to keeping both triggers with a smarter
-# concurrency group:
-#   concurrency:
-#     group: ci-${{ github.event.pull_request.number || github.ref }}
-# Trivial change, no ongoing maintenance cost to either path.
+# Push only. A `pull_request:` trigger double-runs every PR push (push and
+# pull_request fire on different refs, so concurrency can't dedupe them),
+# and this repo is private, so there are no fork PRs to catch.
 on:
   push:
     branches: ["**"]
   workflow_dispatch:
 
-# Audit 12 #252: a fresh push to a branch should cancel any in-flight CI on
-# the same ref. Without `concurrency`, pushing twice in quick succession
-# spawned two parallel runs and burned Actions minutes on the older one.
+# A new push cancels in-flight CI on the same ref; otherwise back-to-back
+# pushes leave stale runs burning Actions minutes.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # Audit 12 #253: collapsed typecheck / build / test into a single matrix
-  # job. Each cell still does its own checkout + pnpm install (matrix cells
-  # are independent runners) -- the pnpm cache + lockfile keep installs
-  # cheap -- but the YAML is no longer three near-identical copies. The
-  # docker build stays separate because it doesn't need Node setup.
+  # typecheck / build / test share one matrix. Each cell is its own runner,
+  # so each checks out and installs again; the pnpm cache keeps that cheap.
   ci:
     name: CI / ${{ matrix.task }}
     runs-on: ubuntu-latest
@@ -39,43 +27,35 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The workflows only read the tree; keeping the GITHUB_TOKEN out
-          # of .git/config removes a credential from every later step's
-          # reach (audit 17 #2).
+          # Nothing here writes to the repo; a persisted GITHUB_TOKEN would
+          # be reachable by every later step.
           persist-credentials: false
-      # pnpm version is read from `packageManager` in package.json -- keep
-      # it in sync with the Dockerfile's `npm install -g pnpm@<X>` pin
-      # so CI and the production image use exactly the same pnpm release
-      # (audit 9 #123).
+      # pnpm version comes from `packageManager` in package.json. Keep it in
+      # sync with the Dockerfile's pnpm pin or CI and the production image
+      # run different pnpm releases.
       - uses: pnpm/action-setup@v6.0.9
       - uses: actions/setup-node@v7
         with:
-          # Floors to the latest 26.x at job time; the Dockerfile pins an
-          # exact patch (audit 9 #122). Keeping CI on the major-only float
-          # surfaces upstream Node 26.x compat issues here before they hit
-          # the production image.
+          # Major-only float, so upstream Node 26.x breakage surfaces here
+          # before it reaches the image, which pins an exact patch.
           node-version: "26"
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - run: pnpm ${{ matrix.task }}
 
-  # Build the Docker image (no push) so a broken Dockerfile is caught in PR
-  # CI rather than only at release time, after a tag is already pushed.
+  # Build the image without pushing, so a broken Dockerfile fails here
+  # instead of at release time with a tag already pushed.
   docker:
     name: Docker build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          # The workflows only read the tree; keeping the GITHUB_TOKEN out
-          # of .git/config removes a credential from every later step's
-          # reach (audit 17 #2).
+          # Nothing here writes to the repo; a persisted GITHUB_TOKEN would
+          # be reachable by every later step.
           persist-credentials: false
-      # QEMU + buildx for cross-platform emulation. Audit 12 #268: ci.yml
-      # used to build amd64 only, so an arm64 regression only surfaced at
-      # release time. Now both arches build in PR CI, matching the
-      # multi-arch list in release.yaml. The arm64 leg runs emulated and
-      # is slower than amd64; both run in parallel under buildx.
+      # Both arches build here, matching release.yaml, or an arm64
+      # regression only shows up at release. arm64 runs emulated and slower.
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - name: Build image (no push)
@@ -85,27 +65,22 @@ jobs:
           file: ./Dockerfile
           push: false
           platforms: linux/amd64,linux/arm64
-          # GHA cache layer reuse across PR builds (audit 9 #105). Without
-          # this every CI run rebuilt every layer from scratch -- the
-          # multi-stage Docker build is the long pole on this workflow.
+          # Layer reuse across runs; the multi-stage build is the long pole
+          # on this workflow.
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Dependency vulnerability scan. Warn-level (continue-on-error) so a
-  # newly-disclosed advisory doesn't block legitimate PRs while we triage,
-  # but the failing job is visible on every PR (audit 12 #217). The
-  # `trivy` job below is the other half: pnpm audit covers npm advisories
-  # against the lockfile, trivy covers everything in the built image
-  # (base-image OS packages + npm modules as actually installed).
+  # npm advisories against the lockfile. continue-on-error so a newly
+  # disclosed advisory doesn't block PRs while it's triaged; the red step
+  # still shows on every PR. The trivy job below covers the built image.
   audit:
     name: pnpm audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          # The workflows only read the tree; keeping the GITHUB_TOKEN out
-          # of .git/config removes a credential from every later step's
-          # reach (audit 17 #2).
+          # Nothing here writes to the repo; a persisted GITHUB_TOKEN would
+          # be reachable by every later step.
           persist-credentials: false
       - uses: pnpm/action-setup@v6.0.9
       - uses: actions/setup-node@v7
@@ -117,23 +92,17 @@ jobs:
         run: pnpm audit --audit-level=high
         continue-on-error: true
 
-  # Lint via Biome (audit 13 #283). Gate on errors only -- warnings
-  # (a11y findings, noExplicitAny, useExhaustiveDependencies, etc.) are
-  # reported in the step output but don't fail the job, so the wider
-  # cleanup can happen in its own dedicated batches without blocking
-  # day-to-day work. Errors block: any new noUnusedVariables /
-  # noUnusedImports / etc. fail the build. Biome's binary download is
-  # small (~10MB) and the lint pass is <100ms on this tree, so the
-  # job adds negligible CI time.
+  # Biome. Errors block; warnings (a11y, noExplicitAny,
+  # useExhaustiveDependencies) only print, so that cleanup can happen in
+  # its own batches without blocking day-to-day work.
   lint:
     name: biome lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          # The workflows only read the tree; keeping the GITHUB_TOKEN out
-          # of .git/config removes a credential from every later step's
-          # reach (audit 17 #2).
+          # Nothing here writes to the repo; a persisted GITHUB_TOKEN would
+          # be reachable by every later step.
           persist-credentials: false
       - uses: pnpm/action-setup@v6.0.9
       - uses: actions/setup-node@v7
@@ -144,42 +113,26 @@ jobs:
       - name: biome lint (errors block, warnings surface)
         run: pnpm lint
 
-  # Image vulnerability scan (closes the other half of audit 12 #217).
-  # Trivy scans the built Docker image for CVEs in both the base-image
-  # OS packages (the pinned node:26-slim base ships Debian, so apt-listed
-  # libraries get scanned) and the installed npm modules. pnpm audit
-  # (above) only knows the lockfile -- it misses CVEs in the base image
-  # and any drift between the lockfile and what actually installs.
-  #
-  # Warn-level on PRs (continue-on-error). The step turns red on
-  # findings so they're visible in the PR check list, but the job
-  # stays green so a newly-disclosed CVE doesn't block legitimate
-  # merges. The release workflow runs the same scan as a HARD gate
-  # (severity: CRITICAL, exit-code: 1, no continue-on-error) -- so a
-  # CRITICAL CVE with an upstream fix can land in dev as a warning
-  # but cannot reach a published tag.
-  #
-  # Separate job (not folded into `docker` above) so the failure
-  # surfaces under its own check name in PR UIs, and so the multi-arch
-  # build there stays a pure compile gate.
+  # Scans the built image for CVEs in base-image OS packages and in the
+  # modules as actually installed; pnpm audit only sees the lockfile.
+  # Warn-level here (continue-on-error) so a fresh CVE doesn't block merges;
+  # release.yaml runs the same scan as a hard gate, so a fixable CRITICAL
+  # can sit in dev but can't reach a published tag. Its own job, so it gets
+  # its own check name and the `docker` job stays a pure compile gate.
   trivy:
     name: Trivy image scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          # The workflows only read the tree; keeping the GITHUB_TOKEN out
-          # of .git/config removes a credential from every later step's
-          # reach (audit 17 #2).
+          # Nothing here writes to the repo; a persisted GITHUB_TOKEN would
+          # be reachable by every later step.
           persist-credentials: false
       - uses: docker/setup-buildx-action@v4
-      # Single-platform local-load build: Trivy scans via the Docker
-      # daemon, which `docker/build-push-action` only supports for one
-      # arch at a time. Shares the same `type=gha` cache scope as the
-      # `docker` job, so once that job has primed the cache this build
-      # is nearly all layer hits. amd64 only -- Trivy's findings are
-      # determined by the base image + the npm install, both of which
-      # are identical across arches for our purposes.
+      # Trivy scans through the Docker daemon, and build-push-action can
+      # only load one arch at a time. amd64 only: findings come from the
+      # base image and the npm install, which don't differ by arch. Shares
+      # the `type=gha` cache with the `docker` job, so this is mostly hits.
       - name: Build image (amd64, local load for scan)
         uses: docker/build-push-action@v7
         with:
@@ -197,14 +150,10 @@ jobs:
           image-ref: reely:trivy-scan
           format: table
           severity: CRITICAL,HIGH
-          # ignore-unfixed: skip CVEs that upstream (Debian / npm) has
-          # no patch for yet. Without this the report fills with
-          # rolling Debian backport-lag noise that we can't act on; the
-          # signal we want is "there's a patched version you could
-          # deploy." Standard practice for image scanning.
+          # Skip CVEs upstream has no patch for; otherwise Debian backport
+          # lag drowns the findings you could actually act on.
           ignore-unfixed: true
-          # exit-code 1 + continue-on-error: the step renders RED on
-          # findings (visible in the PR check list), but the job stays
-          # green so we don't block merges on warn-level CVEs.
+          # Turns the step red on findings while continue-on-error keeps the
+          # job green, so warn-level CVEs stay visible without blocking.
           exit-code: '1'
         continue-on-error: true

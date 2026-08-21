@@ -3,18 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render } from '@testing-library/react';
 import { ToastList, type Toast } from '../../../../web/app/src/components/atoms/Toast';
 
-// ToastList renders a list of toasts and auto-removes each one after its
-// `showTimeMs` elapses. Behavioral surface worth pinning:
-//   - The setTimeout per toast (only when showTimeMs is set).
-//   - Audit 10 #135: when a toast is removed externally (e.g. by click),
-//     the pending timer must be cleared so it can't fire later as a no-op
-//     against an already-removed toast (slow leak across long sessions).
-//   - Audit 13 #310: the timers Map is constructed lazily on first read
-//     (the prior `useRef(new Map(...))` constructed one fresh per render
-//     even though React only keeps the first; cheap individually but a
-//     per-render allocation across the component lifetime).
-//   - Unmount clears every pending timer.
-//   - A re-render with the SAME toast does NOT restart that toast's timer.
+// ToastList auto-removes each toast after its `showTimeMs`. Pinned here: one
+// timer per toast and only when showTimeMs is set; external removal and unmount
+// clear pending timers; a re-render does not restart a live timer.
 
 const t = (over: Partial<Toast> = {}): Toast => ({
   id: 't1',
@@ -62,7 +53,7 @@ describe('ToastList', () => {
     const items = container.querySelectorAll('li');
     expect(items[0]?.getAttribute('class')).toMatch(/toastSuccess/);
     expect(items[1]?.getAttribute('class')).toMatch(/toastFailure/);
-    // Default (no appearance) -> styles[`toast`] -> 'toast' class.
+    // No appearance -> styles['toast'].
     expect(items[2]?.getAttribute('class')).toMatch(/toast/);
   });
 
@@ -93,37 +84,29 @@ describe('ToastList', () => {
     expect(removeToast).not.toHaveBeenCalled();
   });
 
-  // Audit 10 #135: a toast removed externally (e.g. by click) leaves a
-  // pending setTimeout behind. The cleanup loop in the effect must clear
-  // that timer and drop its entry from the Map -- otherwise the entry
-  // would leak across the component lifetime in long-running sessions.
+  // A toast removed externally (e.g. by click) leaves a pending setTimeout; the
+  // effect cleanup must clear it and drop the Map entry, or it leaks for the
+  // component's life.
   it('cancels the pending timer when a toast is removed externally before its timeout', () => {
     const removeToast = vi.fn();
     const initial = [t({ id: 'a', message: 'first', showTimeMs: 1000 })];
     const { rerender } = render(<ToastList toasts={initial} removeToast={removeToast} />);
-    // Remove the toast externally well before the 1s timeout would fire.
     act(() => {
       rerender(<ToastList toasts={[]} removeToast={removeToast} />);
     });
-    // Past the original timeout: removeToast must NOT have been called by
-    // the cancelled timer (the array was already empty by then).
+    // Past the original timeout: the cancelled timer must not fire.
     act(() => {
       vi.advanceTimersByTime(2_000);
     });
     expect(removeToast).not.toHaveBeenCalled();
   });
 
-  // The `if (getTimers().has(toast.id)) return;` short-circuit prevents
-  // restarting a timer for a toast that already has one. Without it,
-  // every render would spawn a fresh setTimeout for toasts[0] -- the
-  // pre-Map-tracking bug behavior. Verified by re-rendering the same
-  // toast and asserting removeToast fires EXACTLY ONCE at the original
-  // timeout, not multiple times.
+  // Without the `if (getTimers().has(toast.id)) return;` short-circuit, every
+  // render spawns a fresh setTimeout for the same toast.
   it('does not restart timers when the same toast re-renders', () => {
     const removeToast = vi.fn();
     const toast = t({ id: 'a', showTimeMs: 1000 });
     const { rerender } = render(<ToastList toasts={[toast]} removeToast={removeToast} />);
-    // Advance partway, re-render the same toast, advance the rest.
     act(() => {
       vi.advanceTimersByTime(600);
     });
@@ -136,10 +119,8 @@ describe('ToastList', () => {
     expect(removeToast).toHaveBeenCalledTimes(1);
   });
 
-  // Mount/unmount cleanup effect: all pending timers must be cleared on
-  // unmount. Without this, a setTimeout scheduled during the component's
-  // life would fire after unmount and call removeToast on a parent that
-  // no longer renders.
+  // A timer surviving unmount calls removeToast on a parent that no longer
+  // renders.
   it('clears every pending timer on unmount', () => {
     const removeToast = vi.fn();
     const { unmount } = render(
@@ -158,7 +139,6 @@ describe('ToastList', () => {
     expect(removeToast).not.toHaveBeenCalled();
   });
 
-  // Multiple toasts each get their own timer.
   it('schedules an independent timer per toast', () => {
     const removeToast = vi.fn();
     const a = t({ id: 'a', message: 'first', showTimeMs: 300 });

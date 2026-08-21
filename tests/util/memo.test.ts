@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 describe('memo (dev mode)', () => {
-  // In non-production environments memo/memo1 are pass-through -- no caching.
+  // Outside production, memo and memo1 are pass-through.
   it('calls fn every invocation', async () => {
     const { memo } = await import('../../internal/app/reely/util/memo');
     const fn = vi.fn(() => 42);
@@ -42,11 +42,9 @@ describe('memo (production mode)', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  // Audit 9 #113: the prior cache cell was `T | undefined` and the miss
-  // check was `cachedResult === undefined`, so a function that legitimately
-  // returned `undefined` would re-execute on every call. 0.4.5 switched to
-  // a sentinel symbol -- this test exercises that exact case.
-  it('caches a function that returns undefined (audit 9 #113 sentinel)', async () => {
+  // A `=== undefined` miss check re-executes a function that legitimately
+  // returns undefined, hence the sentinel.
+  it('caches a function that returns undefined', async () => {
     const { memo } = await import('../../internal/app/reely/util/memo');
     const fn = vi.fn(() => undefined as unknown as number);
     const memoized = memo(fn);
@@ -73,7 +71,7 @@ describe('memo (production mode)', () => {
     const memoized = memo1(fn);
     const first = memoized('x');
     const second = memoized('x');
-    expect(first).toBe(second); // cached -- same string
+    expect(first).toBe(second); // cached: same string
     expect(fn).toHaveBeenCalledTimes(1);
   });
 });

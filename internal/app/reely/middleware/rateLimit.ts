@@ -2,15 +2,12 @@ import type { Request, Response, NextFunction } from 'express';
 import { logger } from '../logger';
 import { clientKey } from '../util/clientKey';
 
-// Fixed-window per-IP rate limiter. Lightweight, in-memory; no external dep.
+// Fixed-window per-IP rate limiter, in-memory.
 //
-// Keyed on req.socket.remoteAddress -- the real TCP peer -- NOT req.ip.
-// req.ip is derived from the client-controllable X-Forwarded-For header when
-// Express `trust proxy` is enabled, which would let an attacker mint a fresh
-// bucket per forged IP and defeat the limiter. The socket address can't be
-// spoofed. Behind a reverse proxy this is the proxy's address, so the limiter
-// becomes a global throttle -- still a useful flood backstop, and fine for
-// reely's typical LAN/Unraid deployment.
+// Keyed on the socket peer, never req.ip: under `trust proxy`, req.ip comes
+// from client-controlled X-Forwarded-For and would let an attacker mint a
+// fresh bucket per forged IP. Behind a real proxy the peer is the proxy, so
+// this degrades to a global throttle: still a useful flood backstop.
 
 interface Bucket {
   count: number;
@@ -36,22 +33,12 @@ export const rateLimit = ({ windowMs, max, name }: RateLimitOptions) => {
     const key = clientKey(req.socket.remoteAddress);
     const now = Date.now();
 
-    // Opportunistic cleanup when the bucket cache is full (audit 14
-    // #360). Two passes, separated for clarity:
-    //   1. Expired-bucket sweep: drop every entry whose window has
-    //      already elapsed. Cheap, and usually enough to free space.
-    //   2. Oldest-bucket eviction: if the sweep didn't bring us under
-    //      the cap (e.g. a flood of fresh distinct IPs), drop the
-    //      single oldest entry by insertion order (Map iteration order
-    //      is insertion order in JS).
-    // The previous single combined loop was correct but read like an
-    // off-by-one; splitting makes each pass's intent obvious.
+    // Opportunistic cleanup when full: sweep expired buckets, then fall back
+    // to evicting the oldest if a flood of fresh IPs kept us over the cap.
     if (buckets.size >= MAX_BUCKETS) {
-      // Pass 1: drop expired entries
       for (const [k, b] of buckets) {
         if (b.resetAt < now) buckets.delete(k);
       }
-      // Pass 2: if still over the cap, evict the single oldest
       if (buckets.size >= MAX_BUCKETS) {
         const oldest = buckets.keys().next().value;
         if (oldest !== undefined) buckets.delete(oldest);

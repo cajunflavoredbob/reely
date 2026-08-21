@@ -1,32 +1,17 @@
-/* Toast variant (non-first match)
+/* Toast variant (non-first match).
  *
- * 0.5.2: split into a `.toastSlot` clipping wrapper + the visual
- * `.toast` inside. The slot holds the absolute positioning + an
- * `overflow: hidden` that CLIPS the toast when it translates above
- * its rest position -- so the slide-from-behind-the-header effect
- * works without needing to give the header a solid background or
- * boost its z-index. Same approach applies on mobile (slot top
- * 64px, below the header) + desktop (slot top 8px, inside the
- * desktopSwipeStage which itself starts below the desktop header).
+ * Split into a `.toastSlot` clipping wrapper and the visual `.toast` inside.
+ * The slot's overflow:hidden clips the toast when it translates above its rest
+ * position, giving the slide-from-behind-the-header effect without a solid
+ * header background or a z-index bump.
  */
 .toastSlot {
   position: absolute;
-  /* Mobile: .screen (Room.module.css) overrides .screenLayout's
-     padding-top to 0, so .mobileTopBar starts at viewport y=0
-     inside the positioned ancestor. Header content height = max(
-     Logo 24px, UserPill 26px) = 26px; plus 12px top + 12px bottom
-     pad = 50px. Slot's top must land flush at header bottom = y=50.
-
-     Pre-0.5.6 was `top: calc(max(env(safe-area-inset-top), 4rem)
-     + 52px)` -- WRONG on two counts:
-     1. Assumed .screenLayout's 4rem padding-top applied. It
-        doesn't on Room (.screen overrides padding to 0). That
-        added a phantom 64px gap below the header.
-     2. Used 52px for header height (mismeasured Logo as 28). The
-        actual header is 50px (UserPill is 26, the tallest child).
-
-     If UserPill height, Logo size, .mobileTopBar padding, or
-     .screen's padding-top change, audit this number. */
+  /* Flush with the mobile header's bottom edge. .screen (Room.module.css)
+     zeroes .screenLayout's padding-top, so .mobileTopBar starts at y=0 and its
+     height is 26px (UserPill, the tallest child) + 12px padding each side.
+     Recheck if UserPill height, Logo size, .mobileTopBar padding, or .screen's
+     padding-top changes. */
   top: 50px;
   left: 16px;
   right: 16px;
@@ -45,46 +30,25 @@
   align-items: center;
   gap: 12px;
   box-shadow: 0 12px 32px -8px rgba(255, 78, 126, 0.4);
-  /* 0.5.4: 320ms -> 600ms + switched to ry-slide-fade-in (was
-     ry-slide-down). Pure translate within overflow:hidden was correct
-     geometry but the eye couldn't register the motion at 320ms with
-     no opacity change -- the toast just read as "appears." Adding the
-     fade + lengthening the duration makes the slide unmistakable.
-     The springy cubic-bezier overshoot stays. */
+  /* Fade plus a long duration: a pure translate at 320ms read as the toast
+     simply appearing, with no perceptible slide. */
   animation: ry-slide-fade-in 600ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-/* Exit animation: slides the toast back up behind the header AND
- * fades it out. The component (MatchMoment.tsx) sets this class then
- * schedules a setTimeout matching this duration before calling the
- * parent's onDismiss so the slide+fade completes BEFORE the unmount.
- * `forwards` holds the end state in case the unmount is delayed for
- * any reason.
- * 0.5.4: 200ms -> 350ms + switched to ry-slide-fade-out. Same
- * rationale as ry-slide-fade-in. TOAST_EXIT_MS in MatchMoment.tsx
- * MUST match this duration -- drift makes the toast vanish mid-slide
- * (jank). The MatchMoment test asserts the bumped value, so a
- * mismatch fails CI loudly. */
+/* Slides the toast back behind the header and fades it out. `forwards` holds
+ * the end state in case the unmount is delayed. TOAST_EXIT_MS in
+ * MatchMoment.tsx MUST match this duration; drift makes the toast vanish
+ * mid-slide. A test asserts the value. */
 .toastExiting {
   animation: ry-slide-fade-out 350ms ease-in forwards;
 }
 
-/* 0.5.7: applied when the parent demotes this toast (a new match
- * slid in on top -- see Room.tsx's pendingStack model). Pure opacity
- * fade with no transform -- the demoted toast stays in its rest
- * position while gracefully disappearing underneath the new one;
- * sliding out would visually fight the new one's slide-in.
+/* Applied when the parent demotes this toast. Opacity only, no transform: a
+ * slide-out would fight the incoming toast's slide-in.
  *
- * Source-order matters: this rule comes AFTER .toastExiting so if
- * both classes apply (m1's auto-dismiss timer fires while it's
- * already demoted), this one wins by CSS source-order tiebreak.
- * Defensive: MatchMoment.tsx also skips the auto-dismiss timer
- * when replaced=true, so the two-class scenario shouldn't happen
- * in practice -- this is the belt to the suspenders.
- *
- * The parent (Room.tsx) prunes the demoted instance ~400ms after
- * demotion, which gives the 200ms fade time to complete + a 200ms
- * buffer. */
+ * Must stay AFTER .toastExiting so it wins the source-order tiebreak if both
+ * classes land at once. Room prunes the demoted instance ~400ms later, leaving
+ * the 200ms fade room to finish. */
 .toastReplaced {
   animation: ry-fade-out-fast 200ms ease-out forwards;
 }
@@ -129,10 +93,8 @@
   white-space: nowrap;
 }
 
-/* Dismiss button -- 0.5.2 made it a prominent gradient pill (was a
- * plain icon). 40x40 hit area is comfortable for mobile taps without
- * dominating the toast layout; reely gradient bg matches the toast's
- * pink border + makes the button reads as the primary affordance. */
+/* Gradient pill, not a plain icon: 40x40 is a comfortable mobile tap target
+ * and the gradient marks it as the toast's primary affordance. */
 .toastClose {
   width: 40px;
   height: 40px;
@@ -156,13 +118,10 @@
   transform: scale(0.94);
 }
 
-/* Desktop: containing block is .desktopSwipeStage (position: relative),
-   which is the right column of .desktopMain. The stage starts directly
-   below .desktopTopBar -- so top: 0 lands the slot's top edge flush
-   with the header bottom. The overflow:hidden clip then simulates the
-   toast emerging from behind the header. A pre-0.5.3 top: 8px left an
-   8px gap above the slot's top edge -- the user saw the toast appear
-   8px below the header instead of sliding out from under it. */
+/* The containing block, .desktopSwipeStage, starts directly below
+   .desktopTopBar, so top: 0 sits flush with the header bottom and the clip
+   reads as the toast emerging from behind it. Any gap here and the toast
+   appears below the header instead of sliding out from under it. */
 @media (min-width: 900px) {
   .toastSlot {
     top: 0;
@@ -328,25 +287,19 @@
   filter: brightness(1.06);
 }
 
-/* ── Local @keyframes (moved from main.css in 0.5.5) ──
- * See the warning comment at the top of main.css for why these can't
- * live globally -- vite scopes the animation-name reference inside
- * module files but not @keyframes in global CSS. Same hash on both
- * sides only when the @keyframes is in the same .module.css. */
+/* These must stay in this module, not main.css: vite hashes the
+ * animation-name reference in module files but not @keyframes in global CSS,
+ * so the names only match when both live in the same .module.css. */
 
-/* Toast entry: slides from above its rest position AND fades in.
- * Pure translate within an overflow:hidden parent is technically a
- * slide but at short durations with no opacity change the eye just
- * registers "appears." The opacity 0->1 gives the eye a second
- * motion cue. Paired with ry-slide-fade-out for the exit. */
+/* Toast entry. The opacity ramp is the motion cue: a pure translate at short
+ * durations just reads as the toast appearing. */
 @keyframes ry-slide-fade-in {
   from { transform: translateY(-100%); opacity: 0; }
   to   { transform: translateY(0);     opacity: 1; }
 }
 
-/* Reverse of ry-slide-fade-in for the toast exit. Component schedules
- * a setTimeout matching TOAST_EXIT_MS (MatchMoment.tsx) before
- * calling onDismiss so the slide+fade completes BEFORE unmount. */
+/* Toast exit. MatchMoment.tsx delays onDismiss by TOAST_EXIT_MS so this
+ * finishes before unmount. */
 @keyframes ry-slide-fade-out {
   from { transform: translateY(0);     opacity: 1; }
   to   { transform: translateY(-100%); opacity: 0; }
@@ -364,11 +317,7 @@
   to   { transform: translateY(0);    opacity: 1; }
 }
 
-/* 0.5.7: .toastReplaced fade-out for demoted toasts (a newer match
- * has arrived and is sliding in on top). Pure opacity; no transform.
- * Defined locally per the 0.5.5 keyframe-scoping fix -- vite hashes
- * the animation-name reference inside this module so the @keyframes
- * MUST live in the same module file or the name won't resolve. */
+/* .toastReplaced fade-out for demoted toasts. */
 @keyframes ry-fade-out-fast {
   from { opacity: 1; }
   to   { opacity: 0; }

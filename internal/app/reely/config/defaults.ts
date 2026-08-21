@@ -10,11 +10,8 @@ const defaultConfig: Partial<Config> = {
   logLevel: "INFO",
   rootPath: "",
   servers: [],
-  // Preserves 0.3.20 behavior: the WS `config` frame ships `plexBaseUrl`
-  // to the browser so it can probe for local-LAN Plex reachability. Flip
-  // to false (env EXPOSE_PLEX_BASE_URL=false) to withhold; the frontend
-  // then routes all "Open in Plex" links through app.plex.tv. See the
-  // shared-type docstring on Config.exposePlexBaseUrl for rationale.
+  // Ships plexBaseUrl in the WS config frame so the browser can probe for a
+  // LAN-reachable Plex. False routes "Open in Plex" via app.plex.tv instead.
   exposePlexBaseUrl: true,
 };
 

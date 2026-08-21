@@ -30,7 +30,6 @@ type Spring = {
   opacity: number;
 };
 
-// Geometry constants + helpers live in a sibling module (audit 13 #323).
 import {
   INITIAL_COUNT,
   Z_STEP,
@@ -38,12 +37,7 @@ import {
   springsForIndex,
 } from "./cardStackGeometry";
 
-// Module-scope SVG paths for the like / dislike / empty-state heart
-// (audit 13 #323). The two button SVGs and the empty-state heart were
-// previously inline in the JSX even though their geometry never
-// changes; hoisting them keeps the JSX readable and makes the visual
-// vocabulary explicit. Used with currentColor / explicit fill so the
-// surrounding button styles still control color.
+// Color comes from the surrounding button styles.
 const HEART_PATH = "M12 21s-7-4.5-7-11a4 4 0 017-2.6A4 4 0 0119 10c0 6.5-7 11-7 11z";
 const X_PATH = "M6 6l12 12M18 6L6 18";
 
@@ -65,20 +59,13 @@ const useViewportWidth = (transform?: (n: number) => number) => {
   return transform ? transform(viewportWidth) : viewportWidth;
 };
 
-// Measures the ref'd element's own width. Used for the card-stack width that
-// feeds the swipe-throw math. The previous version measured firstElementChild,
-// which -- with the ref on the stack <div> -- was the dislike <button>, not a
-// card, so the throw threshold was computed against a ~44px width.
+// Measures the ref'd element itself, feeding the swipe-throw math. Not
+// firstElementChild: with the ref on the stack <div> that is the dislike
+// <button>, giving a ~44px throw threshold.
 //
-// 0.4.2:
-//   - ResizeObserver re-measures on orientation change, responsive
-//     desktop<->mobile transitions, and any container resize. The earlier
-//     measure-once-on-mount left the throw threshold stuck at the original
-//     width across these (audit 8 #87).
-//   - The `transform` callback is read via a ref so the effect doesn't
-//     re-subscribe just because the parent recreated the fn inline each
-//     render. Today no caller passes one, but the dep was latent (audit 9
-//     #100).
+// ResizeObserver rather than measure-once, so orientation changes and
+// desktop/mobile transitions re-measure. `transform` is read through a ref so
+// an inline callback doesn't re-subscribe the effect every render.
 const useElementWidth = (transform?: (n: number) => number) => {
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -108,18 +95,12 @@ export const CardStack = memo(
   ({ cards, renderCard, onCardDismissed }: CardStackProps) => {
     const vw = useViewportWidth((n) => Math.min(n, 800) / 2);
     const [{ connectionStatus }] = useStore(["connectionStatus"]);
-    // Drive the empty-state subtext: when the user has filters applied
-    // and runs out of cards, suggest broadening them. Without this hint
-    // they just see "That's all folks" and may not realize they're not
-    // seeing the full library (audit 16 / 0.5.22).
+    // Drives the empty-state subtext: with filters applied, say the deck may be
+    // short because of them, not because the library is exhausted.
     //
-    // Computed-value subscription, NOT useStore(["room"]) (audit 16 #432):
-    // the 0.5.22 form picked the whole room slice for this one boolean,
-    // which failed shallow equality -- and re-rendered the gesture-hottest
-    // component in the app -- on every userProgress/match/join/leave
-    // broadcast, several times a second in an active multi-user room. The
-    // boolean only flips when filters apply, which already remounts the
-    // stack via key={room.mediaVersion} anyway.
+    // Computed subscription, NOT useStore(["room"]): the whole room slice fails
+    // shallow equality on every progress/match/join/leave broadcast, which
+    // re-renders the gesture-hottest component in the app several times a second.
     const hasActiveFilters = useStoreComputed(
       (s) => (s.room?.activeFilters?.length ?? 0) > 0,
     );
@@ -136,13 +117,9 @@ export const CardStack = memo(
           }
           | { type: "finalizeRemove"; payload: { id: string } },
       ) {
-        // Pragmatic impurity: this reducer kicks off spring animations
-        // (controller.start) and resolves them with a .then() that
-        // dispatches a follow-up "finalizeRemove" action. Reducers should
-        // strictly be pure, but the controller + state are co-located here
-        // and moving the animation kickoff to a useEffect would require
-        // mirroring item state outside the reducer just to drive springs.
-        // Accepting the antipattern deliberately rather than splitting state.
+        // Deliberately impure: starts spring animations and dispatches
+        // "finalizeRemove" from their .then(). Doing it in a useEffect would
+        // mean mirroring item state outside the reducer to drive the springs.
         let newIndex = index;
         let newItems = items;
 
@@ -153,14 +130,14 @@ export const CardStack = memo(
               return { items, index };
             }
             const [newCard] = cards.slice(index, newIndex);
-            // Append to the back so the card visually rising during the swipe
-            // is the one that actually lands on top -- not a freshly inserted one.
+            // Append to the back so the card rising during the swipe is the one
+            // that lands on top, not a freshly inserted one.
             const backIndex = items.filter((i) => !i.removed).length;
             const controller = new Controller<Spring>({
               x: 0,
               ...springsForIndex(backIndex),
-              // Override opacity to 0 so the new card fades in via the
-              // settleAll below instead of popping in at full opacity.
+              // Start at 0 so the settle loop below fades the card in instead
+              // of popping it in at full opacity.
               opacity: 0,
             });
             newItems = [
@@ -174,26 +151,16 @@ export const CardStack = memo(
               },
             ];
 
-            // The settle loop below now drives opacity (along with y/z) based
-            // on each item's current index, so the unconditional fade-to-1
-            // here is no longer needed -- it'd briefly flash a card that
-            // belongs hidden in the back of the buffer.
+            // No fade-to-1 here: the settle loop drives opacity from each
+            // item's index, and forcing it would flash a buffered back card.
             break;
           }
           case "remove": {
             const item = items.find((_) => _.id === action.payload.id);
-            // Gate the entire branch on `x.idle` (audit 13 #309 / audit 14
-            // sibling-fold). The prior code marked `removed: true` even
-            // when the controller wasn't idle and the .then() chain that
-            // dispatches `finalizeRemove` never ran -- leaving a ghost
-            // entry that stayed marked `removed: true` forever. The
-            // non-idle case is rare (would require a re-dispatch on an
-            // already-swiping card, which the !removed filter at the
-            // dispatch sites mostly prevents) but the state-transition
-            // dead-end was real. Now: either we start the animation AND
-            // mark the card removed AND schedule the finalize, or we
-            // do nothing. The user's swipe is effectively ignored when
-            // we refuse, which is preferable to a ghost.
+            // Gated on `x.idle`: marking `removed: true` on a non-idle
+            // controller strands the card, because the .then() that dispatches
+            // `finalizeRemove` never runs. Animate, mark, and schedule the
+            // finalize together, or do nothing.
             if (item?.controller.springs.x.idle) {
               const itemIndex = items.indexOf(item);
 
@@ -228,9 +195,8 @@ export const CardStack = memo(
           }
         }
 
-        // Settle every item to its index's spring values (audit 13 #323).
-        // Whether we added, removed, or finalized above, the visible
-        // stack now matches the post-action index ordering.
+        // Settle every item to its index's spring values, so the stack matches
+        // the post-action ordering whichever branch ran.
         for (const item of newItems) {
           item.controller.start(springsForIndex(item.index));
         }
@@ -238,10 +204,8 @@ export const CardStack = memo(
         return { index: newIndex, items: newItems };
       },
       undefined,
-      // Lazy initializer: React only invokes this once, on mount. The previous
-      // form (passing the object directly as arg 2) evaluated the expression
-      // on every render, spawning INITIAL_COUNT throwaway Controller<Spring>
-      // instances each time even though React only used the first batch.
+      // Lazy initializer: passing the object directly as arg 2 would build
+      // INITIAL_COUNT throwaway Controllers on every render.
       () => ({
         items: cards.slice(0, INITIAL_COUNT).map((card, i) => ({
           id: card.id,
@@ -258,10 +222,9 @@ export const CardStack = memo(
     );
 
     const rateItem = (direction: "left" | "right") => {
-      // Gate on a live connection, same as the drag and keyboard paths. The
-      // Pass/Like buttons call this directly -- without the check a tap while
-      // disconnected removes the card locally while rate() is dropped, so the
-      // client deck diverges from the server.
+      // Gate on a live connection, same as the drag and keyboard paths: a tap
+      // while disconnected removes the card locally but rate() is dropped, so
+      // the client deck diverges from the server.
       if (connectionStatus !== "connected") return;
 
       const item = items.find((_) => !_.removed);
@@ -278,25 +241,18 @@ export const CardStack = memo(
       }
     };
 
-    // rateItem is recreated every render but its identity-change shouldn't
-    // re-bind the keyboard listener; we only need to re-bind when the
-    // closed-over connectionStatus or items change (which the explicit
-    // deps cover). The handler captures rateItem by closure; on the
-    // next render rateItem reads the latest items/state via its own
-    // closures so a stale reference works correctly.
-    // biome-ignore lint/correctness/useExhaustiveDependencies: rateItem closure is intentional, see comment above.
+    // rateItem is recreated every render, but re-binding the listener only
+    // matters when the values it closes over change, which the deps cover.
+    // biome-ignore lint/correctness/useExhaustiveDependencies: rateItem is deliberately captured by closure; its deps are listed instead.
     useEffect(() => {
       const handler = (e: KeyboardEvent) => {
         if (connectionStatus !== "connected") {
           return;
         }
 
-        // Ignore arrows originating from editable/interactive elements.
-        // FilterPanel's text inputs and operator <select>s stay mounted
-        // alongside the stack on both layouts, and a caret move or option
-        // change must not swipe the top card -- ratings are permanent
-        // server-side, so a stray Arrow key here creates real likes and
-        // can false-match the whole room. (audit 16 #420)
+        // Ignore arrows from editable/interactive elements: FilterPanel's
+        // inputs and <select>s stay mounted alongside the stack, and ratings
+        // are permanent server-side, so a caret move must not create a like.
         const target = e.target instanceof Element ? e.target : null;
         if (target?.closest('input, textarea, select, [contenteditable="true"]')) {
           return;
@@ -320,8 +276,6 @@ export const CardStack = memo(
               if (!removed) {
                 if (id === _id) {
                   controller.set({
-                    // v10 typedef exposes SpringValue.get() on the springs
-                    // record, so the v9-era any-cast is gone (audit 14 #364).
                     x: controller.springs.x.get() + x,
                   });
                   isAfterId = true;
@@ -336,11 +290,9 @@ export const CardStack = memo(
         },
         onDragEnd({ args: [id], movement: [x], velocity: [vx] }) {
           const p = abs(x / (vw + ew));
-          // Gate the whole removal on connected, not just the velocity branch.
-          // While disconnected the card spring never moves (onDrag is gated),
-          // but use-gesture still tracks movement -- so a long drag yields
-          // p > 0.5, removes the card, and rate() then silently drops the
-          // message, desyncing the stack from the server.
+          // The whole removal is gated on connected, not just the velocity
+          // branch: use-gesture keeps tracking movement while disconnected, so
+          // a long drag would remove a card whose rate() is silently dropped.
           if (connectionStatus === "connected" && (p > 0.5 || abs(vx) > 0.5)) {
             dispatch({
               type: "remove",
@@ -432,7 +384,7 @@ export const CardStack = memo(
                   opacity: opacity.to([0.1, 0.8, 1], [0, 1, 1]),
                   zIndex: INITIAL_COUNT - item.index,
                 }}
-                onDragStart={(e) => e.preventDefault()} // prevents native browser drag ghost from cancelling the spring-based pointer gesture
+                onDragStart={(e) => e.preventDefault()} // the native drag ghost cancels the pointer gesture
                 {...bind(item.id)}
               >
                 <div className={styles.cardWrapper}>
@@ -464,20 +416,13 @@ export const CardStack = memo(
         </div>
     );
   },
-  // areEqual always returns true: spring controllers (react-spring) own
-  // their animation state internally, and re-rendering on a prop change
-  // would tear down + recreate the controllers mid-animation. The parent
-  // (Room.tsx) forces a full remount via `key={room.mediaVersion}` when
-  // the card set genuinely changes -- that is the ONLY supported path
-  // for new cards to enter this component.
+  // areEqual always returns true: the spring controllers own their animation
+  // state, and re-rendering on a prop change would recreate them mid-animation.
+  // Room.tsx remounts via `key={room.mediaVersion}` to deliver a new card set.
   //
-  // INVARIANT: do not add props to CardStackProps expecting them to flow
-  // through at runtime. They won't -- this memo blocks every re-render.
-  // If a new piece of state must influence the stack mid-life, either:
-  //   (a) bump `room.mediaVersion` so the parent remounts CardStack, or
-  //   (b) move the state into a Zustand selector read inside the body,
-  //   or
-  //   (c) remove this always-true memo and audit every re-render path
-  //       for animation safety.
+  // INVARIANT: new props will NOT flow through at runtime; this memo blocks
+  // every re-render. To influence the stack mid-life, either bump
+  // `room.mediaVersion`, read a store selector inside the body, or drop this
+  // memo and check every re-render path for animation safety.
   () => true,
 );

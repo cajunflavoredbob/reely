@@ -10,21 +10,16 @@ interface UserPillProps {
   isMe?: boolean;
 }
 
-// Same as Avatar: typo-safe CSS-var keys (audit 9 #117).
+// Typo-safe CSS-var keys, as in Avatar.
 type UserPillCssVars = { "--hue": number; "--progress": string };
 
-// Truncate names that would overflow the pill width. The full name still
-// appears in the users popup, so this is purely a layout concern. 14 chars
-// covers typical usernames; longer ones get an ellipsis + full value in
-// title= for hover tooltips.
+// Purely layout: the full name is in the users popup and in title= on hover.
 const TRUNCATE_AT = 14;
 const display = (name: string) =>
   name.length > TRUNCATE_AT ? `${name.slice(0, TRUNCATE_AT - 1)}…` : name;
 
-// React.memo (audit 14 #334): UserPill is rendered N times per UserPillRow
-// and N times per UsersPopup; with N typically 3-10 the savings are modest
-// per render but real across reconnect / progress-bump churn. All props
-// are primitives so shallow equality is correct.
+// memo: one per user in UserPillRow and UsersPopup, so progress-bump churn
+// adds up. All props primitive, so shallow equality is correct.
 export const UserPill = memo(({
   userName,
   progress = 0,

@@ -15,6 +15,34 @@ the continuation's first stable release.
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-08-21
+
+### Changed
+
+- Comments across the codebase are roughly half their previous volume.
+  A comment now says what a thing does when that is not obvious, or why
+  it does it that way when that is not obvious, and nothing else. The
+  audit and issue references that trailed most of them are gone,
+  including from test names, along with the version-by-version
+  narration of how each guard came to exist.
+- The two Plex rating-bucket labels and one mobile aria-label used
+  typographic dashes; they are plain ASCII now. The aria-label reads
+  "N matches, tap to view" rather than using a dash, which is clearer
+  read aloud.
+
+### Fixed
+
+- Four component tests rendered their subject, discarded the result,
+  then rendered it again. Two of them were only correct because a
+  container-scoped query happened to miss the duplicate DOM the first
+  render left mounted.
+
+### Removed
+
+- `leaveRoomCleanup`'s `evicted` flag, added in 1.1.5 and left without
+  a reader when the rename path it served stopped needing a save. Back
+  to returning the prior room.
+
 ## [1.1.5] - 2026-08-21
 
 ### Security

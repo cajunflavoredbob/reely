@@ -8,24 +8,16 @@ interface TranslationProps {
 }
 
 /**
- * A simple interpolate function. Single-pass: the function-replacer form
- * opts out of String.replace's $&/$1 back-reference interpretation, so a
- * translation value containing "$&" can't be misexpanded. A missing key
- * leaves its ${key} placeholder visible rather than substituting the
- * literal string "undefined".
+ * Interpolates `${key}` placeholders. The function-replacer form opts out of
+ * String.replace's $&/$1 back-references, so a translation containing "$&"
+ * can't be misexpanded. A missing key leaves its placeholder visible.
  *
- * Charset matches the server-side `template.ts` interpolate (also accepts
- * dotted paths like `${user.name}`) so translations can use the same
- * placeholder convention regardless of which side resolves them. A dotted
- * key is looked up flat in `context` -- the server-side walker isn't
- * needed here because frontend context objects are always flat.
+ * Charset matches server-side `template.ts`, including dotted paths. Dotted
+ * keys are looked up flat: frontend context objects are never nested.
  *
  * @example interpolate("foo ${bar} baz", { bar: "abc" }) => "foo abc baz"
  */
 const interpolate = (text: string, context: Record<string, string>): string =>
-  // Explicit `a-zA-Z` rather than `a-z` + `/i` -- audit 9 #110 follow-up:
-  // the lowercase-only char class with the `/i` flag worked but read
-  // like a bug. Matches the server-side template.ts regex.
   text.replace(
     /\$\{([a-zA-Z0-9_.]+)\}/g,
     (full, name: string) => context[name] ?? full,
