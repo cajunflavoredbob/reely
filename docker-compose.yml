@@ -6,7 +6,7 @@ services:
     # Pinned to an exact release so a pull can't move you to a different
     # version: upgrading means editing this tag yourself. Available tags:
     #   https://hub.docker.com/r/cajunflavoredbob/reely/tags
-    image: cajunflavoredbob/reely:1.1.6
+    image: cajunflavoredbob/reely:1.1.7
     ports:
       - "8000:8000"
     environment:

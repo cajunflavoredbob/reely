@@ -15,6 +15,17 @@ the continuation's first stable release.
 
 ## [Unreleased]
 
+## [1.1.7] - 2026-08-21
+
+### Changed
+
+- pino 9.14.0 to 10.3.1. reely's use of it is small (construct with a
+  level and an optional pretty transport, mutate the level at runtime,
+  log five severities), and all of it was exercised against the new
+  major before merging, including the pino-pretty transport that only
+  runs outside production and so is never covered by CI.
+- Dev tooling: biome 2.5.9, vitest and coverage-v8 4.1.11.
+
 ## [1.1.6] - 2026-08-21
 
 ### Changed
