@@ -2,6 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Socket } from 'node:net';
 import type { WebSocketServer } from 'ws';
 import { logger } from '../logger';
+import { clientKey } from '../util/clientKey';
 import { getConfig } from '../config/main';
 import { checkBasicAuth } from './basic_auth';
 import {
@@ -94,7 +95,11 @@ export const createWsUpgradeHandler = (wss: WebSocketServer) =>
       return;
     }
 
-    const ip = socket.remoteAddress ?? 'unknown';
+    // Grouped, not raw: see util/clientKey. On IPv6 the raw address made both
+    // the per-IP socket cap and the shared auth throttle trivially bypassable,
+    // and filling the tracking Map turned its size cap into a lockout for
+    // every source not already in it.
+    const ip = clientKey(socket.remoteAddress);
     const config = getConfig();
     if (config.basicAuth) {
       // Failed-attempt throttle (audit 16 #425). Shares its budget with the

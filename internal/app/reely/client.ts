@@ -3,7 +3,6 @@ import type {
   ClientMessage,
   CreateRoomError,
   CreateRoomRequest,
-  Filter,
   FilterValueRequest,
   JoinRoomError,
   JoinRoomRequest,
@@ -20,6 +19,7 @@ import {
   createRoom,
   getRoom,
   hasRoom,
+  isRegisteredRoom,
   NoMediaError,
   type Room,
   RoomExistsError,
@@ -38,19 +38,39 @@ import { getConfig } from './config/main';
 import type { RouteContext } from './types';
 import { loadTranslation } from './i18n';
 import { logger } from './logger';
-
-// Bounds chosen to comfortably fit any legitimate Plex filter from the UI while
-// preventing a malicious WS message from passing huge strings through to the
-// Plex query layer.
-const MAX_FILTER_KEY_LEN = 64;
-const MAX_FILTER_VALUES = 32;
-const MAX_FILTER_VALUE_LEN = 128;
+import { isValidFilter } from './util/filters';
 
 // Per-connection WebSocket message rate limit (fixed window). Generous enough
 // for rapid swiping plus the burst of messages on room join, tight enough to
 // blunt a flood (e.g. repeated createRoom). Messages over the cap are dropped.
 const MSG_RATE_WINDOW_MS = 10_000;
 const MSG_RATE_MAX = 100;
+
+// Message types that must not overlap on one connection. These are the
+// handlers that read identity or room membership, await something slow (a
+// Plex fetch, a disk load, the liveness probe), and then commit using what
+// they read: an interleaved frame changes the world underneath them. Everything
+// else runs concurrently, as it always did.
+const SERIALIZED_MESSAGE_TYPES = new Set<ServerMessage['type']>([
+  'login',
+  'logout',
+  'createRoom',
+  'joinRoom',
+  'joinOrCreateRoom',
+  'leaveRoom',
+  'applyFilters',
+]);
+
+// Ceiling on frames waiting behind an in-flight handler: a memory backstop,
+// not a second rate limiter. Set above MSG_RATE_MAX so the limiter is the
+// thing that pushes back within a window rather than this. It is not a
+// guarantee: a handler parked longer than MSG_RATE_WINDOW_MS lets the limiter
+// roll into a fresh window and admit another MSG_RATE_MAX, so a drop here is
+// still possible, just no longer the FIRST thing to fire. That matters because
+// every serialized type except applyFilters is sent through the frontend's
+// request(), which resolves only on a reply, so a dropped frame costs the user
+// a 15s wait on a live-looking screen.
+const MAX_QUEUED_MESSAGES = MSG_RATE_MAX + 28;
 
 // Deadline for the collision liveness probe below. Comfortably covers a WAN
 // ping round-trip without stalling a colliding join noticeably.
@@ -85,28 +105,6 @@ const isSocketResponsive = (ws: WebSocket): Promise<boolean> =>
     }
   });
 
-const isValidFilter = (f: unknown): f is Filter =>
-  f !== null &&
-  typeof f === 'object' &&
-  typeof (f as Filter).key === 'string' &&
-  (f as Filter).key.length > 0 &&
-  (f as Filter).key.length <= MAX_FILTER_KEY_LEN &&
-  /^[a-z0-9_.-]+$/i.test((f as Filter).key) &&
-  typeof (f as Filter).operator === 'string' &&
-  // Every operator the UI can send ends with '='. Plex natively emits
-  // the date "is before" operator as a bare '<<', but the provider
-  // normalizes it to '<<=' before it ships to the client (audit 16
-  // #449), so the '='-terminated invariant holds here by construction.
-  // filterToQueryString strips the trailing '=' before appending to the
-  // key, so a bare '<' or '>' would corrupt to an equality query.
-  /^[!<>=~]{0,2}=$/.test((f as Filter).operator) &&
-  Array.isArray((f as Filter).value) &&
-  (f as Filter).value.length > 0 &&
-  (f as Filter).value.length <= MAX_FILTER_VALUES &&
-  (f as Filter).value.every(
-    (v) => typeof v === 'string' && v.length > 0 && v.length <= MAX_FILTER_VALUE_LEN,
-  );
-
 export class Client {
   ws: WebSocket;
   ctx: RouteContext;
@@ -119,6 +117,26 @@ export class Client {
   private msgCount = 0;
   private msgRateLogged = false;
 
+  // Serialises the handlers in SERIALIZED_MESSAGE_TYPES above; everything
+  // else still runs concurrently. `ws.on('message')` fires once
+  // per frame as it arrives and the handlers are async, so a single TCP read
+  // carrying login+joinOrCreateRoom+login used to start three overlapping
+  // handler chains. The room-mutating handlers capture state (userName, the
+  // Room, membership) BEFORE multi-second awaits -- Plex fetches, disk loads,
+  // the socket liveness probe -- and commit it AFTER, so an interleaved frame
+  // could change the world underneath them: entries keyed by a stale username
+  // that no cleanup path could ever remove, filters applied to whichever room
+  // the client had since joined, a joiner attached to a room the TTL sweep
+  // had already collected.
+  //
+  // Close is queued too, deliberately. It has to run after any in-flight
+  // join/create rather than racing it, or cleanup runs while `this.room` is
+  // still undefined and the join commits a member nothing can remove
+  // afterwards.
+  private dispatchQueue: Promise<void> = Promise.resolve();
+  private queueDepth = 0;
+  private queueFullLogged = false;
+
   // Cooldown enforcement lives on the room (Room.lastApplyAt) so it can't be
   // bypassed by opening two browser windows.
   private static readonly APPLY_COOLDOWN_MS = 3000;
@@ -128,7 +146,9 @@ export class Client {
     this.ctx = { providers };
 
     this.ws.on('message', (data) => this.handleRawMessage(data.toString()));
-    this.ws.on('close', () => this.handleClose());
+    // Bypasses the depth cap: dropping a close would leak the membership the
+    // queued frames are about to create.
+    this.ws.on('close', () => this.enqueue(() => this.handleClose(), true));
     this.ws.on('error', (err) => logger.error(`WebSocket error: ${err.message}`));
 
     this.sendConfig();
@@ -210,6 +230,66 @@ export class Client {
       return;
     }
 
+    // Only the handlers that carry identity or room membership across an await
+    // need the queue. Serialising everything made two things worse than the
+    // race it fixed:
+    //
+    //   - FilterPanel deliberately fires one requestFilterValues per row at
+    //     once, and getFilterValues is the one provider call with no memo, so
+    //     back-to-back execution turned max(plex) into sum(plex) against a
+    //     fixed 15s client timeout: the trailing rows time out and fall back
+    //     to raw ids.
+    //   - A swipe queued behind a multi-second applyFilters could be dropped
+    //     by the depth cap, or run after the refetch and fail the media.has
+    //     guard. Either way the rating is lost, the client has already pruned
+    //     the card and recorded the id in sentRateIds, and the progress bar
+    //     permanently disagrees with the deck.
+    //
+    // handleRate captures userName and room into locals and checks membership
+    // before its first await, so it is race-safe on its own. setLocale touches
+    // no connection state, and the two filter handlers are read-only against
+    // the provider. None of them belong in the queue.
+    if (SERIALIZED_MESSAGE_TYPES.has(message.type)) {
+      this.enqueue(() => this.dispatch(message, messageText));
+    } else {
+      void this.dispatch(message, messageText);
+    }
+  }
+
+  // Append `task` to this connection's serial queue. Returns immediately; the
+  // task runs once everything queued before it has settled.
+  private enqueue(task: () => void | Promise<void>, bypassCap = false): void {
+    if (!bypassCap && this.queueDepth >= MAX_QUEUED_MESSAGES) {
+      // Only reachable when a handler is parked on slow I/O, since the rate
+      // limiter above already bounds arrivals. Dropping is the same outcome
+      // the rate limiter produces, and unbounded queueing would turn one slow
+      // Plex fetch into an unbounded memory hold.
+      // Log once per parked run, the same guard the rate-limit drop above
+      // carries: a full queue would otherwise emit one warn per dropped frame.
+      if (!this.queueFullLogged) {
+        this.queueFullLogged = true;
+        logger.warn(
+          `Dispatch queue full (${MAX_QUEUED_MESSAGES}) for ${this.getUsername() ?? 'anonymous client'}; dropping messages until it drains.`,
+        );
+      }
+      return;
+    }
+    this.queueFullLogged = false;
+    this.queueDepth += 1;
+    this.dispatchQueue = this.dispatchQueue
+      .then(task)
+      // Catch inside the chain: an escaping rejection would poison every
+      // task queued after it, silently wedging the connection.
+      .catch((err) => logger.error(`Unhandled error in queued task: ${String(err)}`))
+      .finally(() => {
+        this.queueDepth -= 1;
+      });
+  }
+
+  private async dispatch(message: ServerMessage, messageText: string) {
+    // Re-checked here, not just on arrival: the socket may have closed while
+    // this frame waited its turn behind a slow handler.
+    if (this.ws.readyState !== WebSocket.OPEN) return;
     try {
       switch (message.type) {
         case 'login': await this.handleLogin(message.payload); break;
@@ -272,15 +352,23 @@ export class Client {
     if (this.userName && sanitizedUserName !== this.userName) {
       // Username is changing while possibly in a room. Cleanly leave under the
       // old identity: leaveRoomCleanup evicts this connection and notifies the
-      // other clients (so the old name doesn't linger as a ghost), then we
-      // drop the stale userProgress entry on the prior room and persist so
-      // the saved snapshot doesn't carry the orphaned entry.
-      const previousName = this.userName;
-      const previousRoom = this.leaveRoomCleanup();
-      if (previousRoom) {
-        previousRoom.userProgress.delete(previousName);
-        void saveRoom(previousRoom);
-      }
+      // other clients, so the old name doesn't linger as a ghost.
+      // No save here. leaveRoomCleanup mutates only room.users and broadcasts,
+      // and users is not a persisted field, so writing the file would change
+      // nothing but updatedAt. The userProgress delete this diff removed was
+      // the only persisted mutation on this path.
+      this.leaveRoomCleanup();
+      // The old code deleted previousRoom.userProgress[previousName]
+      // here, and nothing else. The user's ratings and their entry in the
+      // userRated reverse index both stayed, and both are persisted and
+      // rebuilt on every restart -- so rejoining under the old name reported
+      // 0 of 200 while getMediaForUser still filtered the deck against the
+      // surviving rated set, handing back 150 cards. The user could swipe
+      // every remaining card and never pass 75%. Deleting the rest instead
+      // is worse: their likes are half of any match the room already found,
+      // so purging them would silently dissolve other people's matches. The
+      // progress entry is what keeps the surviving state coherent, so it
+      // stays.
     }
     this.userName = sanitizedUserName;
     this.isLoggedIn = true;
@@ -330,6 +418,71 @@ export class Client {
   // stays inline -- its sanitize function, error vocabulary, and field name
   // diverge enough that a fully generic helper would have more params than
   // the call sites.)
+  /**
+   * True when this connection is the live entry for `userName` in `room`.
+   *
+   * The rule was hand-copied at three call sites in three spellings with no
+   * single owner, which is how several of the ghost-membership bugs got in
+   * independently. One definition, one place to reason about it.
+   */
+  private ownsMembership(room: Room, userName = this.getUsername()): boolean {
+    return userName !== undefined && room.users.get(userName) === this;
+  }
+
+  /**
+   * Commit this connection as a member of `room`, or refuse and report why.
+   *
+   * Both the create and join paths reach here after multi-second awaits (a
+   * Plex library fetch, a disk load, the socket liveness probe), and both used
+   * to commit unconditionally. Two things can have changed underneath them:
+   *
+   * - The socket closed. `handleClose` already ran and found `this.room` still
+   *   undefined, so it cleaned up nothing; the commit then created a member
+   *   that no later event could remove. Close is once-only, cleanup only runs
+   *   from inbound messages a dead socket cannot send, and the ping sweep
+   *   iterates `wss.clients`, which no longer holds it. The room's user count
+   *   never returns to zero, so the TTL sweep skips it forever and the room
+   *   and its file leak until restart.
+   * - The room left the registry. The TTL sweep can collect a room while a
+   *   joiner is parked in the liveness probe, leaving the joiner attached to
+   *   an orphan: a later joiner builds a second divergent Room under the same
+   *   name, and because pending saves are keyed by room name the orphan's
+   *   queued save overwrites the live room's file.
+   */
+  private commitMembership(
+    room: Room,
+    userName: string,
+    // Join only. The create path receives a Room that createRoom just
+    // registered, and a room created moments ago cannot be swept (the sweep
+    // needs zero users AND an old lastSwipeAt), so re-reading the registry
+    // there would assert nothing and would couple create to a lookup it
+    // deliberately avoids.
+    { verifyRegistered = false }: { verifyRegistered?: boolean } = {},
+  ): boolean {
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      logger.info(
+        `${userName} disconnected before the room commit; not adding them to "${room.roomName}".`,
+      );
+      return false;
+    }
+    if (verifyRegistered && !isRegisteredRoom(room)) {
+      logger.warn(
+        `Room "${room.roomName}" was replaced or expired while ${userName} was joining; refusing the commit.`,
+      );
+      return false;
+    }
+    // A crafted client can create/join while already in another room; the
+    // standard frontend always leaves first. Without this the old room keeps a
+    // ghost users entry that pins it past the TTL sweep and locks the username
+    // there until restart. Runs only once the commit is certain, so a refused
+    // one leaves the current membership untouched. (audit 16 #422)
+    if (this.room && this.room !== room) this.leaveRoomCleanup();
+    this.room = room;
+    room.users.set(userName, this);
+    void saveRoom(room);
+    return true;
+  }
+
   private validateRoomRequest<T extends { roomName: string }>(
     req: T,
     errorType: 'createRoomError' | 'joinRoomError',
@@ -356,6 +509,28 @@ export class Client {
       sendError('Room name must not be empty.');
       return undefined;
     }
+    // Filters arriving on a create/join request went completely unchecked:
+    // isValidFilter was applied only on the applyFilters path, so every cap
+    // that exists for this reason -- MAX_FILTER_KEY_LEN, MAX_FILTER_VALUES,
+    // MAX_FILTER_VALUE_LEN, the key and operator regexes -- was bypassed by
+    // the one path that also PERSISTS what it is given. A `<` operator
+    // corrupts to an equality query in filterToQueryString (which does
+    // operator.slice(0, -1)), the exact case the invariant above exists to
+    // prevent, and because the room file is replayed by loadRoom the bad
+    // query came back on every restart.
+    const filters = (sanitized as { filters?: unknown }).filters;
+    if (filters !== undefined) {
+      if (!Array.isArray(filters) || !filters.every(isValidFilter)) {
+        logger.warn(`${this.getUsername() ?? 'client'} sent a room request with invalid filters`);
+        // The error `name` unions have no member for a malformed request, so
+        // the shared helper's name is wrong for this condition either way; the
+        // message is what the UI renders, so make that one carry the detail.
+        sendError(
+          'Those filters could not be read. Clear them and try again.',
+        );
+        return undefined;
+      }
+    }
     return sanitized;
   }
 
@@ -367,15 +542,7 @@ export class Client {
     userName: string,
   ): Promise<void> {
     const room = await createRoom(sanitizedReq, this.ctx);
-    // A crafted client can send createRoom while already in a room; the
-    // standard frontend always leaves first. Without this cleanup the old
-    // room keeps a ghost users entry that pins it past the TTL sweep and
-    // locks the username there until restart. Runs after createRoom so a
-    // failed create leaves the current membership untouched. (audit 16 #422)
-    if (this.room && this.room !== room) this.leaveRoomCleanup();
-    this.room = room;
-    room.users.set(userName, this);
-    void saveRoom(room);
+    if (!this.commitMembership(room, userName)) return;
     this.sendMessage({
       type: 'createRoomSuccess',
       payload: {
@@ -439,16 +606,22 @@ export class Client {
         holder.ws.terminate();
       }
     }
-    // A crafted client can join while already in a different room; the
-    // standard frontend always leaves first. Without this cleanup the old
-    // room keeps a ghost users entry that pins it past the TTL sweep and
-    // locks the username there until restart. Runs after the collision
-    // check so a rejected join leaves the current membership untouched.
-    // (audit 16 #422)
-    if (this.room && this.room !== room) this.leaveRoomCleanup();
-    this.room = room;
-    room.users.set(userName, this);
-    void saveRoom(room);
+    if (!this.commitMembership(room, userName, { verifyRegistered: true })) {
+      // Answer, or the client's request() waiter has nothing to resolve on and
+      // sits through its full 15s timeout showing a live-looking room screen.
+      // Only worth sending on the registry branch: if the socket closed there
+      // is nobody left to receive it.
+      if (this.ws.readyState === WebSocket.OPEN) {
+        this.sendMessage({
+          type: 'joinRoomError',
+          payload: {
+            name: 'RoomNotFoundError',
+            message: `The room "${room.displayName}" expired while you were joining. Try again.`,
+          },
+        });
+      }
+      return;
+    }
     this.sendMessage({
       type: 'joinRoomSuccess',
       payload: {
@@ -621,38 +794,45 @@ export class Client {
     }
   }
 
-  // Evict this client from the room and notify the rest, if applicable. Pure
-  // cleanup -- no message is sent back to the leaving client. Safe to call
-  // from handleClose where the socket is already closed.
-  //
-  // Returns the room this client was evicted from (or undefined if it wasn't
-  // in one) so callers can decide what to do with the prior room reference --
-  // mutate userProgress on a rename, save it on disconnect, etc. Audit 15
-  // #376: before that batch the method returned `boolean` and handleClose's
-  // `if (this.room) saveRoom(...)` follow-up was dead because leaveRoomCleanup
-  // had already cleared this.room. Returning the Room reference surfaces it
-  // before the detach so the disconnect-time save actually fires now.
-  private leaveRoomCleanup(): Room | undefined {
+  /**
+   * Detach this connection from its room.
+   *
+   * Pure cleanup: no message goes back to the leaving client, so this is safe
+   * to call from handleClose where the socket is already gone. Audit 15 #376
+   * made it surface the prior Room (it used to return boolean, which left
+   * handleClose's `if (this.room) saveRoom(...)` dead, since the detach had
+   * already cleared it).
+   *
+   * Reports `evicted` separately from `room`: callers used to treat a
+   * truthy return as "this connection was removed", but it only ever meant
+   * "this connection had a room". When the identity guard below declines --
+   * a soft-refresh race where a newer Client already owns the slot -- the old
+   * behaviour still handed the room back, and the rename path then deleted
+   * the progress of the connection that legitimately owned the name.
+   */
+  private leaveRoomCleanup(): { room?: Room; evicted: boolean } {
     const userName = this.getUsername();
     const room = this.room;
-    if (!room || !userName) return undefined;
+    if (!room || !userName) return { evicted: false };
     // Only mutate the room if this client is still the active connection for
     // this username. If the user reconnected (e.g. soft refresh) before the
     // old WS close event fired, the new Client has already replaced this entry
     // and we must not evict it or broadcast a spurious leave.
-    if (room.users.get(userName) === this) {
+    let evicted = false;
+    if (this.ownsMembership(room, userName)) {
       room.users.delete(userName);
       room.notifyLeave(this.getUser());
+      evicted = true;
     }
     // Detach this.room regardless of the active-connection check: this Client
     // is leaving by request, so handleRate must not continue applying ratings
     // to the old room afterward.
     this.room = undefined;
-    return room;
+    return { room, evicted };
   }
 
   private handleLeaveRoom() {
-    if (this.leaveRoomCleanup()) {
+    if (this.leaveRoomCleanup().room) {
       this.sendMessage({ type: 'leaveRoomSuccess' });
     } else {
       this.sendMessage({ type: 'leaveRoomError', payload: { errorType: 'NOT_JOINED' } });
@@ -668,13 +848,21 @@ export class Client {
     // active connection for this user in this room. A stale handler --
     // or any future code path that forgets to detach this.room -- would
     // otherwise be able to corrupt ratings for a room the user isn't in.
-    if (room.users.get(userName) !== this) return;
+    if (!this.ownsMembership(room, userName)) return;
     // Untrusted payload: a malformed message ({} or null) would otherwise
     // throw on rate.mediaId and be swallowed by the handleRawMessage catch.
     if (!rate || typeof rate.mediaId !== 'string') return;
     if (rate.rating !== 'like' && rate.rating !== 'dislike') return;
     const media = await room.media;
     if (!media.has(rate.mediaId)) return;
+    // Re-check after the await: `rate` is deliberately not serialised, so a
+    // leaveRoom or logout can complete while this one is parked on the media
+    // promise. This narrows that window rather than closing it -- storeRating
+    // awaits this.media again internally, so a leave landing inside THAT await
+    // still records the rating. The residue is benign: the trailing progress
+    // frame is addressed to a user the client's reducer no longer lists, so it
+    // is a no-op there, and the rating itself is one the user did make.
+    if (!this.ownsMembership(room, userName)) return;
     await room.storeRating(userName, rate, Date.now());
     // Persist after rating activity (debounced) so a crash before disconnect
     // doesn't lose recent swipes/matches.
@@ -702,11 +890,26 @@ export class Client {
     // sets this.room = undefined on success) and then checked
     // `if (this.room) saveRoom(...)` -- always false; the disconnect-time
     // save never fired.
-    const previousRoom = this.leaveRoomCleanup();
+    const { room: previousRoom } = this.leaveRoomCleanup();
     if (previousRoom) void saveRoom(previousRoom);
   }
 
   private async handleRequestFilters() {
+    // Every other provider- or room-touching handler gates on login; these two
+    // did not, so a peer that only completed the WS upgrade could enumerate
+    // every genre, studio, director, actor, collection and label in the
+    // library, with each requestFilterValues proxied straight to Plex. On a
+    // deployment without basicAuth (the documented default, which app.ts only
+    // warns about) that was a pre-auth enumeration and amplification surface.
+    // The UI only reaches filters from inside a room, so nothing legitimate
+    // asks before logging in.
+    if (!this.isLoggedIn) {
+      this.sendMessage({
+        type: 'requestFiltersError',
+        payload: { message: 'You must be logged in to browse filters.' },
+      });
+      return;
+    }
     if (this.ctx.providers.length) {
       const [provider] = this.ctx.providers;
       try {
@@ -728,6 +931,24 @@ export class Client {
   }
 
   private async handleRequestFilterValues(filterValueRequest: FilterValueRequest) {
+    // Login gate: see handleRequestFilters. This is the amplifying half --
+    // every call is proxied to Plex, bounded only by the per-connection
+    // 100-per-10s limiter, so 20 sockets per IP could drive 2000 Plex
+    // round-trips per 10s from a peer with no identity.
+    if (!this.isLoggedIn) {
+      // Echo the requested key: the client correlates this reply by key, so an
+      // empty one matches no waiter and the row hangs on "Loading values..."
+      // until its own timeout fires with the wrong message.
+      const key =
+        filterValueRequest && typeof filterValueRequest.key === 'string'
+          ? filterValueRequest.key
+          : '';
+      this.sendMessage({
+        type: 'requestFilterValuesError',
+        payload: { key, message: 'You must be logged in to browse filters.' },
+      });
+      return;
+    }
     // Untrusted payload: guard the shape before reading .key (a null payload
     // would otherwise throw and leave the client awaiting a response).
     if (!filterValueRequest || typeof filterValueRequest.key !== 'string') {
@@ -767,7 +988,7 @@ export class Client {
     // room state if this Client is still the active connection for this user
     // in this room. (audit 16 #419)
     const gateUserName = this.getUsername();
-    if (!gateUserName || this.room.users.get(gateUserName) !== this) return;
+    if (!this.ownsMembership(this.room, gateUserName)) return;
     // The wire might deliver a malformed payload (null, missing field, wrong
     // type). Validate the outer shape before destructuring so a bad message
     // produces a logged warning instead of a silently-swallowed TypeError.

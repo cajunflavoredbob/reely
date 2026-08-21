@@ -91,6 +91,22 @@ export class Room {
   // cap by being separate WS connections.
   lastApplyAt: number = 0;
 
+  // Media for items that have already matched, kept so a later filter change
+  // cannot make an existing match unrenderable.
+  //
+  // applyFilters deliberately preserves `ratings` while narrowing `media`,
+  // because "a match the room has already found is a piece of shared history,
+  // not something a filter change should wipe out". getMatches broke that:
+  // it resolved each match through the CURRENT media map and silently skipped
+  // misses, so a match outside the new filter survived in room state but
+  // vanished from the UI on the next rejoin -- and rejoin fires on every WS
+  // blip, with the reducer overwriting the client's list wholesale.
+  //
+  // In-memory only. A match whose media falls outside the room's filters still
+  // drops after a restart, since persisting the media objects would mean a
+  // room-file schema change; the ratings themselves are persisted either way.
+  matchedMedia = new Map</* mediaId */ string, Media>();
+
   // Deduplication keys for notifyMatch: `${mediaId}:${sortedLikers.join(',')}`.
   // Today each storeRating call produces a unique like-set, so this set is
   // belt-and-suspenders against a future code path (or audit-followup
@@ -102,6 +118,14 @@ export class Room {
   // capping is cheap defense in depth.
   private notifiedMatchKeys = new Set<string>();
   private static readonly NOTIFIED_MATCH_KEYS_CAP = 8000;
+
+  // FIFO cap for matchedMedia, for the same reason its string-keyed neighbour
+  // above has one. This map holds full Media objects rather than keys, so
+  // leaving the cheap structure capped and the expensive one unbounded would
+  // be exactly backwards. Entries still present in room.media share the same
+  // object reference and cost nothing extra; only filtered-out titles retain
+  // bytes, and a room cannot match more titles than its library holds.
+  private static readonly MATCHED_MEDIA_CAP = 2000;
 
   constructor(req: CreateRoomRequest, ctx: RouteContext) {
     this.routeContext = ctx;
@@ -162,6 +186,20 @@ export class Room {
     if (seq !== this.applySeq) {
       return null;
     }
+    // Archive the media for matches the NEW set can no longer serve, before
+    // swapping it in. Archiving every match at formation time instead (the
+    // first shape of this fix) spent the whole budget on titles the current
+    // media set still resolves, so a busy room's FIFO evicted precisely the
+    // filtered-out entries the archive exists for. Here the write happens only
+    // when a title is actually about to disappear, so the archive holds only
+    // what nothing else can serve.
+    const previousMedia = await this.media;
+    for (const [mediaId, rating] of this.ratings.entries()) {
+      if (mediaMap.has(mediaId)) continue;
+      if (rating.filter(([, r]) => r === 'like').length < 2) continue;
+      const media = previousMedia.get(mediaId) ?? this.matchedMedia.get(mediaId);
+      if (media) this.archiveMatchedMedia(mediaId, media);
+    }
     this.filters = newFilters;
     this.media = Promise.resolve(mediaMap);
     // Applying filters is room activity -- refresh the TTL clock so a room
@@ -195,6 +233,14 @@ export class Room {
     }
   }
 
+  // INVARIANT: `this.room` must never be published to a Client while
+  // `room.media` is still pending. Both createRoom and loadRoom await it before
+  // the room becomes reachable, and applyFilters installs an already-resolved
+  // promise, so the read in Client.handleRate and the read below always agree.
+  // If a future path ever publishes a room with a pending media promise, a
+  // rate racing a filter change would write into `ratings` a match that is
+  // never notified and never archived, and getMatches could then resolve it
+  // from neither map.
   async storeRating(userName: string, rating: Rate, matchedAt: number) {
     // Every accepted rating refreshes the TTL clock.
     this.lastSwipeAt = matchedAt;
@@ -273,7 +319,9 @@ export class Room {
         if (u === userName) userIsLiker = true;
       }
       if (likers.length > 1 && (allLikes || userIsLiker)) {
-        const matchedMedia = media.get(mediaId);
+        // Current media first, then the archive: a match the room already
+        // found stays visible even once a filter excludes its title.
+        const matchedMedia = media.get(mediaId) ?? this.matchedMedia.get(mediaId);
         if (matchedMedia) {
           matches.push({ matchedAt, media: matchedMedia, users: likers });
         } else {
@@ -309,8 +357,30 @@ export class Room {
     this.broadcastMessage({ type: 'userProgress', payload: { user, progress } });
   }
 
+  /** Archive a matched title's media, evicting the oldest entry past the cap. */
+  private archiveMatchedMedia(mediaId: string, media: Media) {
+    if (this.matchedMedia.has(mediaId)) return;
+    if (this.matchedMedia.size >= Room.MATCHED_MEDIA_CAP) {
+      const oldest = this.matchedMedia.keys().next().value;
+      if (oldest !== undefined) this.matchedMedia.delete(oldest);
+    }
+    this.matchedMedia.set(mediaId, media);
+  }
+
   notifyMatch(match: Match) {
-    this.broadcastMessage({ type: 'match', payload: match });
+    // Deliver to the likers only, so the live event stream agrees with the
+    // rejoin snapshot. The join path uses getMatches(userName, false), which
+    // returns only matches the requesting user liked -- but this broadcast had
+    // no liker filter, so a member who disliked the title (or never rated it)
+    // got the match frame and the celebration, then lost the entry with no
+    // explanation on their next refresh or WS blip when the reducer overwrote
+    // the list wholesale. Worse, the seen-match id survived a same-room
+    // rejoin, so if that user later became a liker the match never
+    // re-celebrated for them.
+    const likers = new Set(match.users);
+    for (const [userName, client] of this.users.entries()) {
+      if (likers.has(userName)) client.sendMessage({ type: 'match', payload: match });
+    }
   }
 
   notifyFilterApplied(appliedBy: string, media: Media[], filters: Filter[]) {
@@ -416,6 +486,18 @@ export const createRoom = async (
 // parameter type made every caller pass a full request object even though
 // only `.roomName` was read. The callers in client.ts pass the sanitized
 // canonical name; nothing needed the surrounding object shape.
+/**
+ * True when `room` is still the instance registered under its name.
+ *
+ * Distinct from hasRoom(name): after an await, the name can be occupied by a
+ * DIFFERENT Room. The TTL sweep can collect a room while a joiner is parked in
+ * the liveness probe, and a later joiner then builds a second Room under the
+ * same name -- the first joiner is left holding an orphan whose queued saves
+ * overwrite the live room's file, and which no sweep can ever reach because it
+ * is not in the registry. Identity, not presence, is the question.
+ */
+export const isRegisteredRoom = (room: Room): boolean => rooms.get(room.roomName) === room;
+
 export const getRoom = (roomName: string): Room => {
   const room = rooms.get(roomName);
   if (!room) throw new RoomNotFoundError(`The room "${roomName}" does not exist.`);

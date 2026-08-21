@@ -192,6 +192,27 @@ describe('cleanupExpiredRooms', () => {
     expect(vi.mocked(fs.unlink)).not.toHaveBeenCalled();
   });
 
+  // The in-memory pass got this re-check in audit 16 #424; the disk pass never
+  // did. A queued join can run loadRoom -> addRoom -> saveRoom during the
+  // readFile await, so the buffer this pass holds is stale and the unlink
+  // would delete a file just written for a room people are actively swiping
+  // in -- with the in-memory pass already done for this cycle, so nothing
+  // re-persists it.
+  it('does not delete a file for a room that came live during the readFile await', async () => {
+    const stale = Date.now() - (ROOM_TTL_MS + 60_000);
+    mockReaddirOnce(['revived.json']);
+    mockHasRoom.mockReturnValue(false);
+    vi.mocked(fs.readFile).mockImplementationOnce((async () => {
+      // A join lands mid-await and puts the room in memory.
+      mockHasRoom.mockReturnValue(true);
+      return JSON.stringify({ updatedAt: stale, lastSwipeAt: stale });
+    }) as never);
+
+    await cleanupExpiredRooms(ROOM_TTL_MS);
+
+    expect(vi.mocked(fs.unlink)).not.toHaveBeenCalled();
+  });
+
   it('evicts persisted-only rooms (not currently in memory) whose lastSwipeAt is expired', async () => {
     const stale = Date.now() - (ROOM_TTL_MS + 60_000);
     mockReaddirOnce(['stale-disk.json']);
@@ -271,6 +292,12 @@ describe('scheduleSaveRoom / cancelPendingSave / flushPendingSaves', () => {
   });
 
   afterEach(() => {
+    // Drop any timer this block left armed BEFORE restoring real timers.
+    // pendingSaves is module state shared with the flush test below, so a
+    // leaked entry turns one regression into two failures, the second in
+    // unrelated code. Cleanup belongs here, not after an assertion that can
+    // throw first.
+    for (const name of ['debounce-write', 'coalesce', 'busy']) cancelPendingSave(name);
     vi.useRealTimers();
   });
 
@@ -296,6 +323,23 @@ describe('scheduleSaveRoom / cancelPendingSave / flushPendingSaves', () => {
     expect(vi.mocked(fs.writeFile)).not.toHaveBeenCalled();
     // Now finish the window from the latest schedule.
     await vi.advanceTimersByTimeAsync(1000);
+    expect(vi.mocked(fs.writeFile)).toHaveBeenCalledOnce();
+  });
+
+  it('still writes while activity never stops, at the max-wait ceiling', async () => {
+    // The case a trailing-edge-only debounce gets exactly backwards. Two
+    // people swiping produce a rating roughly every second, which is inside
+    // SAVE_DEBOUNCE_MS, so every schedule cleared and re-armed the timer and
+    // the quiet window never arrived: a busy room wrote NOTHING, while an
+    // idle one persisted fine. A crash then lost the entire session -- the
+    // opposite of the "at most one debounce window of swipes" the comment
+    // promised. The max-wait bounds it at 10s from the first unsaved change.
+    const room = makeRoom({ roomName: 'busy' });
+    for (let elapsed = 0; elapsed < 11_000; elapsed += 1000) {
+      scheduleSaveRoom(room);
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    // Exactly one: bounded, not a write per swipe.
     expect(vi.mocked(fs.writeFile)).toHaveBeenCalledOnce();
   });
 
@@ -384,11 +428,63 @@ describe('loadRoom', () => {
       body: { roomName: 'r', ratings: [], userProgress: [], createdAt: 1, updatedAt: 2, lastSwipeAt: 'soon' },
       reason: /lastSwipeAt/,
     },
+    // Only the outer Array.isArray was checked here, so a string count was
+    // accepted: storeRating then did ("12" + 1) === "121" and re-persisted it,
+    // compounding on disk while the display clamped to a permanent 100%.
+    {
+      name: 'a userProgress count that is not a number',
+      body: { roomName: 'r', ratings: [], userProgress: [['alice', '12']], createdAt: 1, updatedAt: 2 },
+      reason: /userProgress/,
+    },
+    {
+      name: 'a null userProgress count (reaches the wire as progress: null)',
+      body: { roomName: 'r', ratings: [], userProgress: [['alice', null]], createdAt: 1, updatedAt: 2 },
+      reason: /userProgress/,
+    },
+    {
+      name: 'a userProgress entry that is not a pair',
+      body: { roomName: 'r', ratings: [], userProgress: [['alice']], createdAt: 1, updatedAt: 2 },
+      reason: /userProgress/,
+    },
   ])('rejects a room file with $name (audit 12 #205)', async ({ body, reason }) => {
     vi.mocked(fs.readFile).mockResolvedValueOnce(JSON.stringify(body) as never);
     expect(await loadRoom('bad', {} as never)).toBeNull();
     expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
       expect.stringMatching(reason),
+    );
+  });
+});
+
+describe('loadRoom filter sanitisation', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it.each([
+    { name: 'an operator the query builder would corrupt', operator: '<', key: 'genre' },
+    { name: 'a key that is not a plain identifier', operator: '=', key: '../../etc/passwd' },
+  ])('drops $name but keeps the room', async ({ operator, key }) => {
+    vi.mocked(fs.readFile).mockResolvedValueOnce(
+      JSON.stringify({
+        roomName: 'movies',
+        ratings: [['m1', [['alice', 'like', 9000]]]],
+        userProgress: [['alice', 5]],
+        createdAt: 1,
+        updatedAt: 2,
+        filters: [{ key, operator, value: ['x'] }],
+      }) as never,
+    );
+
+    const room = await loadRoom('movies', {
+      providers: [{ getMedia: async () => [{ id: 'm1', type: 'movie', title: 'Film' }] }],
+    } as never);
+
+    // The invalid filter must not reach the Plex query, but discarding the
+    // whole file would take every rating and match with it: loadRoom returning
+    // null makes the join path build an empty room and overwrite the file.
+    expect(room).not.toBeNull();
+    expect(room?.filters).toBeUndefined();
+    expect(room?.ratings.get('m1')).toHaveLength(1);
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.stringMatching(/invalid filter/),
     );
   });
 });

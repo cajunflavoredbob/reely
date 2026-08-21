@@ -34,6 +34,19 @@ const STABLE_CONNECTION_MS = 10_000;
 // UI -- permanently.
 const REQUEST_TIMEOUT_MS = 15_000;
 
+/**
+ * An error whose message is written for the user and is safe to show verbatim.
+ *
+ * The store's catch-all renders a generic "server isn't responding" toast,
+ * which is right for a timeout or a transport failure but wrong for a
+ * condition the user caused and can act on. Surfacing every rejection message
+ * instead would risk putting internal text in front of them, so the ones meant
+ * for display are tagged rather than assumed.
+ */
+export class UserFacingError extends Error {
+  readonly userFacing = true;
+}
+
 export class ReelyClient extends EventTarget {
   ws!: WebSocket;
   reconnectionAttempts = 0;
@@ -200,6 +213,16 @@ export class ReelyClient extends EventTarget {
           continue;
         }
         if (this.ws.readyState === WebSocket.OPEN) {
+          // Re-record the dedup id. The join that triggered this flush cleared
+          // sentRateIds, and the server built its joinRoomSuccess deck BEFORE
+          // these rates landed -- so the user is looking at cards they already
+          // voted on, with the memory that would suppress a re-swipe wiped.
+          // Re-swiping one hits storeRating's already-rated branch, which
+          // returns before recording progress, so the swipe counts as neither
+          // a vote nor progress and the bar silently disagrees with the deck.
+          // That is exactly the "same mediaId 95+ times as already-rated"
+          // shape sentRateIds was introduced to stop.
+          if (entry.msg.type === "rate") this.sentRateIds.add(entry.msg.payload.mediaId);
           this.ws.send(JSON.stringify(entry.msg));
         } else {
           remaining.push(entry);
@@ -436,12 +459,46 @@ export class ReelyClient extends EventTarget {
     );
   };
 
+  /**
+   * waitForConnected, bounded, for fire-and-forget sends.
+   *
+   * The audit-16 #450 race was applied only inside request(); these callers
+   * kept awaiting the bare promise, which never rejects and has no timeout. A
+   * tap during an outage parked silently and each further tap parked another,
+   * every one registering a fresh {once} "connected" closure that EventTarget
+   * cannot dedupe and nothing removes. They all fired together whenever the
+   * socket eventually reconnected, minutes later, long after the user had
+   * moved on.
+   */
+  private waitForConnectedWithin = async (): Promise<void> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.waitForConnected(),
+        new Promise<void>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`Not connected to the server (waited ${REQUEST_TIMEOUT_MS}ms)`)),
+            REQUEST_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   // Fire-and-forget: there's no `setLocaleSuccess` reply, and the language
   // hint is purely advisory (Plex falls back to English if unrecognized).
   // No awaited response, no caller wants a confirmation -- the WS send is
   // the whole interaction (audit 9 #121).
   setLocale = async (locale: Locale) => {
-    await this.waitForConnected();
+    // Advisory only, so a failed wait is not worth surfacing -- but it must
+    // not park forever either.
+    try {
+      await this.waitForConnectedWithin();
+    } catch {
+      return;
+    }
 
     this.sendMessage({
       type: "setLocale",
@@ -458,7 +515,26 @@ export class ReelyClient extends EventTarget {
     // Fire-and-forget after the send: the server replies via
     // `filterChangeApplied` to every room member (broadcast), so this
     // caller doesn't need a per-request waiter.
-    await this.waitForConnected();
+    //
+    // Bounded, and pinned to the room the user was actually looking at. An
+    // unbounded wait meant a parked apply could fire after the user had moved
+    // to another room, where the server's membership gate legitimately passes
+    // -- so room A's filter set was applied to room B and broadcast to
+    // everyone in it, wiping their decks.
+    const requestedIn = this.currentRoomName;
+    await this.waitForConnectedWithin();
+    // `requestedIn === undefined` means no join had completed when the apply
+    // was made, so there is no affinity to enforce. That matches how the rate
+    // queue treats untagged entries: flush unconditionally.
+    if (requestedIn !== undefined && this.currentRoomName !== requestedIn) {
+      // Throw rather than return: handleApply closes the panel on send, so a
+      // silent drop leaves the user looking at an unchanged deck with no
+      // explanation. createStore attaches a catch to every dispatched promise,
+      // which turns this into a toast.
+      throw new UserFacingError(
+        `Those filters were for "${requestedIn}", so they were not applied here.`,
+      );
+    }
     this.sendMessage({ type: "applyFilters", payload });
   };
 

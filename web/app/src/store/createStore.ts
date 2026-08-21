@@ -92,19 +92,32 @@ export const createStore = () => {
       // unhandled rejection and a UI stuck waiting on a reply that
       // will never arrive.
       //
-      // Fire-and-forget methods (`rate`, `applyFilters`, `setLocale`)
-      // return a Promise that resolves once the WS frame is sent, so
-      // this catch is effectively a no-op for them -- they don't
-      // produce a rejection path that the dispatch could observe
-      // (audit 12 #246).
+      // `rate` and `setLocale` resolve once the WS frame is sent and swallow
+      // their own failures, so this catch stays a no-op for them (audit 12
+      // #246). `applyFilters` is no longer in that group: it rejects both on
+      // its connect timeout and when the user changed rooms while it was
+      // parked, and the second case is not a server problem at all. Prefer the
+      // thrown message when there is one, so the toast describes what actually
+      // happened instead of blaming the server for it. Only errors explicitly
+      // tagged UserFacingError are shown verbatim; everything else keeps the
+      // generic copy rather than risking internal text in front of the user.
       if (result instanceof Promise) {
-        result.catch(() => {
+        result.catch((err: unknown) => {
+          // Duck-typed rather than `instanceof UserFacingError`: importing the
+          // class here would make every test that mocks the api module fail
+          // unless it also re-exported it, which is a trap rather than a
+          // safeguard. A truthy `userFacing` flag is enough.
+          const userFacing = (err as { userFacing?: unknown })?.userFacing;
+          const message =
+            userFacing && err instanceof Error && err.message
+              ? err.message
+              : "The server isn't responding. Please try again.";
           set((state) =>
             reducer(state, {
               type: "addToast",
               payload: {
                 id: `request-timeout-${Date.now()}`,
-                message: "The server isn't responding. Please try again.",
+                message,
                 appearance: "Failure",
                 showTimeMs: 5000,
               },

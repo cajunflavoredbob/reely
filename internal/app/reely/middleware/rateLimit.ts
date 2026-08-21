@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { logger } from '../logger';
+import { clientKey } from '../util/clientKey';
 
 // Fixed-window per-IP rate limiter. Lightweight, in-memory; no external dep.
 //
@@ -30,7 +31,9 @@ export const rateLimit = ({ windowMs, max, name }: RateLimitOptions) => {
   const buckets = new Map<string, Bucket>();
 
   return (req: Request, res: Response, next: NextFunction) => {
-    const key = req.socket.remoteAddress ?? 'unknown';
+    // Grouped like every other per-source cap (see util/clientKey): a raw
+    // IPv6 address is per-connection, not per-client.
+    const key = clientKey(req.socket.remoteAddress);
     const now = Date.now();
 
     // Opportunistic cleanup when the bucket cache is full (audit 14

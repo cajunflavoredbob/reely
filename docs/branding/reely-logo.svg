@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <title>Reely</title>
+  <title>reely</title>
   <defs>
     <linearGradient id="rg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#FF4E7E"/>
@@ -7,7 +7,13 @@
       <stop offset="100%" stop-color="#FFB347"/>
     </linearGradient>
   </defs>
-  <g>
+  <!-- The fan leans left, so the drawn geometry sits left of the canvas
+       centre. This transform centres the rendered ink box (3,29)-(406,499)
+       in the 512 canvas, giving equal 54px side margins and 21px top/bottom.
+       Every generated icon uses it. There is no maskable variant: the mark is
+       drawn too large to survive Android's 80% safe circle at any offset, see
+       docs/branding/README.md. -->
+  <g transform="translate(51.5 -8)">
     <g transform="rotate(-16 256 470)"><rect x="106" y="46" width="300" height="420" rx="36" fill="#C96F52" opacity="0.55"/></g>
     <g transform="rotate(-8 256 470)"><rect x="106" y="46" width="300" height="420" rx="36" fill="#E39A63" opacity="0.75"/></g>
     <rect x="106" y="46" width="300" height="420" rx="36" fill="url(#rg)"/>

@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile, rename, readdir, unlink } from 'node:fs/pro
 import { randomBytes } from 'node:crypto';
 import type { CreateRoomRequest, Filter } from '../../../types/reely';
 import { logger } from './logger';
+import { isValidFilter } from './util/filters';
 import { Room, getAllRooms, removeRoom, hasRoom } from './room';
 import type { RouteContext } from './types';
 
@@ -77,6 +78,36 @@ const isPersistedRoomShape = (
   return true;
 };
 
+/**
+ * Keep a persisted room's filters only if every entry is valid.
+ *
+ * A persisted filter is fed straight to `new Room(req)` -> `room.media` -> the
+ * provider query, and unlike a WS payload it replays on every restart, so one
+ * bad entry written to disk kept coming back. But rejecting the whole FILE for
+ * it would be far worse than the bug: loadRoom returns null, the join path
+ * treats the room as nonexistent, builds an empty one, and the next save
+ * overwrites the file. Every rating, match and progress entry gone, permanently,
+ * for a malformed filter. Rooms written before the create path was validated are
+ * exactly the ones most likely to trip this, so the destructive reading would
+ * have hit real data.
+ *
+ * Dropping the filters instead widens the room's deck back to unfiltered, which
+ * the users can simply re-apply. Note that is all-or-nothing and `library` is a
+ * filter key too, so a room scoped to one Plex library loses that scope and
+ * serves the whole server until someone re-applies it. Still far better than
+ * discarding the room, but worth knowing when reading the log line.
+ */
+const sanitizeLoadedFilters = (
+  roomName: string,
+  filters: Filter[] | undefined,
+): Filter[] | undefined => {
+  if (filters === undefined || filters.every(isValidFilter)) return filters;
+  logger.error(
+    `Room file "${roomName}" has an invalid filter; loading the room without filters.`,
+  );
+  return undefined;
+};
+
 export const saveRoom = async (room: Room): Promise<void> => {
   try {
     await mkdir(ROOMS_DIR, { recursive: true });
@@ -112,23 +143,43 @@ export const saveRoom = async (room: Room): Promise<void> => {
 // against a disk write per swipe.
 const SAVE_DEBOUNCE_MS = 2000;
 
+// Ceiling on how long a room may go unpersisted while it is being actively
+// mutated. Without this the debounce is trailing-edge only: every rating
+// clears the pending timer and re-arms it, so a room where swipes land more
+// often than SAVE_DEBOUNCE_MS never reaches a quiet window and never saves at
+// all. That inverted the guarantee above -- an idle room persisted, while a
+// busy one lost its whole session on a crash, which is precisely the case the
+// debounce was added to protect. The timer now fires at the earlier of "2s of
+// quiet" and "10s since the first unsaved mutation".
+const SAVE_MAX_WAIT_MS = 10000;
+
 // Store the Room alongside the timer so cancel + flush can access the live
 // Room without re-resolving it through getAllRooms() (the room may have
 // been removed by the time flush runs).
 interface PendingSave {
   timer: ReturnType<typeof setTimeout>;
   room: Room;
+  // When the currently-unsaved run of mutations started. Preserved across
+  // re-arms so the max-wait measures from the first unsaved change, not the
+  // most recent one.
+  firstScheduledAt: number;
 }
 const pendingSaves = new Map<string, PendingSave>();
 
 export const scheduleSaveRoom = (room: Room): void => {
   const existing = pendingSaves.get(room.roomName);
+  const now = Date.now();
+  const firstScheduledAt = existing?.firstScheduledAt ?? now;
   if (existing) clearTimeout(existing.timer);
+  // Never push the write further out than SAVE_MAX_WAIT_MS from the first
+  // unsaved mutation. Clamped at 0 so an already-overdue room writes on the
+  // next tick rather than taking a negative delay.
+  const delay = Math.max(0, Math.min(SAVE_DEBOUNCE_MS, firstScheduledAt + SAVE_MAX_WAIT_MS - now));
   const timer = setTimeout(() => {
     pendingSaves.delete(room.roomName);
     void saveRoom(room);
-  }, SAVE_DEBOUNCE_MS);
-  pendingSaves.set(room.roomName, { timer, room });
+  }, delay);
+  pendingSaves.set(room.roomName, { timer, room, firstScheduledAt });
 };
 
 // Drop any queued save for `roomName` without writing. Used by
@@ -176,7 +227,7 @@ export const loadRoom = async (roomName: string, ctx: RouteContext): Promise<Roo
       // its filename must not load under the body's name.
       roomName,
       displayName: data.displayName ?? roomName,
-      filters: data.filters,
+      filters: sanitizeLoadedFilters(roomName, data.filters),
     };
     const room = new Room(req, ctx);
     await room.media;
@@ -214,6 +265,23 @@ export const loadRoom = async (roomName: string, ctx: RouteContext): Promise<Roo
           room.userRated.set(userName, new Set([mediaId]));
         }
       }
+    }
+    // Element-validate userProgress for the same reason ratings is validated
+    // above. Only the outer Array.isArray was checked, so [["alice","12"]]
+    // passed: storeRating then computed ("12" + 1) === "121" by string
+    // concatenation, stored it back, and re-persisted, compounding on disk
+    // while safeProgress clamped the display to a permanent 100%. A null
+    // value produced NaN, which JSON.stringify puts on the wire as null,
+    // handing `progress: null` to a frontend typed for number. The same data
+    // arriving over the WS is element-validated; a file should not be the
+    // softer path into the same Map.
+    const isProgressEntry = (e: unknown): e is [string, number] =>
+      Array.isArray(e) && e.length === 2 &&
+      typeof e[0] === 'string' &&
+      typeof e[1] === 'number' && Number.isFinite(e[1]);
+    if (!data.userProgress.every(isProgressEntry)) {
+      logger.error(`Room file "${roomName}" has malformed userProgress; ignoring it.`);
+      return null;
     }
     room.userProgress = new Map(data.userProgress);
     room.createdAt = data.createdAt;
@@ -312,7 +380,8 @@ export const cleanupExpiredRooms = async (ttlMs: number = ROOM_TTL_MS): Promise<
       // Rooms currently in memory are the in-memory pass's responsibility
       // (which skips live ones) -- don't let the disk pass delete a live
       // room's file. The filename without .json is the canonical room name.
-      if (hasRoom(file.slice(0, -'.json'.length))) continue;
+      const canonicalName = file.slice(0, -'.json'.length);
+      if (hasRoom(canonicalName)) continue;
       const filePath = join(ROOMS_DIR, file);
       try {
         const raw = await readFile(filePath, 'utf-8');
@@ -340,6 +409,16 @@ export const cleanupExpiredRooms = async (ttlMs: number = ROOM_TTL_MS): Promise<
         // `lastSwipeAt` nor `updatedAt` would never sweep -- a slow leak
         // of orphaned room files across restarts (audit 12 #204).
         if (effectiveLastSwipe === undefined || effectiveLastSwipe < cutoff) {
+          // Re-check after the readFile await, the same guard the in-memory
+          // pass got in audit 16 #424 and this one never received. A queued
+          // join can run loadRoom -> addRoom -> saveRoom during the I/O
+          // window, so the buffer above is stale and this unlink would delete
+          // a file someone just wrote for a room people are actively swiping
+          // in. The in-memory pass has already run this cycle, so nothing
+          // would re-persist it, and loadRoom restored the OLD lastSwipeAt --
+          // leaving the room immediately TTL-eligible again with only its
+          // user count holding it, and every rating lost on the next crash.
+          if (hasRoom(canonicalName)) continue;
           await unlink(filePath);
           logger.info(
             `Expired room file ${filePath}` +

@@ -7,6 +7,7 @@ import {
   recordAuthFailure,
 } from '../middleware/authFailureThrottle';
 import { logger } from '../logger';
+import { clientKey } from '../util/clientKey';
 
 // btoa is not available in older Node; Buffer is the portable equivalent.
 const encodeBasic = (user: string, pass: string): string =>
@@ -62,7 +63,9 @@ export const handler = (req: Request, res: Response, next: NextFunction): void =
   // brute force of the only access gate can't guess at line rate. Checked
   // ahead of isAuthorized -- once throttled, even correct credentials wait
   // out the window (that's the lockout, and it's at most 60s).
-  const ip = req.socket.remoteAddress ?? 'unknown';
+  // Must use the SAME key as the WS upgrade path: the failure budget is
+  // deliberately shared so switching vectors doesn't reset the counter.
+  const ip = clientKey(req.socket.remoteAddress);
   const retryAfter = authFailureRetryAfter(ip);
   if (retryAfter > 0) {
     res.setHeader('Retry-After', String(retryAfter));
