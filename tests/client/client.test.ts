@@ -31,6 +31,10 @@ vi.mock('../../internal/app/reely/room', async () => {
     createRoom: vi.fn(),
     getRoom: vi.fn(),
     addRoom: vi.fn(),
+    // Orthogonal to routing: these tests hand the client fake Rooms that were
+    // never put in the real registry, so the real predicate would refuse every
+    // commit. The sweep-race behaviour it guards has its own test below.
+    isRegisteredRoom: vi.fn().mockReturnValue(true),
   };
 });
 
@@ -40,6 +44,7 @@ import {
   hasRoom,
   createRoom,
   getRoom,
+  isRegisteredRoom,
 } from '../../internal/app/reely/room';
 import type { Room } from '../../internal/app/reely/room';
 import { getConfig } from '../../internal/app/reely/config/main';
@@ -51,6 +56,7 @@ const mockedHasRoom = vi.mocked(hasRoom);
 const mockedCreateRoom = vi.mocked(createRoom);
 const mockedGetRoom = vi.mocked(getRoom);
 const mockedGetConfig = vi.mocked(getConfig);
+const mockedIsRegisteredRoom = vi.mocked(isRegisteredRoom);
 
 // ---------------------------------------------------------------------------
 
@@ -66,8 +72,8 @@ describe('Client login handling', () => {
 
   // Finding 13: sanitizeInput('///') → ''; the server must reject the empty result
   // instead of logging in with an empty username and creating data/rooms/.json.
-  it('sends loginError when the username is empty after sanitization (Finding 13)', () => {
-    push(ws, { type: 'login', payload: { userName: '///' } });
+  it('sends loginError when the username is empty after sanitization (Finding 13)', async () => {
+    await push(ws, { type: 'login', payload: { userName: '///' } });
     const msgs = sent(ws);
     expect(msgs).toHaveLength(1);
     expect(msgs[0].type).toBe('loginError');
@@ -76,8 +82,8 @@ describe('Client login handling', () => {
     expect(client.userName).toBeUndefined();
   });
 
-  it('sends loginError for an all-whitespace username', () => {
-    push(ws, { type: 'login', payload: { userName: '   ' } });
+  it('sends loginError for an all-whitespace username', async () => {
+    await push(ws, { type: 'login', payload: { userName: '   ' } });
     const msgs = sent(ws);
     expect(msgs[0].type).toBe('loginError');
     expect(client.isLoggedIn).toBe(false);
@@ -85,8 +91,8 @@ describe('Client login handling', () => {
 
   // Finding 24: loginSuccess was sending the raw (unsanitized) login.userName
   // back to the client instead of the sanitized version stored server-side.
-  it('sends loginSuccess with the sanitized username, not the raw input (Finding 24)', () => {
-    push(ws, { type: 'login', payload: { userName: '  alice../  ' } });
+  it('sends loginSuccess with the sanitized username, not the raw input (Finding 24)', async () => {
+    await push(ws, { type: 'login', payload: { userName: '  alice../  ' } });
     const msgs = sent(ws);
     expect(msgs).toHaveLength(1);
     expect(msgs[0].type).toBe('loginSuccess');
@@ -96,8 +102,8 @@ describe('Client login handling', () => {
     expect(client.isLoggedIn).toBe(true);
   });
 
-  it('sends loginSuccess for a clean username unchanged', () => {
-    push(ws, { type: 'login', payload: { userName: 'bob' } });
+  it('sends loginSuccess for a clean username unchanged', async () => {
+    await push(ws, { type: 'login', payload: { userName: 'bob' } });
     const msgs = sent(ws);
     expect(msgs[0].type).toBe('loginSuccess');
     expect(msgs[0].payload.userName).toBe('bob');
@@ -134,13 +140,13 @@ describe('Client rate handling', () => {
   // Finding 12: handleRate did not validate that the mediaId exists in the room
   // before storing. A client could rate arbitrary IDs, polluting the ratings map.
   it('drops a rating for an unknown mediaId (Finding 12)', async () => {
-    push(ws, { type: 'rate', payload: { rating: 'like', mediaId: 'bogus-id' } });
+    await push(ws, { type: 'rate', payload: { rating: 'like', mediaId: 'bogus-id' } });
     await flush();
     expect(storeRating).not.toHaveBeenCalled();
   });
 
   it('stores a rating for a known mediaId', async () => {
-    push(ws, { type: 'rate', payload: { rating: 'like', mediaId: 'media-1' } });
+    await push(ws, { type: 'rate', payload: { rating: 'like', mediaId: 'media-1' } });
     await flush();
     expect(storeRating).toHaveBeenCalledWith(
       'alice',
@@ -157,9 +163,9 @@ describe('Client rate handling', () => {
   // active-connection membership before mutating. Either alone would close
   // the path; both together is belt-and-suspenders.
   it('drops a rating after leaveRoom (audit 8 #85)', async () => {
-    push(ws, { type: 'leaveRoom' });
+    await push(ws, { type: 'leaveRoom' });
     await flush();
-    push(ws, { type: 'rate', payload: { rating: 'like', mediaId: 'media-1' } });
+    await push(ws, { type: 'rate', payload: { rating: 'like', mediaId: 'media-1' } });
     await flush();
     expect(storeRating).not.toHaveBeenCalled();
   });
@@ -173,7 +179,7 @@ describe('Client rate handling', () => {
     // here without it. Non-null + Map-narrow are the right shape.
     // biome-ignore lint/style/noNonNullAssertion: room set by beforeEach.
     (client.room!.users as Map<string, Client>).set('alice', newerClient);
-    push(ws, { type: 'rate', payload: { rating: 'like', mediaId: 'media-1' } });
+    await push(ws, { type: 'rate', payload: { rating: 'like', mediaId: 'media-1' } });
     await flush();
     expect(storeRating).not.toHaveBeenCalled();
   });
@@ -208,7 +214,7 @@ describe('Client applyFilters handling', () => {
   // attacker could send a filter with a path-traversal key that gets
   // interpolated into a Plex API URL path -- the validator must reject it.
   it('rejects a filter payload with an invalid key (Finding 14)', async () => {
-    push(ws, {
+    await push(ws, {
       type: 'applyFilters',
       payload: { filters: [{ key: '../evil', operator: '=', value: ['x'] }] },
     });
@@ -218,7 +224,7 @@ describe('Client applyFilters handling', () => {
   });
 
   it('rejects a filter payload where value is not a string array', async () => {
-    push(ws, {
+    await push(ws, {
       type: 'applyFilters',
       payload: { filters: [{ key: 'genre', operator: '=', value: 'not-an-array' }] },
     });
@@ -227,7 +233,7 @@ describe('Client applyFilters handling', () => {
   });
 
   it('rejects a filter payload where filters is not an array', async () => {
-    push(ws, {
+    await push(ws, {
       type: 'applyFilters',
       payload: { filters: 'bad' },
     });
@@ -236,7 +242,7 @@ describe('Client applyFilters handling', () => {
   });
 
   it('applies and broadcasts a valid filter payload', async () => {
-    push(ws, {
+    await push(ws, {
       type: 'applyFilters',
       payload: { filters: [{ key: 'genre', operator: '=', value: ['Action'] }] },
     });
@@ -253,7 +259,7 @@ describe('Client applyFilters handling', () => {
 
   // Bounds added in 0.2.9.
   it('rejects a key longer than 64 chars', async () => {
-    push(ws, {
+    await push(ws, {
       type: 'applyFilters',
       payload: { filters: [{ key: 'a'.repeat(65), operator: '=', value: ['x'] }] },
     });
@@ -262,7 +268,7 @@ describe('Client applyFilters handling', () => {
   });
 
   it('rejects an empty value array', async () => {
-    push(ws, {
+    await push(ws, {
       type: 'applyFilters',
       payload: { filters: [{ key: 'genre', operator: '=', value: [] }] },
     });
@@ -271,7 +277,7 @@ describe('Client applyFilters handling', () => {
   });
 
   it('rejects a value array with more than 32 entries', async () => {
-    push(ws, {
+    await push(ws, {
       type: 'applyFilters',
       payload: { filters: [{ key: 'genre', operator: '=', value: Array(33).fill('x') }] },
     });
@@ -280,7 +286,7 @@ describe('Client applyFilters handling', () => {
   });
 
   it('rejects a value string over 128 chars', async () => {
-    push(ws, {
+    await push(ws, {
       type: 'applyFilters',
       payload: { filters: [{ key: 'genre', operator: '=', value: ['x'.repeat(129)] }] },
     });
@@ -289,7 +295,7 @@ describe('Client applyFilters handling', () => {
   });
 
   it('rejects an operator outside the regex charset', async () => {
-    push(ws, {
+    await push(ws, {
       type: 'applyFilters',
       payload: { filters: [{ key: 'genre', operator: 'abc', value: ['x'] }] },
     });
@@ -299,13 +305,13 @@ describe('Client applyFilters handling', () => {
 
   // Payload-shape validation added in 0.2.9.
   it('rejects an applyFilters message with null payload', async () => {
-    push(ws, { type: 'applyFilters', payload: null });
+    await push(ws, { type: 'applyFilters', payload: null });
     await flush();
     expect(applyFilters).not.toHaveBeenCalled();
   });
 
   it('rejects an applyFilters message where filters is not an array', async () => {
-    push(ws, { type: 'applyFilters', payload: { filters: 'oops' } });
+    await push(ws, { type: 'applyFilters', payload: { filters: 'oops' } });
     await flush();
     expect(applyFilters).not.toHaveBeenCalled();
   });
@@ -327,9 +333,11 @@ describe('Client requestFilters handling', () => {
     const provider = {
       getFilters: vi.fn().mockRejectedValue(new Error('plex unreachable')),
     } as unknown as ConstructorParameters<typeof Client>[1][number];
-    new Client(ws, [provider]);
+    const c = new Client(ws, [provider]);
+    c.userName = 'alice';
+    c.isLoggedIn = true;
     ws.send.mockClear(); // discard the initial config message
-    push(ws, { type: 'requestFilters' });
+    await push(ws, { type: 'requestFilters' });
     await flush();
     const msgs = sent(ws);
     expect(msgs).toHaveLength(1);
@@ -341,9 +349,11 @@ describe('Client requestFilters handling', () => {
     const provider = {
       getFilters: vi.fn().mockResolvedValue(filters),
     } as unknown as ConstructorParameters<typeof Client>[1][number];
-    new Client(ws, [provider]);
+    const c = new Client(ws, [provider]);
+    c.userName = 'alice';
+    c.isLoggedIn = true;
     ws.send.mockClear();
-    push(ws, { type: 'requestFilters' });
+    await push(ws, { type: 'requestFilters' });
     await flush();
     const msgs = sent(ws);
     expect(msgs).toHaveLength(1);
@@ -354,7 +364,7 @@ describe('Client requestFilters handling', () => {
   it('sends requestFiltersError when no providers are configured', async () => {
     new Client(ws, []);
     ws.send.mockClear();
-    push(ws, { type: 'requestFilters' });
+    await push(ws, { type: 'requestFilters' });
     await flush();
     const msgs = sent(ws);
     expect(msgs).toHaveLength(1);
@@ -375,42 +385,44 @@ describe('Client malformed-payload handling', () => {
   // throw inside the handler, get swallowed by the handleRawMessage catch, and
   // hang the client awaiting a response. Each handler must answer with its
   // own error message instead.
-  it('answers a login with no userName with loginError, not silence', () => {
+  it('answers a login with no userName with loginError, not silence', async () => {
     new Client(ws, []);
     ws.send.mockClear();
-    push(ws, { type: 'login', payload: {} });
+    await push(ws, { type: 'login', payload: {} });
     const msgs = sent(ws);
     expect(msgs).toHaveLength(1);
     expect(msgs[0].type).toBe('loginError');
     expect(msgs[0].payload.name).toBe('MalformedMessage');
   });
 
-  it('answers a createRoom with no roomName with createRoomError', () => {
+  it('answers a createRoom with no roomName with createRoomError', async () => {
     const client = new Client(ws, []);
     client.userName = 'alice';
     client.isLoggedIn = true;
     ws.send.mockClear();
-    push(ws, { type: 'createRoom', payload: {} });
+    await push(ws, { type: 'createRoom', payload: {} });
     const msgs = sent(ws);
     expect(msgs).toHaveLength(1);
     expect(msgs[0].type).toBe('createRoomError');
   });
 
-  it('answers a joinRoom with no roomName with joinRoomError', () => {
+  it('answers a joinRoom with no roomName with joinRoomError', async () => {
     const client = new Client(ws, []);
     client.userName = 'alice';
     client.isLoggedIn = true;
     ws.send.mockClear();
-    push(ws, { type: 'joinRoom', payload: {} });
+    await push(ws, { type: 'joinRoom', payload: {} });
     const msgs = sent(ws);
     expect(msgs).toHaveLength(1);
     expect(msgs[0].type).toBe('joinRoomError');
   });
 
-  it('answers a requestFilterValues with a null payload with requestFilterValuesError', () => {
-    new Client(ws, []);
+  it('answers a requestFilterValues with a null payload with requestFilterValuesError', async () => {
+    const c = new Client(ws, []);
+    c.userName = 'alice';
+    c.isLoggedIn = true;
     ws.send.mockClear();
-    push(ws, { type: 'requestFilterValues', payload: null });
+    await push(ws, { type: 'requestFilterValues', payload: null });
     const msgs = sent(ws);
     expect(msgs).toHaveLength(1);
     expect(msgs[0].type).toBe('requestFilterValuesError');
@@ -451,7 +463,7 @@ describe('Client joinOrCreateRoom routing', () => {
     mockedHasRoom.mockReturnValue(true);
     mockedGetRoom.mockReturnValue(makeFakeRoom('movie-night'));
 
-    push(ws, { type: 'joinOrCreateRoom', payload: { roomName: 'movie-night' } });
+    await push(ws, { type: 'joinOrCreateRoom', payload: { roomName: 'movie-night' } });
     await flush();
 
     expect(mockedGetRoom).toHaveBeenCalled();
@@ -463,7 +475,7 @@ describe('Client joinOrCreateRoom routing', () => {
     mockedHasRoom.mockReturnValue(false);
     mockedCreateRoom.mockResolvedValue(makeFakeRoom('movie-night'));
 
-    push(ws, { type: 'joinOrCreateRoom', payload: { roomName: 'movie-night' } });
+    await push(ws, { type: 'joinOrCreateRoom', payload: { roomName: 'movie-night' } });
     await flush();
 
     expect(mockedCreateRoom).toHaveBeenCalled();
@@ -479,7 +491,7 @@ describe('Client joinOrCreateRoom routing', () => {
     mockedCreateRoom.mockRejectedValueOnce(new RoomExistsError('movie-night already exists.'));
     mockedGetRoom.mockReturnValue(makeFakeRoom('movie-night'));
 
-    push(ws, { type: 'joinOrCreateRoom', payload: { roomName: 'movie-night' } });
+    await push(ws, { type: 'joinOrCreateRoom', payload: { roomName: 'movie-night' } });
     await flush();
 
     expect(mockedCreateRoom).toHaveBeenCalledTimes(1);
@@ -541,7 +553,7 @@ describe('Client join username collision (audit 16 #419 + #421)', () => {
     const holder = { ws: holderWs } as unknown as Client;
     const room = makeCollisionRoom(holder);
 
-    push(ws, { type: 'joinRoom', payload: { roomName: 'movie-night' } });
+    await push(ws, { type: 'joinRoom', payload: { roomName: 'movie-night' } });
     await flush();
 
     const msgs = sent(ws);
@@ -557,7 +569,7 @@ describe('Client join username collision (audit 16 #419 + #421)', () => {
     const holder = { ws: holderWs } as unknown as Client;
     const room = makeCollisionRoom(holder);
 
-    push(ws, { type: 'joinRoom', payload: { roomName: 'movie-night' } });
+    await push(ws, { type: 'joinRoom', payload: { roomName: 'movie-night' } });
     await flush();
     ws.send.mockClear();
 
@@ -565,7 +577,7 @@ describe('Client join username collision (audit 16 #419 + #421)', () => {
     // rename on the same connection. Pre-fix, handleLogin's cleanup got the
     // never-joined room back from leaveRoomCleanup and deleted the ACTIVE
     // alice's userProgress from it.
-    push(ws, { type: 'login', payload: { userName: 'bob' } });
+    await push(ws, { type: 'login', payload: { userName: 'bob' } });
     await flush();
 
     expect(sent(ws).some((m) => m.type === 'loginSuccess')).toBe(true);
@@ -578,7 +590,7 @@ describe('Client join username collision (audit 16 #419 + #421)', () => {
     const holder = { ws: holderWs } as unknown as Client;
     const room = makeCollisionRoom(holder);
 
-    push(ws, { type: 'joinRoom', payload: { roomName: 'movie-night' } });
+    await push(ws, { type: 'joinRoom', payload: { roomName: 'movie-night' } });
     await flush();
 
     expect(sent(ws).some((m) => m.type === 'joinRoomSuccess')).toBe(true);
@@ -594,7 +606,7 @@ describe('Client join username collision (audit 16 #419 + #421)', () => {
       const holder = { ws: holderWs } as unknown as Client;
       const room = makeCollisionRoom(holder);
 
-      push(ws, { type: 'joinRoom', payload: { roomName: 'movie-night' } });
+      await push(ws, { type: 'joinRoom', payload: { roomName: 'movie-night' } });
       // Probe deadline is 2s; advance past it and drain the async join.
       await vi.advanceTimersByTimeAsync(2100);
 
@@ -704,7 +716,7 @@ describe('Client applyFilters validation errors answer (audit 16 #449)', () => {
   });
 
   it('answers an invalid-shape payload with filterChangeError', async () => {
-    push(ws, { type: 'applyFilters', payload: null });
+    await push(ws, { type: 'applyFilters', payload: null });
     await flush();
     const msgs = sent(ws);
     expect(msgs).toHaveLength(1);
@@ -712,7 +724,7 @@ describe('Client applyFilters validation errors answer (audit 16 #449)', () => {
   });
 
   it('answers an invalid filter entry with filterChangeError', async () => {
-    push(ws, {
+    await push(ws, {
       type: 'applyFilters',
       payload: { filters: [{ key: '../evil', operator: '=', value: ['x'] }] },
     });
@@ -720,5 +732,391 @@ describe('Client applyFilters validation errors answer (audit 16 #449)', () => {
     const msgs = sent(ws);
     expect(msgs).toHaveLength(1);
     expect(msgs[0].type).toBe('filterChangeError');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// Handlers used to run concurrently: ws.on('message') fires per frame and the
+// handlers are async, so a single TCP read carrying several frames started
+// several overlapping handler chains. Every room-mutating handler captures
+// state before a multi-second await and commits it after, so an interleaved
+// frame could change the world underneath one that was parked.
+describe('Client dispatch serialisation', () => {
+  let ws: ReturnType<typeof makeWs>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ws = makeWs();
+    mockedGetConfig.mockReturnValue({
+      servers: [],
+      basicAuth: undefined,
+    } as unknown as ReturnType<typeof getConfig>);
+  });
+
+  it('does not start a handler while an earlier one is still awaiting', async () => {
+    const client = new Client(ws, []);
+    client.userName = 'alice';
+    client.isLoggedIn = true;
+
+    const order: string[] = [];
+    let releaseCreate: (() => void) | undefined;
+    mockedHasRoom.mockReturnValue(false);
+    mockedCreateRoom.mockImplementation((async () => {
+      order.push('create:start');
+      await new Promise<void>((resolve) => {
+        releaseCreate = resolve;
+      });
+      order.push('create:end');
+      throw new RoomExistsError('stop here');
+    }) as unknown as typeof createRoom);
+
+    // Two frames arriving in one read: a create that parks, then a login.
+    ws.emit('message', JSON.stringify({ type: 'createRoom', payload: { roomName: 'movies' } }));
+    ws.emit('message', JSON.stringify({ type: 'login', payload: { userName: 'bob' } }));
+    for (let i = 0; i < 25; i += 1) await Promise.resolve();
+
+    // The login is queued behind the parked create, so it has not touched
+    // userName yet. Before serialisation it ran during the await and the
+    // create committed its room entry under a username no cleanup path
+    // could match, leaving a member nothing could ever remove.
+    expect(order).toEqual(['create:start']);
+    expect(client.getUsername()).toBe('alice');
+
+    releaseCreate?.();
+    for (let i = 0; i < 25; i += 1) await Promise.resolve();
+
+    expect(order).toEqual(['create:start', 'create:end']);
+    expect(client.getUsername()).toBe('bob');
+  });
+
+  it('does not make read-only handlers wait behind a parked room handler', async () => {
+    const client = new Client(ws, []);
+    client.userName = 'alice';
+    client.isLoggedIn = true;
+
+    const order: string[] = [];
+    let releaseCreate: (() => void) | undefined;
+    mockedHasRoom.mockReturnValue(false);
+    mockedCreateRoom.mockImplementation((async () => {
+      order.push('create:start');
+      await new Promise<void>((resolve) => {
+        releaseCreate = resolve;
+      });
+      throw new RoomExistsError('stop here');
+    }) as unknown as typeof createRoom);
+
+    ws.emit('message', JSON.stringify({ type: 'createRoom', payload: { roomName: 'movies' } }));
+    ws.emit('message', JSON.stringify({ type: 'setLocale', payload: { language: 'en' } }));
+    for (let i = 0; i < 25; i += 1) await Promise.resolve();
+
+    // setLocale touches no connection state, so it must not be charged for the
+    // create's Plex fetch. Serialising everything turned the filter panel's
+    // deliberately-parallel value fetches into a queue that outran the client's
+    // own 15s timeout, and let swipes be dropped behind a slow applyFilters.
+    expect(order).toEqual(['create:start']);
+    expect(sent(ws).some((m) => m.type === 'translations')).toBe(true);
+
+    releaseCreate?.();
+    for (let i = 0; i < 25; i += 1) await Promise.resolve();
+  });
+
+  it('runs close after an in-flight handler rather than racing it', async () => {
+    const client = new Client(ws, []);
+    client.userName = 'alice';
+    client.isLoggedIn = true;
+    // Already a member of an earlier room, so handleClose has real work to do
+    // and its ordering is observable. Without this the test asserted only on
+    // the mocked createRoom and passed whether close was queued or not.
+    const oldRoom = {
+      roomName: 'old',
+      users: new Map<string, Client>([['alice', client]]),
+      notifyLeave: vi.fn(),
+      getUsers: vi.fn().mockResolvedValue([]),
+    } as unknown as Room;
+    client.room = oldRoom;
+
+    const order: string[] = [];
+    let releaseCreate: (() => void) | undefined;
+    mockedHasRoom.mockReturnValue(false);
+    mockedCreateRoom.mockImplementation((async () => {
+      order.push('create:start');
+      await new Promise<void>((resolve) => {
+        releaseCreate = resolve;
+      });
+      order.push('create:end');
+      throw new RoomExistsError('stop here');
+    }) as unknown as typeof createRoom);
+
+    await push(ws, { type: 'createRoom', payload: { roomName: 'movies' } });
+    // Socket drops mid-create, the exact window where handleClose used to run
+    // while this.room was still undefined -- cleanup found nothing to do, and
+    // the create then committed a member that no later event could remove.
+    (ws as unknown as { readyState: number }).readyState = 3;
+    ws.emit('close');
+    for (let i = 0; i < 25; i += 1) await Promise.resolve();
+
+    // Close is queued behind the parked create, so cleanup has NOT run yet.
+    expect(order).toEqual(['create:start']);
+    expect(oldRoom.users.get('alice')).toBe(client);
+    expect(vi.mocked(oldRoom.notifyLeave)).not.toHaveBeenCalled();
+
+    releaseCreate?.();
+    for (let i = 0; i < 25; i += 1) await Promise.resolve();
+
+    // Only once the create settles does close run, and it evicts.
+    expect(order).toEqual(['create:start', 'create:end']);
+    expect(oldRoom.users.has('alice')).toBe(false);
+    expect(vi.mocked(oldRoom.notifyLeave)).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// The filter handlers were the only provider-touching handlers with no login
+// gate, so anyone who completed the WS upgrade could read the library's filter
+// schema and drive Plex calls without ever identifying themselves. On a
+// deployment without basicAuth that is reachable from the network.
+describe('Client filter handlers require login', () => {
+  let ws: ReturnType<typeof makeWs>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ws = makeWs();
+    mockedGetConfig.mockReturnValue({
+      servers: [],
+      basicAuth: undefined,
+    } as unknown as ReturnType<typeof getConfig>);
+  });
+
+  it('refuses requestFilters from a client that never logged in', async () => {
+    const getFilters = vi.fn().mockResolvedValue({ filters: [], filterTypes: {} });
+    const provider = { getFilters } as unknown as ConstructorParameters<typeof Client>[1][number];
+    new Client(ws, [provider]);
+    ws.send.mockClear();
+
+    await push(ws, { type: 'requestFilters' });
+
+    expect(sent(ws)[0].type).toBe('requestFiltersError');
+    // The point of the gate: Plex is never consulted for an anonymous peer.
+    expect(getFilters).not.toHaveBeenCalled();
+  });
+
+  it('refuses requestFilterValues from a client that never logged in', async () => {
+    const getFilterValues = vi.fn().mockResolvedValue([]);
+    const provider = {
+      getFilterValues,
+    } as unknown as ConstructorParameters<typeof Client>[1][number];
+    new Client(ws, [provider]);
+    ws.send.mockClear();
+
+    await push(ws, { type: 'requestFilterValues', payload: { key: 'genre' } });
+
+    expect(sent(ws)[0].type).toBe('requestFilterValuesError');
+    expect(getFilterValues).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// Filters on a createRoom/joinRoom request bypassed every cap isValidFilter
+// enforces on the applyFilters path -- and the create path is the one that
+// persists what it is given, so a bad filter set replayed from disk on every
+// restart.
+describe('Client validates filters on the create path', () => {
+  let ws: ReturnType<typeof makeWs>;
+  let client: Client;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ws = makeWs();
+    mockedGetConfig.mockReturnValue({
+      servers: [],
+      basicAuth: undefined,
+    } as unknown as ReturnType<typeof getConfig>);
+    client = new Client(ws, []);
+    client.userName = 'alice';
+    client.isLoggedIn = true;
+    mockedHasRoom.mockReturnValue(false);
+  });
+
+  it.each([
+    {
+      name: 'an operator the query builder would corrupt',
+      filters: [{ key: 'genre', operator: '<', value: ['Drama'] }],
+    },
+    {
+      name: 'a key that is not a plain identifier',
+      filters: [{ key: '../../etc/passwd', operator: '=', value: ['x'] }],
+    },
+    {
+      name: 'an oversized value list',
+      filters: [{ key: 'genre', operator: '=', value: Array(500).fill('x') }],
+    },
+    {
+      name: 'a non-array filters field',
+      filters: 'not-an-array',
+    },
+  ])('rejects createRoom carrying $name', async ({ filters }) => {
+    ws.send.mockClear();
+
+    await push(ws, { type: 'createRoom', payload: { roomName: 'movies', filters } });
+
+    expect(sent(ws)[0].type).toBe('createRoomError');
+    // The room is never built, so the bad filter set never reaches Plex and
+    // never lands in the room's JSON file.
+    expect(mockedCreateRoom).not.toHaveBeenCalled();
+  });
+
+  it('still accepts a well-formed filter set', async () => {
+    mockedCreateRoom.mockRejectedValue(new RoomExistsError('stop before I/O'));
+    ws.send.mockClear();
+
+    await push(ws, {
+      type: 'createRoom',
+      payload: { roomName: 'movies', filters: [{ key: 'genre', operator: '=', value: ['Drama'] }] },
+    });
+
+    expect(mockedCreateRoom).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// Both room paths commit membership only after multi-second awaits (a Plex
+// library fetch, a disk load, the liveness probe). Committing unconditionally
+// created members that nothing could ever remove, which pinned the room past
+// the TTL sweep and leaked it, and its file, until restart.
+describe('Client membership commit guard', () => {
+  let ws: ReturnType<typeof makeWs>;
+  let client: Client;
+
+  const fakeRoom = (roomName: string) =>
+    ({
+      roomName,
+      displayName: roomName,
+      users: new Map<string, Client>(),
+      filters: [],
+      getMatches: vi.fn().mockResolvedValue([]),
+      getMediaForUser: vi.fn().mockResolvedValue([]),
+      getUsers: vi.fn().mockResolvedValue([]),
+    }) as unknown as Room;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedIsRegisteredRoom.mockReturnValue(true);
+    ws = makeWs();
+    mockedGetConfig.mockReturnValue({
+      servers: [],
+      basicAuth: undefined,
+    } as unknown as ReturnType<typeof getConfig>);
+    client = new Client(ws, []);
+    client.userName = 'alice';
+    client.isLoggedIn = true;
+    ws.send.mockClear();
+  });
+
+  it('does not add a member whose socket closed during the create', async () => {
+    const room = fakeRoom('movies');
+    mockedHasRoom.mockReturnValue(false);
+    mockedCreateRoom.mockImplementation((async () => {
+      // The tab closes while the Plex library fetch is in flight. handleClose
+      // has already run and found this.room undefined, so it cleaned up
+      // nothing -- this commit is the last chance to notice.
+      (ws as unknown as { readyState: number }).readyState = 3;
+      return room;
+    }) as unknown as typeof createRoom);
+
+    await push(ws, { type: 'createRoom', payload: { roomName: 'movies' } });
+
+    expect(room.users.size).toBe(0);
+    expect(client.room).toBeUndefined();
+  });
+
+  it('does not attach a joiner to a room the sweep removed during the probe', async () => {
+    const room = fakeRoom('movienight');
+    mockedHasRoom.mockReturnValue(true);
+    mockedGetRoom.mockReturnValue(room);
+    // The TTL sweep collected this room while the join was parked. The Room
+    // object is still reachable through the local, but it is no longer the
+    // instance registered under that name.
+    mockedIsRegisteredRoom.mockReturnValue(false);
+
+    await push(ws, { type: 'joinRoom', payload: { roomName: 'movienight' } });
+
+    expect(room.users.size).toBe(0);
+    expect(client.room).toBeUndefined();
+    expect(sent(ws).some((m) => m.type === 'joinRoomSuccess')).toBe(false);
+  });
+
+  it('commits normally when the socket is open and the room is still registered', async () => {
+    const room = fakeRoom('movienight');
+    mockedHasRoom.mockReturnValue(true);
+    mockedGetRoom.mockReturnValue(room);
+
+    await push(ws, { type: 'joinRoom', payload: { roomName: 'movienight' } });
+
+    expect(room.users.get('alice')).toBe(client);
+    expect(sent(ws).some((m) => m.type === 'joinRoomSuccess')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// The rename path deleted the previous name's userProgress and nothing else,
+// and it acted on leaveRoomCleanup's return value even when that helper's
+// identity guard had declined to evict.
+describe('Client login rename cleanup', () => {
+  let ws: ReturnType<typeof makeWs>;
+  let client: Client;
+  let room: Room;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedIsRegisteredRoom.mockReturnValue(true);
+    ws = makeWs();
+    mockedGetConfig.mockReturnValue({
+      servers: [],
+      basicAuth: undefined,
+    } as unknown as ReturnType<typeof getConfig>);
+    client = new Client(ws, []);
+    client.userName = 'alice';
+    client.isLoggedIn = true;
+    room = {
+      roomName: 'movies',
+      users: new Map<string, Client>([['alice', client]]),
+      userProgress: new Map<string, number>([['alice', 50]]),
+      userRated: new Map<string, Set<string>>([['alice', new Set(['m1'])]]),
+      notifyLeave: vi.fn(),
+      getUsers: vi.fn().mockResolvedValue([]),
+    } as unknown as Room;
+    client.room = room;
+    ws.send.mockClear();
+  });
+
+  it('leaves progress and rated state consistent after a rename', async () => {
+    await push(ws, { type: 'login', payload: { userName: 'alicia' } });
+
+    // Both survive or neither does. Deleting progress alone reported 0 while
+    // the deck stayed filtered by the rated set, so the bar could never reach
+    // 100%; deleting the ratings instead would dissolve other users' matches.
+    const hasProgress = room.userProgress.has('alice');
+    const hasRated = room.userRated.has('alice');
+    expect(hasProgress).toBe(hasRated);
+    expect(client.getUsername()).toBe('alicia');
+  });
+
+  it('does not touch the room when a newer connection already owns the name', async () => {
+    // Soft-refresh race: a newer Client took the slot before this one renamed.
+    const newer = {} as unknown as Client;
+    (room.users as Map<string, Client>).set('alice', newer);
+
+    await push(ws, { type: 'login', payload: { userName: 'alicia' } });
+
+    // The active connection's state is untouched, and no spurious leave went
+    // out on its behalf.
+    expect(room.userProgress.get('alice')).toBe(50);
+    expect(room.users.get('alice')).toBe(newer);
+    expect(vi.mocked(room.notifyLeave)).not.toHaveBeenCalled();
   });
 });

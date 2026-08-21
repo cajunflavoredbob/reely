@@ -55,9 +55,21 @@ export const makeWs = () => {
     WebSocket & { send: ReturnType<typeof vi.fn>; emit: EventEmitter['emit'] };
 };
 
-/** Push a raw WS message into the fake client. */
-export const push = (ws: ReturnType<typeof makeWs>, msg: object) =>
+/**
+ * Push a raw WS message into the fake client and wait for it to be handled.
+ *
+ * Client serialises the room- and identity-mutating handlers on a
+ * per-connection promise queue, so that work no longer happens synchronously
+ * inside `emit`. Turning the microtask queue drains the chain (the queue plus
+ * any resolved-promise awaits inside the handler) before the caller asserts.
+ * Deliberately NOT a macrotask: several of these tests install fake timers,
+ * under which a setTimeout/setImmediate flush never resolves and the test hangs
+ * to its 5s limit. Handlers that await a real timer need fake timers on top.
+ */
+export const push = async (ws: ReturnType<typeof makeWs>, msg: object) => {
   ws.emit('message', JSON.stringify(msg));
+  for (let i = 0; i < 25; i += 1) await Promise.resolve();
+};
 
 /**
  * Return all parsed messages sent by the client since construction (or the

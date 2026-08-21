@@ -22,6 +22,12 @@
     "resolveJsonModule": true,
     "declaration": false,
     "sourceMap": false,
+    // Source comments never reach the published image. dist/ is COPY-ed
+    // into the runtime stage and shipped to Docker Hub, so every comment in
+    // server code becomes a public artifact. Post-mortem notes that quoted
+    // a live deployment leaked that way once already. Contributors read the
+    // comments in source; the runtime has no use for them.
+    "removeComments": true,
     // Match the web/app strictness floor (audit 13 #345). The web
     // tsconfig has had these on since the Vite scaffold; the root
     // tsconfig didn't, so server code could carry dead vars / dead

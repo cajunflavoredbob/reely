@@ -528,3 +528,160 @@ describe('rate() storm defenses (audit 16 #438 / 0.5.20 + 0.5.22)', () => {
     expect(ratesSent(ws2)).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe('applyFilters wait is bounded and room-pinned', () => {
+  it('gives up rather than parking forever while the socket is down', async () => {
+    vi.useFakeTimers();
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+    // Never opens. The bare waitForConnected never rejects and has no
+    // timeout, so this used to park silently and fire minutes later.
+    // Handler attached in the same tick the promise is created: the rejection
+    // lands during the timer advance below, and an unhandled rejection makes
+    // vitest exit non-zero even with every test green. Pinned to the reason
+    // too, so an unrelated throw cannot satisfy it.
+    const settled = client.applyFilters({ filters: [] }).then(
+      () => 'resolved',
+      (err: Error) => err.message,
+    );
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(await settled).toMatch(/Not connected to the server/);
+    expect(MockWebSocket.latest().sent.some((s) => s.includes('applyFilters'))).toBe(false);
+  });
+
+  it('does not deliver a queued apply into a different room', async () => {
+    vi.useFakeTimers();
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+    const ws = MockWebSocket.latest();
+
+    // Establish room A, then drop the socket and tap Apply there.
+    ws.simulateOpen();
+    const join = client.joinOrCreateRoom({ roomName: 'room-a' });
+    await vi.advanceTimersByTimeAsync(0);
+    ws.simulateMessage({
+      type: 'joinRoomSuccess',
+      payload: { roomName: 'room-a', displayName: 'room-a', media: [], users: [], previousMatches: [], filters: [] },
+    });
+    await join;
+    ws.simulateClose();
+
+    const settled = client.applyFilters({ filters: [] }).then(
+      () => 'resolved',
+      (err: Error) => err.message,
+    );
+
+    // They end up in room B by the time the socket comes back. The server's
+    // membership gate would legitimately accept this, because the client IS a
+    // live member of B -- so room A's filters would be applied to room B and
+    // broadcast to everyone in it.
+    await vi.advanceTimersByTimeAsync(5000);
+    const ws2 = MockWebSocket.latest();
+    ws2.simulateOpen();
+    ws2.simulateMessage({
+      type: 'joinRoomSuccess',
+      payload: { roomName: 'room-b', displayName: 'room-b', media: [], users: [], previousMatches: [], filters: [] },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Rejects rather than resolving silently: handleApply closes the panel on
+    // send, so a silent drop would leave the user staring at an unchanged deck
+    // with no explanation. createStore turns the rejection into a toast.
+    expect(await settled).toMatch(/room-a/);
+    expect(MockWebSocket.latest().sent.some((f) => f.includes('applyFilters'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('rejoin flush keeps the rate dedup set', () => {
+  const joinPayload = {
+    roomName: 'room-a',
+    displayName: 'room-a',
+    media: [],
+    users: [],
+    previousMatches: [],
+    filters: [],
+  };
+
+  it('re-records ids for rates it replays after a rejoin', async () => {
+    vi.useFakeTimers();
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+    const ws = MockWebSocket.latest();
+
+    ws.simulateOpen();
+    const firstJoin = client.joinOrCreateRoom({ roomName: 'room-a' });
+    await vi.advanceTimersByTimeAsync(0);
+    ws.simulateMessage({ type: 'joinRoomSuccess', payload: joinPayload });
+    await firstJoin;
+
+    // Swipe while the socket is down, so the rate queues and records its id.
+    ws.simulateClose();
+    await client.rate({ mediaId: 'm1', rating: 'like' });
+
+    // Reconnect and auto-rejoin. joinOrCreateRoom clears sentRateIds, and the
+    // server built its deck BEFORE this rate landed, so the card comes back.
+    await vi.advanceTimersByTimeAsync(5000);
+    const ws2 = MockWebSocket.latest();
+    ws2.simulateOpen();
+    const rejoin = client.joinOrCreateRoom({ roomName: 'room-a' });
+    await vi.advanceTimersByTimeAsync(0);
+    ws2.simulateMessage({ type: 'joinRoomSuccess', payload: joinPayload });
+    await rejoin;
+    await vi.advanceTimersByTimeAsync(0);
+
+    const rateFrames = () => ws2.sent.filter((f) => f.includes('"type":"rate"'));
+    const afterFlush = rateFrames().length;
+    expect(afterFlush).toBeGreaterThan(0); // the queued rate really did flush
+
+    // Re-swiping the same card must be suppressed. Without re-recording the id
+    // during the flush it reaches the server, hits the already-rated branch,
+    // and counts as neither a vote nor progress -- so the progress bar
+    // silently disagrees with the card count.
+    await client.rate({ mediaId: 'm1', rating: 'like' });
+    expect(rateFrames().length).toBe(afterFlush);
+  });
+});
+
+describe('UserFacingError tagging', () => {
+  it('marks the cross-room applyFilters rejection as safe to display', async () => {
+    vi.useFakeTimers();
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+    const ws = MockWebSocket.latest();
+
+    ws.simulateOpen();
+    const join = client.joinOrCreateRoom({ roomName: 'room-a' });
+    await vi.advanceTimersByTimeAsync(0);
+    ws.simulateMessage({
+      type: 'joinRoomSuccess',
+      payload: { roomName: 'room-a', displayName: 'room-a', media: [], users: [], previousMatches: [], filters: [] },
+    });
+    await join;
+    ws.simulateClose();
+
+    // The store decides whether to show a rejection verbatim by reading this
+    // flag. Without it the user gets "The server isn't responding", which
+    // blames the server for something the server never saw.
+    const settled = client.applyFilters({ filters: [] }).then(
+      () => undefined,
+      (err: { userFacing?: unknown }) => err.userFacing,
+    );
+
+    await vi.advanceTimersByTimeAsync(5000);
+    const ws2 = MockWebSocket.latest();
+    ws2.simulateOpen();
+    ws2.simulateMessage({
+      type: 'joinRoomSuccess',
+      payload: { roomName: 'room-b', displayName: 'room-b', media: [], users: [], previousMatches: [], filters: [] },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(await settled).toBe(true);
+  });
+});

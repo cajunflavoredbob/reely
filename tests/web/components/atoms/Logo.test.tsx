@@ -2,6 +2,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { Logo } from '../../../../web/app/src/components/atoms/Logo';
+import {
+  GLYPH_PATH,
+  GRADIENT,
+  GRADIENT_STOPS,
+  MARK_TRANSFORM,
+  MARK_VIEWBOX,
+} from '../../../../web/app/src/components/atoms/markGeometry';
 
 // Smoke test for the jsdom + @testing-library/react harness (audit 13
 // #338 web-layer setup batch). Pins three things:
@@ -11,7 +18,7 @@ import { Logo } from '../../../../web/app/src/components/atoms/Logo';
 //   2. CSS modules import cleanly under vitest's default transform
 //      (vitest stubs CSS files to proxy objects -- `styles.root`
 //      becomes the string "root" -- no extra config required).
-//   3. React 18's `useId` works in the jsdom environment (it would
+//   3. React's `useId` works in the jsdom environment (it would
 //      throw or duplicate ids without a real React DOM render).
 //
 // Logo was chosen as the target because it exercises useId (the
@@ -63,6 +70,58 @@ describe('Logo (jsdom + RTL smoke test)', () => {
     expect(idA).toBeTruthy();
     expect(idB).toBeTruthy();
     expect(idA).not.toBe(idB);
+  });
+
+  // Everything above this line passes even if the artwork is replaced
+  // wholesale -- which is exactly what happened in 1.1.4, and why an
+  // off-centre mark and a sheared gradient shipped with a green suite. These
+  // pin the drawing itself against the generated geometry.
+  it('draws the mark from the generated geometry', () => {
+    const { container } = render(<Logo />);
+    const svg = container.querySelector('svg');
+    expect(svg?.getAttribute('viewBox')).toBe(MARK_VIEWBOX);
+    expect(container.querySelector(`g[transform="${MARK_TRANSFORM}"]`)).not.toBeNull();
+    expect(container.querySelector('path')?.getAttribute('d')).toBe(GLYPH_PATH);
+  });
+
+  it('points the top card at a gradient that actually exists', () => {
+    // A renamed id, a dropped <defs>, or a stray copy/paste leaves the rect
+    // referencing a paint server that is not there. SVG renders that as an
+    // unfilled shape rather than throwing, so only an explicit check catches
+    // it -- and the top card is the whole mark.
+    const { container } = render(<Logo />);
+    const rects = [...container.querySelectorAll('rect')];
+    const top = rects.at(-1);
+    const fill = top?.getAttribute('fill') ?? '';
+    const id = fill.match(/^url\(#(.+)\)$/)?.[1];
+    expect(id).toBeTruthy();
+    expect(container.querySelector(`linearGradient[id="${id}"]`)).not.toBeNull();
+  });
+
+  it('renders the gradient stops the brand assets declare', () => {
+    const { container } = render(<Logo />);
+    const stops = [...container.querySelectorAll('stop')].map((s) => ({
+      offset: s.getAttribute('offset'),
+      color: s.getAttribute('stop-color'),
+    }));
+    expect(stops).toEqual(GRADIENT_STOPS.map((s) => ({ offset: s.offset, color: s.color })));
+  });
+
+  it('leaves the gradient in objectBoundingBox units, as the assets declare', () => {
+    // 1.1.4 shipped this component with gradientUnits="userSpaceOnUse" and the
+    // same endpoint numbers as the master SVG, which is not equivalent: the
+    // bounding-box form shears the axis by the card's 300x420 aspect, so the
+    // in-app mark ran its gradient ~19 degrees off the favicon beside it.
+    const { container } = render(<Logo />);
+    const grad = container.querySelector('linearGradient');
+    expect(grad?.getAttribute('gradientUnits')).toBeNull();
+    // Compared against the generated values, not hardcoded literals: pinning
+    // '100%' here would just restate what Logo.tsx says and could not detect
+    // the master changing its gradient direction.
+    expect(grad?.getAttribute('x1')).toBe(GRADIENT.x1);
+    expect(grad?.getAttribute('y1')).toBe(GRADIENT.y1);
+    expect(grad?.getAttribute('x2')).toBe(GRADIENT.x2);
+    expect(grad?.getAttribute('y2')).toBe(GRADIENT.y2);
   });
 
   it('scales the wordmark with the size prop (90% of size)', () => {
