@@ -31,7 +31,7 @@ export default defineConfig({
         // No html: the server substitutes index.html's placeholders per
         // request, so a cached raw build would serve unresolved ones and
         // break the WebSocket URL.
-        globPatterns: ['**/*.{js,css,ico,png,svg,webmanifest}'],
+        globPatterns: ['**/*.{js,css,ico,png,svg,webmanifest,woff2}'],
         runtimeCaching: [
           {
             // Never cache API or WebSocket upgrades. Match on pathname so the
@@ -46,26 +46,6 @@ export default defineConfig({
             options: {
               cacheName: 'posters',
               expiration: { maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 * 7 },
-            },
-          },
-          {
-            // Font stylesheets: cached CSS offline, refreshed in the background.
-            urlPattern: ({ url }) => url.origin === 'https://fonts.googleapis.com',
-            handler: 'StaleWhileRevalidate',
-            options: {
-              cacheName: 'google-fonts-stylesheets',
-              expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 365 },
-            },
-          },
-          {
-            // Font binaries are content-hashed by Google, so a cached entry at
-            // a given URL never goes stale.
-            urlPattern: ({ url }) => url.origin === 'https://fonts.gstatic.com',
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'google-fonts-webfonts',
-              expiration: { maxEntries: 30, maxAgeSeconds: 60 * 60 * 24 * 365 },
-              cacheableResponse: { statuses: [0, 200] },
             },
           },
         ],

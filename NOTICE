@@ -1,0 +1,11 @@
+reely
+=====
+
+This product is derived from MovieMatch:
+Copyright 2021 Luke Channings
+
+Licensed under the Apache License, Version 2.0 -- see the LICENSE file.
+Third-party attribution above is retained per Apache-2.0 section 4.
+
+Bundled fonts (Geist, Geist Mono, Instrument Serif) are licensed under the
+SIL Open Font License 1.1 -- see web/app/static/fonts/LICENSE.txt.

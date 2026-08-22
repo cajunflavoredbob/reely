@@ -82,16 +82,16 @@ export const Application = (config: Config, signal?: AbortSignal): ApplicationIn
       // `upgrade-insecure-requests`, which breaks plain-http LAN serving.
       //
       // script-src 'self': no inline scripts in the production build.
-      // style-src needs 'unsafe-inline' for React style={{...}} and Google
-      // Fonts. connect-src 'self' covers the same-origin WebSocket.
+      // style-src needs 'unsafe-inline' for React style={{...}}.
+      // connect-src 'self' covers the same-origin WebSocket.
       app.use(helmet({
         contentSecurityPolicy: {
           useDefaults: false,
           directives: {
             defaultSrc: ["'self'"],
             scriptSrc: ["'self'"],
-            styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-            fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            fontSrc: ["'self'"],
             imgSrc: ["'self'", 'data:'],
             connectSrc: ["'self'"],
             workerSrc: ["'self'"],

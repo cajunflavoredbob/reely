@@ -15,6 +15,25 @@ the continuation's first stable release.
 
 ## [Unreleased]
 
+## [1.1.8] - 2026-08-21
+
+### Changed
+
+- Fonts (Geist, Geist Mono, Instrument Serif) are now bundled with the app
+  as subset woff2 files (latin + latin-ext, ~364 KB) instead of loaded from
+  Google Fonts. First load no longer makes any external request, which makes
+  the README's "no external services" claim true as written; previously only
+  repeat loads were offline-capable via the service worker cache. The CSP no
+  longer whitelists the Google Fonts origins. Font licenses ship alongside
+  the files (SIL OFL 1.1).
+
+### Fixed
+
+- LICENSE now contains the full Apache 2.0 text instead of only the header
+  boilerplate, so GitHub detects the license correctly ("Apache-2.0" instead
+  of "Other"). Upstream attribution moved to a new NOTICE file, per Apache-2.0
+  section 4. The stated terms are unchanged.
+
 ## [1.1.7] - 2026-08-21
 
 ### Changed
