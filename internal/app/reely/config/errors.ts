@@ -22,3 +22,4 @@ export class TlsConfigInvalid extends ReelyError {}
 export class TlsConfigCertFileInvalid extends ReelyError {}
 export class TlsConfigKeyFileInvalid extends ReelyError {}
 export class ExposePlexBaseUrlInvalid extends ReelyError {}
+export class AllowedOriginsInvalid extends ReelyError {}

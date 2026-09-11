@@ -42,6 +42,23 @@ describe('userHue', () => {
     expect(userHue('')).toBe(0);
   });
 
+  // Names with no letter in them filtered down to nothing and all landed on
+  // hue 0, so every such user was drawn in the same color.
+  it('still spreads names that contain no letter at all', () => {
+    expect(userHue('123')).not.toBe(0);
+    expect(userHue('🎬')).not.toBe(0);
+    expect(userHue('123')).not.toBe(userHue('🎬'));
+  });
+
+  // Same visible name typed precomposed on one device and decomposed on
+  // another must not show up in two different colors.
+  it('agrees between composed and decomposed spellings of the same name', () => {
+    const composed = 'jos\u00E9';
+    const decomposed = 'jose\u0301';
+    expect(composed).not.toBe(decomposed);
+    expect(userHue(composed)).toBe(userHue(decomposed));
+  });
+
   // A failure here means the hash changed and every existing user is about to
   // be recolored. Bump the values only as a deliberate UX decision.
   it('produces the locked-in hue values for representative names', () => {

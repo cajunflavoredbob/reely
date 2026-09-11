@@ -40,12 +40,25 @@ function applyRedactions(msg: string): string {
 //
 // Default 'info', not 'debug': this level applies until setLogLevel runs after
 // loadConfig, and debug there would spam startup for an INFO-level operator.
-const _logger = pino({
-  level: 'info',
-  ...(process.env.NODE_ENV !== 'production' && {
-    transport: { target: 'pino-pretty', options: { colorize: true } },
-  }),
-});
+const createLogger = (): pino.Logger => {
+  if (process.env.NODE_ENV === 'production') return pino({ level: 'info' });
+  try {
+    return pino({
+      level: 'info',
+      transport: { target: 'pino-pretty', options: { colorize: true } },
+    });
+  } catch {
+    // pino-pretty is a devDependency and the published image ships only the
+    // prod tree, so asking for the transport there throws synchronously while
+    // this module is still being imported: before main.ts's try/catch and
+    // before the redacting logger exists, which turns `NODE_ENV=development`
+    // on the image into an immediate crash with a raw stack and no diagnostic.
+    // Plain NDJSON is always available.
+    return pino({ level: 'info' });
+  }
+};
+
+const _logger = createLogger();
 
 // Public logger. Every message passes through applyRedactions() before pino.
 export const logger = {

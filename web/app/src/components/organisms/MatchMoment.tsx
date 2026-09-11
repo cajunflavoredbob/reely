@@ -43,13 +43,23 @@ export const MatchMoment = ({ match, isBig, onDismiss, replaced = false }: Match
   const [exiting, setExiting] = useState(false);
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
+  // Room rebuilds onDismiss as a fresh arrow on every render, and it re-renders
+  // on every userProgress broadcast. Both it and the exiting guard are held in
+  // refs so requestDismiss keeps a stable identity: as a dependency of the
+  // auto-dismiss effect below, a changing one tore down and re-armed the 3s
+  // timer faster than anyone swipes, and the toast never self-dismissed.
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+  const exitingRef = useRef(false);
+
   // Animate out, then onDismiss. The `exiting` guard stops the auto-dismiss
   // timer and a user click from both firing onDismiss.
   const requestDismiss = useCallback(() => {
-    if (exiting) return;
+    if (exitingRef.current) return;
+    exitingRef.current = true;
     setExiting(true);
-    exitTimerRef.current = setTimeout(onDismiss, TOAST_EXIT_MS);
-  }, [exiting, onDismiss]);
+    exitTimerRef.current = setTimeout(() => onDismissRef.current(), TOAST_EXIT_MS);
+  }, []);
 
   // The parent can unmount us mid-exit, so drop the pending timer.
   useEffect(() => () => {
@@ -75,6 +85,21 @@ export const MatchMoment = ({ match, isBig, onDismiss, replaced = false }: Match
     const timer = setTimeout(requestDismiss, 3000);
     return () => clearTimeout(timer);
   }, [isBig, replaced, requestDismiss]);
+
+  // The celebration declares aria-modal, which tells assistive tech everything
+  // behind it is hidden, so leaving focus out there parks a keyboard user on
+  // content they can no longer reach. Move focus onto the overlay's own button
+  // and hand it back to whatever had it when the overlay goes. The Tab cycle
+  // is still not trapped.
+  const keepSwipingRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!isBig) return;
+    const previous = document.activeElement;
+    keepSwipingRef.current?.focus();
+    return () => {
+      if (previous instanceof HTMLElement) previous.focus();
+    };
+  }, [isBig]);
 
   if (!isBig) {
     return (
@@ -111,16 +136,20 @@ export const MatchMoment = ({ match, isBig, onDismiss, replaced = false }: Match
       aria-modal="true"
       onClick={onDismiss}
     >
-      {/* Fixed-length list that never reorders, so the index is stable
+      {/* Clipping layer of its own: the pieces fall 700px, which would
+          otherwise count as scrollable overflow now that the overlay scrolls.
+          Fixed-length list that never reorders, so the index is stable
           identity. */}
-      {CONFETTI_PIECES.map((style, i) => (
-        <div
-          // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length 20, no mutation.
-          key={i}
-          className={styles.confettiPiece}
-          style={style}
-        />
-      ))}
+      <div className={styles.confettiLayer}>
+        {CONFETTI_PIECES.map((style, i) => (
+          <div
+            // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length 20, no mutation.
+            key={i}
+            className={styles.confettiPiece}
+            style={style}
+          />
+        ))}
+      </div>
 
       <h1 className={styles.headline}>
         It's a <span className={styles.headlineAccent}>match!</span>
@@ -155,7 +184,12 @@ export const MatchMoment = ({ match, isBig, onDismiss, replaced = false }: Match
         className={styles.actions}
         onClick={(e) => e.stopPropagation()}
       >
-        <button type="button" className={styles.keepSwipingBtn} onClick={onDismiss}>
+        <button
+          type="button"
+          className={styles.keepSwipingBtn}
+          onClick={onDismiss}
+          ref={keepSwipingRef}
+        >
           Keep swiping
         </button>
         <PlexLinks media={m} />

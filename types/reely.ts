@@ -141,8 +141,13 @@ export interface Filter {
 export interface CreateRoomRequest {
   // Canonical (lowercased, allowlist-stripped): Map key, filename, URL param.
   roomName: string;
-  // Case-preserving form for the UI. Older clients omit it; fall back to
-  // roomName.
+  // Case-preserving form for the UI. Server-derived, NOT client-supplied:
+  // sanitizeRoomReq overwrites whatever arrives here with
+  // sanitizeRoomNameDisplay(roomName). Optional only because the persisted
+  // room files and the internal create path both predate it; fall back to
+  // roomName. Consequence worth knowing: the SPA rewrites the URL to the
+  // canonical lowercased name after a join, so a room recreated from that
+  // link loses the casing its creator typed.
   displayName?: string;
   filters?: Filter[];
 }
@@ -151,7 +156,6 @@ export interface CreateRoomError {
   name:
     | "RoomExistsError"
     | "RoomLimitError"
-    | "UnauthorizedError"
     | "NotLoggedInError"
     | "NoMediaError"
     | "InvalidRoomNameError"

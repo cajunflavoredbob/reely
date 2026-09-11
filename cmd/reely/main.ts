@@ -2,9 +2,10 @@ import minimist from 'minimist';
 import { setLogLevel } from '../../internal/app/reely/logger';
 import { loadConfig } from '../../internal/app/reely/config/main';
 import { getVersion } from '../../internal/app/reely/version';
-import { Application, ProviderUnavailableError } from '../../internal/app/reely/app';
+import { Application, ProviderUnavailableError, describeError } from '../../internal/app/reely/app';
 import { logger } from '../../internal/app/reely/logger';
 import { flushPendingSaves } from '../../internal/app/reely/roomStore';
+import { triageConfigErrors } from './boot';
 import type { Config } from '../../types/reely';
 import type { ReelyError } from '../../internal/app/reely/util/assert';
 
@@ -50,7 +51,15 @@ process.on('uncaughtException', (err) => {
     process.exit(0);
   }
 
-  const CONFIG_PATH: string | undefined = flags.config ?? process.env.CONFIG_PATH;
+  // Trimmed, and empty means unset: loadConfig's `?? join(cwd, 'config.yaml')`
+  // treats '' as an explicit path, so `CONFIG_PATH=` in an .env or a compose
+  // `CONFIG_PATH: ""` would silently skip a mounted config.yaml and boot on
+  // defaults. Every other env var goes through the same rule.
+  const configPathRaw: unknown = flags.config ?? process.env.CONFIG_PATH;
+  const CONFIG_PATH: string | undefined =
+    typeof configPathRaw === 'string' && configPathRaw.trim() !== ''
+      ? configPathRaw.trim()
+      : undefined;
 
   // loadConfig throws on malformed YAML, permission errors, a scheme-less
   // PLEX_URL, or an empty Docker secret. Without this catch they reach the
@@ -65,16 +74,13 @@ process.on('uncaughtException', (err) => {
     process.exit(1);
   }
 
-  // ServersMustNotBeEmpty ALONE boots unconfigured (a notice replaces the SPA
-  // shell). Any other error is fatal even alongside it: a misconfigured config
-  // must never partially start, since the bad fields would ride into a later
-  // reconfiguration.
-  if (errors.length === 1 && errors[0].name === 'ServersMustNotBeEmpty') {
+  const verdict = triageConfigErrors(errors);
+  if (verdict === 'unconfigured') {
     logger.error(
       'reely is not configured -- no Plex server. Set the PLEX_URL and ' +
       'PLEX_TOKEN environment variables and restart the container.',
     );
-  } else if (errors.length) {
+  } else if (verdict === 'fatal') {
     logger.fatal(
       `Found configuration errors: ${errors.map((e) => `\n - ${e.name} - ${e.message}`).join('')}`,
     );
@@ -103,10 +109,17 @@ process.on('uncaughtException', (err) => {
     process.exit(exitCode ?? 0);
   } catch (err) {
     if (err instanceof ProviderUnavailableError) {
-      logger.fatal(String(err));
+      logger.fatal(describeError(err));
     } else {
-      logger.fatal(`Unexpected error: ${String(err)}`);
+      logger.fatal(`Unexpected error: ${describeError(err)}`);
     }
     process.exit(1);
   }
-})();
+})().catch((err) => {
+  // Boot itself is async, and an unwrapped rejection here (getVersion failing
+  // to read VERSION when the process was started from another directory, say)
+  // would otherwise fall to the log-only unhandledRejection handler above and
+  // exit 0 without ever listening.
+  logger.fatal(`Startup failed: ${describeError(err)}`);
+  process.exit(1);
+});

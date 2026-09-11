@@ -44,6 +44,51 @@ import { isValidFilter } from './util/filters';
 const MSG_RATE_WINDOW_MS = 10_000;
 const MSG_RATE_MAX = 100;
 
+// Frames are attacker-controlled and bounded only by the 64KB WS maxPayload,
+// and pino escapes control bytes, so one untruncated frame can write several
+// hundred KB of log. Same ceiling plex/api.ts puts on Plex error bodies.
+const LOG_SNIPPET_LEN = 200;
+const forLog = (text: string): string =>
+  text.length <= LOG_SNIPPET_LEN
+    ? text
+    : `${text.slice(0, LOG_SNIPPET_LEN)}... (${text.length} chars)`;
+
+// Same bound the shared filter validator puts on a filter key. A filter-values
+// key is interpolated into an outbound Plex URL path and into one log line per
+// library section, so an unbounded one is an amplifier.
+const MAX_FILTER_KEY_LEN = 64;
+
+// The UI can only build one row per catalog field and Plex exposes far fewer
+// fields than this. The cap stops a single 64KB frame from persisting thousands
+// of filter rows that then replay to every member and survive restarts.
+const MAX_FILTERS = 64;
+
+/**
+ * Drop userinfo, query and fragment from a URL before it leaves the server.
+ *
+ * PLEX_URL is accepted as any parseable http(s) URL, so an operator who pasted
+ * the `?X-Plex-Token=...` form would otherwise ship that token to every browser
+ * in the config frame. Returns the input untouched when there is nothing to
+ * strip, so the ordinary case stays byte-identical.
+ */
+const stripUrlCredentials = (url: string): string => {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.username && !parsed.password && !parsed.search && !parsed.hash) {
+      return url;
+    }
+    parsed.username = '';
+    parsed.password = '';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    // Unparseable URLs never reach here (config validation rejects them), but
+    // returning the input beats throwing inside the constructor's sendConfig.
+    return url;
+  }
+};
+
 // Handlers that read identity or membership, await slow I/O, then commit what
 // they read. An interleaved frame would change it underneath them.
 const SERIALIZED_MESSAGE_TYPES = new Set<ServerMessage['type']>([
@@ -102,6 +147,7 @@ export class Client {
   private msgWindowStart = Date.now();
   private msgCount = 0;
   private msgRateLogged = false;
+  private badFrameLogged = false;
 
   // Serialises SERIALIZED_MESSAGE_TYPES. Handlers are async and one TCP read
   // can carry several frames, so overlapping chains would commit state captured
@@ -145,7 +191,7 @@ export class Client {
       // which routes every "Open in Plex" link through app.plex.tv. `!== false`
       // so a config built without the field still exposes.
       if (config.exposePlexBaseUrl !== false) {
-        plexBaseUrl = provider.options.url;
+        plexBaseUrl = stripUrlCredentials(provider.options.url);
       }
       try {
         serverName = await provider.getName();
@@ -174,7 +220,11 @@ export class Client {
     if (this.ws.readyState !== WebSocket.OPEN) return;
 
     const now = Date.now();
-    if (now - this.msgWindowStart >= MSG_RATE_WINDOW_MS) {
+    // `now < msgWindowStart` means the wall clock stepped backward (NTP
+    // correction, a resumed VM snapshot). Without this the window never rolls
+    // for the length of the jump and every frame past the cap is dropped with
+    // no error frame, so a live client silently stops working.
+    if (now - this.msgWindowStart >= MSG_RATE_WINDOW_MS || now < this.msgWindowStart) {
       this.msgWindowStart = now;
       this.msgCount = 0;
       this.msgRateLogged = false;
@@ -191,13 +241,31 @@ export class Client {
       return;
     }
 
-    let message: ServerMessage;
+    let parsed: unknown;
     try {
-      message = JSON.parse(messageText);
+      parsed = JSON.parse(messageText);
     } catch (err) {
-      logger.error(`Failed to parse message: ${messageText} -- ${String(err)}`);
+      logger.error(`Failed to parse message: ${forLog(messageText)} -- ${String(err)}`);
       return;
     }
+    // JSON.parse happily yields null, a number or a string. Reading `.type` off
+    // null throws inside this unawaited handler, so it escapes as a floating
+    // rejection instead of being answered. Log once per connection: a flood of
+    // bad frames must not become a flood of log lines.
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      typeof (parsed as { type?: unknown }).type !== 'string'
+    ) {
+      if (!this.badFrameLogged) {
+        this.badFrameLogged = true;
+        logger.warn(
+          `Discarding a frame that is not a typed message object: ${forLog(messageText)}`,
+        );
+      }
+      return;
+    }
+    const message = parsed as ServerMessage;
 
     // Only handlers carrying identity or membership across an await need the
     // queue. Serialising everything is worse:
@@ -257,7 +325,7 @@ export class Client {
         case 'requestFilters': await this.handleRequestFilters(); break;
         case 'requestFilterValues': await this.handleRequestFilterValues(message.payload); break;
         case 'applyFilters': await this.handleApplyFilters(message.payload); break;
-        default: logger.info(`Unhandled message: ${messageText}`);
+        default: logger.info(`Unhandled message: ${forLog(messageText)}`);
       }
     } catch (err) {
       logger.error(`Error handling ${message.type}: ${String(err)}`);
@@ -421,7 +489,11 @@ export class Client {
     // replays it on every restart.
     const filters = (sanitized as { filters?: unknown }).filters;
     if (filters !== undefined) {
-      if (!Array.isArray(filters) || !filters.every(isValidFilter)) {
+      if (
+        !Array.isArray(filters) ||
+        filters.length > MAX_FILTERS ||
+        !filters.every(isValidFilter)
+      ) {
         logger.warn(`${this.getUsername() ?? 'client'} sent a room request with invalid filters`);
         // No error-name union member fits a malformed request, so the detail
         // has to ride in the message the UI renders.
@@ -788,8 +860,10 @@ export class Client {
     }
     const key = filterValueRequest.key;
     // api.ts interpolates the key straight into a Plex URL path: no separators
-    // or traversal sequences.
-    if (!/^[a-z0-9_-]+$/i.test(key)) {
+    // or traversal sequences, and no length the regex would happily accept. A
+    // 64KB key would ride out as one oversized request per movie library and
+    // come back as one log line per library.
+    if (key.length > MAX_FILTER_KEY_LEN || !/^[a-z0-9_-]+$/i.test(key)) {
       this.sendMessage({ type: 'requestFilterValuesError', payload: { key, message: 'Invalid filter key.' } });
       return;
     }
@@ -835,7 +909,10 @@ export class Client {
       return;
     }
     const filters = (payload as { filters: unknown[] }).filters;
-    if (!filters.every(isValidFilter)) {
+    // Count as well as contents: isValidFilter bounds each entry, but an
+    // unbounded array still persists to disk and fans back out to every member,
+    // who each dispatch one requestFilterValues per row on the next panel open.
+    if (filters.length > MAX_FILTERS || !filters.every(isValidFilter)) {
       logger.warn(`${this.getUsername()} sent invalid filter payload`);
       this.sendMessage({
         type: 'filterChangeError',
@@ -871,6 +948,11 @@ export class Client {
         void saveRoom(this.room);
       }
     } catch (err) {
+      // Without this the only trace of a Plex timeout or a rotated token is the
+      // generic copy on the client; the sibling filter handlers log the same way.
+      if (!(err instanceof NoMediaError)) {
+        logger.error(`applyFilters failed in room "${this.room.roomName}": ${String(err)}`);
+      }
       this.sendMessage({
         type: 'filterChangeError',
         payload: { message: err instanceof NoMediaError ? err.message : 'Failed to apply filters.' },

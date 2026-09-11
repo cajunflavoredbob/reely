@@ -63,9 +63,51 @@ describe('Card: default rendering (no href, title visible)', () => {
     expect(container.querySelector('img')).toBeNull();
   });
 
+  // A deleted or re-scanned Plex item, or a rate-limited poster request, used
+  // to leave the browser's broken-image glyph sitting over the card.
+  it('drops the poster img when the image fails to load', () => {
+    const { container } = render(<Card media={media()} />);
+    const img = container.querySelector('img');
+    expect(img).not.toBeNull();
+    // biome-ignore lint/style/noNonNullAssertion: asserted non-null above.
+    fireEvent.error(img!);
+    expect(container.querySelector('img')).toBeNull();
+    // The title overlay is the fallback, so the card still identifies itself.
+    expect(screen.getByText('Test Title (2024)')).toBeDefined();
+  });
+
+  // Failure is tracked per src, so the next media in the stack is not tarred
+  // with the previous one's broken poster.
+  it('trusts a new poster src after a previous one failed', () => {
+    const { container, rerender } = render(<Card media={media()} />);
+    // biome-ignore lint/style/noNonNullAssertion: the poster img is rendered above.
+    fireEvent.error(container.querySelector('img')!);
+    expect(container.querySelector('img')).toBeNull();
+
+    rerender(<Card media={media({ posterUrl: '/api/poster/0/456/thumb' })} />);
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(
+      '/api/poster/0/456/thumb',
+    );
+  });
+
   it('renders the title with year in parens for movie type', () => {
     render(<Card media={media({ title: 'Dune', year: 2021 })} />);
     expect(screen.getByText('Dune (2021)')).toBeDefined();
+  });
+
+  // A Plex item whose agent match hasn't run has no year; the template literal
+  // used to stringify it as "Dune (undefined)".
+  it('renders the bare title when the movie has no year', () => {
+    render(<Card media={media({ title: 'Dune', year: undefined })} />);
+    expect(screen.getByText('Dune')).toBeDefined();
+    expect(screen.queryByText('Dune (undefined)')).toBeNull();
+  });
+
+  it('renders the bare title in the more-info panel when the movie has no year', () => {
+    render(<Card media={media({ title: 'Dune', year: undefined })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'More info' }));
+    expect(screen.getByText('Dune')).toBeDefined();
+    expect(screen.queryByText('Dune (undefined)')).toBeNull();
   });
 
   it('renders the meta line with year + duration + rating', () => {

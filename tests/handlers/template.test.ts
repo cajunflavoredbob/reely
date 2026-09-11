@@ -20,8 +20,10 @@ vi.mock('../../internal/app/reely/config/main', () => ({
 }));
 
 const mockedGetTranslations = vi.fn();
+const mockedResolveLanguage = vi.fn();
 vi.mock('../../internal/app/reely/i18n', () => ({
   getTranslations: mockedGetTranslations,
+  resolveLanguage: mockedResolveLanguage,
 }));
 
 const mockedGetVersion = vi.fn();
@@ -59,7 +61,7 @@ const makeRes = () => {
 };
 
 const DEFAULT_TEMPLATE =
-  '<html><head><title>reely ${version}</title></head>' +
+  '<html lang="${lang}"><head><title>reely ${version}</title></head>' +
   '<body><script>const root="${rootPath}";</script>${greeting}</body></html>';
 
 // ─── Tests ──────────────────────────────────────────────────────────────
@@ -70,6 +72,7 @@ beforeEach(() => {
   mockedReadFile.mockResolvedValue(DEFAULT_TEMPLATE as never);
   mockedGetConfig.mockReturnValue({ rootPath: '' } as never);
   mockedGetTranslations.mockResolvedValue({ greeting: 'hello' });
+  mockedResolveLanguage.mockResolvedValue('en');
   mockedGetVersion.mockResolvedValue('1.2.3');
 });
 
@@ -94,6 +97,27 @@ describe('template handler: basic render', () => {
     const res = makeRes();
     await handler(makeReq(), res);
     expect(res.getBody()).toContain('const root="/reely";');
+  });
+
+  // A document that renders one language while declaring another mispronounces
+  // in screen readers and gets offered for translation by the browser.
+  it('substitutes ${lang} from the negotiated locale', async () => {
+    mockedResolveLanguage.mockResolvedValue('pl');
+    const { handler } = await import('../../internal/app/reely/handlers/template');
+    const res = makeRes();
+    await handler(makeReq(), res);
+    expect(res.getBody()).toContain('<html lang="pl">');
+  });
+
+  // `lang` is interpolated after the translation spread, so a locale file
+  // that happens to define a LANG-ish key cannot take over the attribute.
+  it('does not let a translation key shadow ${lang}', async () => {
+    mockedResolveLanguage.mockResolvedValue('de');
+    mockedGetTranslations.mockResolvedValue({ greeting: 'hallo', lang: 'zz' });
+    const { handler } = await import('../../internal/app/reely/handlers/template');
+    const res = makeRes();
+    await handler(makeReq(), res);
+    expect(res.getBody()).toContain('<html lang="de">');
   });
 
   it('substitutes translations into the template', async () => {

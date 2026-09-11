@@ -1,6 +1,7 @@
 import type {
   Filter,
   Filters,
+  FilterValue,
   Library,
   Media,
 } from '../../../../types/reely';
@@ -8,7 +9,8 @@ import { PlexApi } from '../../plex/api';
 import type { ReelyProvider } from './types';
 import type { FieldType } from '../../plex/types/library_items';
 import { fanOutLibraries, filterToQueryString } from '../../plex/util';
-import { cachePromise, memo, memo1TTL } from '../util/memo';
+import { logger } from '../logger';
+import { cachePromise, memo1TTL } from '../util/memo';
 
 export interface PlexProviderConfig {
   url: string;
@@ -68,13 +70,22 @@ export const createProvider = (
   const LIBRARIES_TTL_MS = 60 * 60 * 1000;
   const librariesCache = cachePromise<Library[]>(async () => {
     const plexLibraries = await api.getLibraries();
-    return plexLibraries
+    const libraries = plexLibraries
       .filter((library) => library.type === 'movie')
       .map((library) => ({
         title: library.title,
         key: library.key,
         type: 'movie',
       }) satisfies Library);
+    if (libraries.length === 0) {
+      // A Plex still bringing its library database up after a host reboot
+      // answers /library/sections 200 with nothing in it, and so does a
+      // libraryTitleFilter that matches nothing. Resolving with [] would be a
+      // success by cachePromise's definition and pin the empty answer for the
+      // full hour, wedging every room create long after Plex recovered.
+      throw new Error('Plex returned no movie libraries');
+    }
+    return libraries;
   }, LIBRARIES_TTL_MS);
 
   const getLibraries = (): Promise<Library[]> => librariesCache.get();
@@ -96,8 +107,110 @@ export const createProvider = (
       return { ...f, value: expanded };
     });
 
-  // Filter metadata is static for the process lifetime.
-  const getFiltersCached = memo(async (): Promise<Filters> => {
+  // Synthetic keys are answered locally and never build an expansion.
+  const SYNTHETIC_FILTER_KEYS = new Set(['library', 'rating']);
+
+  const getFilterValues = async (key: string): Promise<FilterValue[]> => {
+    // Served locally so the library selector doesn't hit Plex.
+    if (key === 'library') {
+      const libs = await getLibraries();
+      return libs.map((lib) => ({ value: lib.key, title: lib.title }));
+    }
+
+    // Plex ratings are already 0-10; getMediaCached floors into these buckets.
+    if (key === 'rating') {
+      // Top bucket is "9.0-10": the post-filter clamps a perfect 10.0 here.
+      return Array.from({ length: 10 }, (_, i) => ({
+        value: String(i),
+        title: i === 9 ? '9.0-10' : `${i}.0-${i}.9`,
+      }));
+    }
+
+    const filterValues = await api.getFilterValues(key);
+
+    if (filterValues.size) {
+      // Multi-library servers return the same value ("Action") under a
+      // different key per library. Collapse them by title, keeping the first
+      // key as canonical for the UI to send back, and record the rest in
+      // `valueExpansion` so getMediaCached can query all of them.
+      const dedupByTitle = new Map<string, string>(); // title -> canonicalKey
+      const expansionByCanonical = new Map<string, string[]>();
+
+      for (const filterValue of filterValues.Directory) {
+        const existingCanonical = dedupByTitle.get(filterValue.title);
+        if (existingCanonical === undefined) {
+          dedupByTitle.set(filterValue.title, filterValue.key);
+          expansionByCanonical.set(filterValue.key, [filterValue.key]);
+        } else {
+          // biome-ignore lint/style/noNonNullAssertion: existingCanonical implies the entry exists.
+          expansionByCanonical.get(existingCanonical)!.push(filterValue.key);
+        }
+      }
+
+      if (filterValues.partial) {
+        // A section that failed contributed no keys, so replacing outright
+        // would drop that library's equivalents and silently shrink every
+        // later filtered deck until some future fetch succeeds in full. Keep
+        // what the last complete answer knew for canonicals this one missed.
+        const previous = valueExpansion.get(key);
+        if (previous) {
+          for (const [canonical, keys] of previous) {
+            const current = expansionByCanonical.get(canonical);
+            if (!current) {
+              expansionByCanonical.set(canonical, keys);
+              continue;
+            }
+            for (const equivalent of keys) {
+              if (!current.includes(equivalent)) current.push(equivalent);
+            }
+          }
+        }
+        logger.warn(
+          `Filter values for "${key}" came back from only some library sections; the expansion may be incomplete`,
+        );
+      }
+
+      // Overwrite so a Plex-side library add or remove eventually shows up.
+      valueExpansion.set(key, expansionByCanonical);
+
+      return [...dedupByTitle.entries()].map(([title, value]) => ({
+        value,
+        title,
+      }));
+    }
+
+    return [];
+  };
+
+  // A restored room replays its persisted filters before anyone has opened the
+  // filter panel, so on a fresh process `valueExpansion` is empty and a picked
+  // key matches only the library it came from: the deck silently loses every
+  // other library's titles. Resolve the expansion for the keys actually in play
+  // first. Single-library servers have nothing to expand, and a failure here
+  // just leaves the values unexpanded, which is what happened before.
+  const warmValueExpansion = async (filters?: Filter[]): Promise<void> => {
+    if (!filters?.length) return;
+    const missing = [...new Set(filters.map((f) => f.key))].filter(
+      (key) => !SYNTHETIC_FILTER_KEYS.has(key) && !valueExpansion.has(key),
+    );
+    if (missing.length === 0) return;
+    if ((await getLibraries()).length < 2) return;
+    await Promise.all(missing.map(async (key) => {
+      try {
+        await getFilterValues(key);
+      } catch (err) {
+        logger.warn(`Could not resolve filter values for "${key}": ${String(err)}`);
+      }
+    }));
+  };
+
+  // Plex's own filter vocabulary is static for the process lifetime, but the
+  // synthetic `library` entry below is derived from the live library list, so
+  // this carries the same TTL as librariesCache: add or remove a Plex library
+  // and the Library selector appears or disappears without a restart. The TTL
+  // also keeps a degraded snapshot (an outage during the first fetch) from
+  // outliving the outage that produced it. One entry, keyed on a constant.
+  const getFiltersCached = memo1TTL(async (_key: string): Promise<Filters> => {
     const meta = await api.getAllFilters();
 
     const filters = new Map<string, {
@@ -174,23 +287,28 @@ export const createProvider = (
       filters: [...filters.values()],
       filterTypes,
     };
-  });
+  }, LIBRARIES_TTL_MS, 1);
 
   // Unshuffled lists cached per filter set; each room shuffles independently in
   // Room.fetchMedia after the hit. Caveat: a movie deleted in Plex inside the
   // window stays in the list, so its poster 404s until the entry expires.
   const getMediaCached = memo1TTL(
     async (_key: string, filters?: Filter[]): Promise<Media[]> => {
-      // _key was derived from the ORIGINAL filters, so caching keys on the
-      // user's pick rather than the expanded per-library form.
-      const expanded = expandFilterValues(filters);
-      const filterParams: URLSearchParams = filtersToPlexQueryString(expanded);
+      // `filters` arrives already expanded, and _key is derived from that same
+      // expanded set: a deck fetched before the per-library keys were known
+      // must not be served to a caller that now knows them.
+      const filterParams: URLSearchParams = filtersToPlexQueryString(filters);
       let filteredLibraries: Library[] = await getLibraries();
 
       const libraryFilter = filters?.find((f) => f.key === 'library');
       if (libraryFilter?.value?.length) {
+        // Honour the operator the way the rating post-filter does: the field is
+        // advertised as a tag, so the UI offers "is not", and inclusion-only
+        // narrowing would turn an exclusion into exactly the selection the user
+        // meant to remove.
+        const exclude = libraryFilter.operator === '!=';
         filteredLibraries = filteredLibraries.filter((lib) =>
-          libraryFilter.value.includes(lib.key)
+          libraryFilter.value.includes(lib.key) !== exclude
         );
       }
 
@@ -203,6 +321,13 @@ export const createProvider = (
         'getMediaCached',
         (library) => api.getLibraryItems(library.key, { filters: filterParams }),
       );
+      if (filteredLibraries.length > 0 && fulfilled.length === 0) {
+        // Not the same thing as a filter set that matches nothing. Resolving
+        // with [] here would cache the outage for the full TTL and tell the
+        // user that their filters excluded everything, long after Plex is
+        // healthy again. Throwing evicts the entry and surfaces the outage.
+        throw new Error('Every library section failed when fetching media');
+      }
       for (const libraryItems of fulfilled) {
         if (libraryItems.size) {
           for (const libraryItem of libraryItems.Metadata) {
@@ -264,6 +389,9 @@ export const createProvider = (
       return media;
     },
     5 * 60 * 1000,
+    // Each entry is a whole-library Media[], the heaviest object in the
+    // process, so this cache holds far fewer than the shared default.
+    16,
   );
 
   return {
@@ -276,60 +404,17 @@ export const createProvider = (
     getName: () => api.getServerName(),
     getServerId: () => api.getServerId(),
     getLibraries,
-    getFilters: getFiltersCached,
-    getFilterValues: async (key: string) => {
-      // Served locally so the library selector doesn't hit Plex.
-      if (key === 'library') {
-        const libs = await getLibraries();
-        return libs.map((lib) => ({ value: lib.key, title: lib.title }));
-      }
-
-      // Plex ratings are already 0-10; getMediaCached floors into these buckets.
-      if (key === 'rating') {
-        // Top bucket is "9.0-10": the post-filter clamps a perfect 10.0 here.
-        return Array.from({ length: 10 }, (_, i) => ({
-          value: String(i),
-          title: i === 9 ? '9.0-10' : `${i}.0-${i}.9`,
-        }));
-      }
-
-      const filterValues = await api.getFilterValues(key);
-
-      if (filterValues.size) {
-        // Multi-library servers return the same value ("Action") under a
-        // different key per library. Collapse them by title, keeping the first
-        // key as canonical for the UI to send back, and record the rest in
-        // `valueExpansion` so getMediaCached can query all of them.
-        const dedupByTitle = new Map<string, string>(); // title -> canonicalKey
-        const expansionByCanonical = new Map<string, string[]>();
-
-        for (const filterValue of filterValues.Directory) {
-          const existingCanonical = dedupByTitle.get(filterValue.title);
-          if (existingCanonical === undefined) {
-            dedupByTitle.set(filterValue.title, filterValue.key);
-            expansionByCanonical.set(filterValue.key, [filterValue.key]);
-          } else {
-            // biome-ignore lint/style/noNonNullAssertion: existingCanonical implies the entry exists.
-            expansionByCanonical.get(existingCanonical)!.push(filterValue.key);
-          }
-        }
-
-        // Overwrite so a Plex-side library add or remove eventually shows up.
-        valueExpansion.set(key, expansionByCanonical);
-
-        return [...dedupByTitle.entries()].map(([title, value]) => ({
-          value,
-          title,
-        }));
-      }
-
-      return [];
-    },
+    getFilters: () => getFiltersCached(''),
+    getFilterValues,
     getArtwork: (
       key: string,
       signal?: AbortSignal,
     ): Promise<[ReadableStream<Uint8Array>, Headers]> =>
       api.getRawThumb(key, signal),
-    getMedia: ({ filters }) => getMediaCached(normalizeFilters(filters), filters),
+    getMedia: async ({ filters }) => {
+      await warmValueExpansion(filters);
+      const expanded = expandFilterValues(filters);
+      return getMediaCached(normalizeFilters(expanded), expanded);
+    },
   };
 };

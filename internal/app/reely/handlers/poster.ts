@@ -9,6 +9,19 @@ import type { ReelyProvider } from '../providers/types';
 // Exported so the tests type their request stub the same way.
 export type PosterParams = { providerIndex: string; metadataId: string; thumbId: string };
 
+// Express matches `:param` as [^/]+, so a segment is bounded only by Node's
+// 16KB header limit. Plex ratingKeys are short integers, so cap the length
+// before the shape check and clip whatever still reaches the log: otherwise an
+// unauthenticated request writes its own ~15KB payload into the operator's log
+// on every rejection.
+const MAX_ID_LENGTH = 32;
+
+const isPlexId = (value: string): boolean =>
+  value.length <= MAX_ID_LENGTH && /^\d+$/.test(value);
+
+const clipForLog = (value: string): string =>
+  value.length > MAX_ID_LENGTH ? `${value.slice(0, MAX_ID_LENGTH)}...` : value;
+
 export const handler = async (
   req: Request<PosterParams>,
   res: Response,
@@ -18,18 +31,19 @@ export const handler = async (
 
   // Validate before coercion: `+providerIndex` accepts Infinity, NaN, and
   // whitespace strings, which only hit the guard below by accident.
-  const provider = /^\d+$/.test(providerIndex) ? providers[+providerIndex] : undefined;
+  const provider = isPlexId(providerIndex) ? providers[+providerIndex] : undefined;
   if (!provider) {
-    logger.warn(`poster handler: invalid providerIndex ${providerIndex}`);
+    logger.warn(`poster handler: invalid providerIndex ${clipForLog(providerIndex)}`);
     res.status(404).send('Provider not found');
     return;
   }
 
   // Plex ids are integers. Anything else could traverse to a different Plex
   // endpoint once the URL pathname is normalized (/api/poster/0/..%2Fsystem/...).
-  if (!/^\d+$/.test(metadataId) || !/^\d+$/.test(thumbId)) {
+  if (!isPlexId(metadataId) || !isPlexId(thumbId)) {
     logger.warn(
-      `poster handler: rejected non-numeric ids metadataId=${metadataId} thumbId=${thumbId}`,
+      `poster handler: rejected non-numeric ids metadataId=${clipForLog(metadataId)} ` +
+        `thumbId=${clipForLog(thumbId)}`,
     );
     res.status(400).send('Invalid media id');
     return;
@@ -63,6 +77,15 @@ export const handler = async (
     });
     nodeStream.pipe(res);
   } catch (err) {
+    // A client that navigates away before the upstream headers arrive aborts
+    // the fetch here, which is ordinary browsing, not a server error. The
+    // mid-stream half of the same disconnect already lands on the WARN path
+    // above; without this the pre-headers half files an ERROR and tries to
+    // answer a socket that is already gone.
+    if (abort.signal.aborted) {
+      logger.warn(`poster fetch aborted by client: ${(err as Error).message}`);
+      return;
+    }
     logger.error(`poster handler error: ${(err as Error).message}`);
     if (!res.headersSent) res.status(502).send('Failed to fetch artwork');
   }

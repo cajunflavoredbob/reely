@@ -98,6 +98,13 @@ describe('MatchesList: populated state', () => {
     expect(container.querySelector('h1')?.textContent).toContain('3');
   });
 
+  it('uses the singular noun for exactly one match', () => {
+    withState({ matches: [makeMatch('a', 100)] });
+    const { container } = render(<MatchesList onClose={vi.fn()} />);
+    expect(container.querySelector('h1')?.textContent).toContain('1 match');
+    expect(container.querySelector('h1')?.textContent).not.toContain('matches');
+  });
+
   // Render order drives the staggered row-in animation below.
   it('sorts matches by descending matchedAt (newest first)', () => {
     withState({
@@ -129,6 +136,20 @@ describe('MatchesList: populated state', () => {
     expect((rows[0] as HTMLElement).style.animationDelay).toBe('0ms');
     expect((rows[1] as HTMLElement).style.animationDelay).toBe('40ms');
     expect((rows[2] as HTMLElement).style.animationDelay).toBe('80ms');
+  });
+
+  // The cascade stops growing at row 10 (400ms). Unclamped, a 150-match
+  // shortlist left its last row blank for 6 seconds after open.
+  it('caps the animationDelay at 400ms for rows past the tenth', () => {
+    withState({
+      matches: Array.from({ length: 14 }, (_, i) => makeMatch(`m${i}`, 1_000 - i)),
+    });
+    const { container } = render(<MatchesList onClose={vi.fn()} />);
+    const rows = container.querySelectorAll('[class*="matchRow"]');
+    expect(rows.length).toBe(14);
+    expect((rows[9] as HTMLElement).style.animationDelay).toBe('360ms');
+    expect((rows[10] as HTMLElement).style.animationDelay).toBe('400ms');
+    expect((rows[13] as HTMLElement).style.animationDelay).toBe('400ms');
   });
 
   it('renders each row\'s title + meta (year + duration + rating)', () => {

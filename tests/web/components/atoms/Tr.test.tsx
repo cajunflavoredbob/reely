@@ -15,9 +15,11 @@ const { useStoreMock } = vi.hoisted(() => ({
 
 vi.mock('../../../../web/app/src/store', () => ({
   useStore: useStoreMock,
-  // Unused by Tr, but the mocked module surface has to match the real one.
+  // Unused by Tr, but the mocked module surface has to match the real one:
+  // an export missing here is `undefined` at any call site that reaches it.
   useDispatch: vi.fn(),
   useSelector: vi.fn(),
+  useStoreComputed: vi.fn(),
   createStore: vi.fn(),
 }));
 

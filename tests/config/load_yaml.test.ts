@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadFromYaml } from '../../internal/app/reely/config/load_yaml';
-import { ConfigFileNotFoundError } from '../../internal/app/reely/config/errors';
+import {
+  ConfigFileNotFoundError,
+  ConfigMustBeRecord,
+} from '../../internal/app/reely/config/errors';
 
 // Real tempdirs rather than a mocked fs: the JSON_SCHEMA gating under test is
 // a property of the real js-yaml parser call.
@@ -49,6 +52,38 @@ servers:
     const path = await writeYaml('config.yaml', '{}\n');
     expect(await loadFromYaml(path)).toEqual({});
   });
+
+  // js-yaml returns undefined for a 0-byte document and null for a
+  // comments-only one. A mounted placeholder config.yaml carries no settings;
+  // it is not malformed, and must not stop the boot of an env-configured
+  // container.
+  it('treats a 0-byte file as an empty config', async () => {
+    const path = await writeYaml('config.yaml', '');
+    expect(await loadFromYaml(path)).toEqual({});
+  });
+
+  it('treats a comments-only file as an empty config', async () => {
+    const path = await writeYaml('config.yaml', '# port: 9000\n# nothing set\n');
+    expect(await loadFromYaml(path)).toEqual({});
+  });
+
+  it('treats a whitespace-only file as an empty config', async () => {
+    const path = await writeYaml('config.yaml', '   \n\t\n\n');
+    expect(await loadFromYaml(path)).toEqual({});
+  });
+
+  // js-yaml 4 returned undefined here; 5 raises YAMLException on an empty
+  // document. Either way a lone document marker carries no settings, so this
+  // pins the behaviour against the next parser bump.
+  it('treats a document-marker-only file as an empty config', async () => {
+    const path = await writeYaml('config.yaml', '---\n');
+    expect(await loadFromYaml(path)).toEqual({});
+  });
+
+  it('treats a literal null document as an empty config', async () => {
+    const path = await writeYaml('config.yaml', 'null\n');
+    expect(await loadFromYaml(path)).toEqual({});
+  });
 });
 
 describe('loadFromYaml: error mapping', () => {
@@ -79,8 +114,25 @@ describe('loadFromYaml: error mapping', () => {
     await expect(loadFromYaml(path)).rejects.toThrow(/must be an object/);
   });
 
-  // isRecord accepts arrays, so an array-rooted YAML survives this stage and
-  // is caught by the validator instead.
+  it('reports a scalar root as a typed ConfigMustBeRecord, not a bare ReelyError', async () => {
+    const path = await writeYaml('config.yaml', 'just-a-string\n');
+    await expect(loadFromYaml(path)).rejects.toBeInstanceOf(ConfigMustBeRecord);
+  });
+
+  // isRecord accepts arrays, so a root-level list would otherwise spread into
+  // keys "0", "1", ... and validate as nothing at all.
+  it('rejects an array root and names the file', async () => {
+    const path = await writeYaml(
+      'config.yaml',
+      `- url: http://plex
+  token: tok
+`,
+    );
+    await expect(loadFromYaml(path)).rejects.toBeInstanceOf(ConfigMustBeRecord);
+    await expect(loadFromYaml(path)).rejects.toThrow(
+      new RegExp(`${path}.*not a list`),
+    );
+  });
 });
 
 describe('loadFromYaml: JSON_SCHEMA gating', () => {

@@ -11,6 +11,10 @@ interface MatchesListProps {
   onClose: () => void;
 }
 
+// Row index past which the entry stagger stops growing: 10 * 40ms = 400ms,
+// about as long as a cascade can run before it reads as a stall.
+const STAGGER_CAP = 10;
+
 export const MatchesList = ({ onClose }: MatchesListProps) => {
   const [{ room, config }] = useStore(["room", "config"]);
   // Escape closes, matching every sibling overlay.
@@ -42,7 +46,9 @@ export const MatchesList = ({ onClose }: MatchesListProps) => {
           <span className={styles.titleLabel}>Your shortlist</span>
           <h1 className={styles.title}>
             {sorted.length}{" "}
-            <span className={styles.titleAccent}>matches</span>
+            <span className={styles.titleAccent}>
+              {sorted.length === 1 ? "match" : "matches"}
+            </span>
           </h1>
         </div>
         <div className={styles.spacer} />
@@ -69,7 +75,11 @@ export const MatchesList = ({ onClose }: MatchesListProps) => {
               <div
                 key={m.id}
                 className={styles.matchRow}
-                style={{ animationDelay: `${i * 40}ms` }}
+                // Clamped: the row animation holds its `backwards` start frame
+                // for the whole delay, so an unbounded i * 40ms left the tail
+                // of a long shortlist blank for seconds (6s at 150 matches),
+                // indistinguishable from a list that failed to load.
+                style={{ animationDelay: `${Math.min(i, STAGGER_CAP) * 40}ms` }}
               >
                 <div className={styles.poster}>
                   {m.posterUrl ? (

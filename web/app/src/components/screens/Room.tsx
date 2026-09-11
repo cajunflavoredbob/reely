@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Filter, Match } from "../../../../../types/reely";
 import { ErrorMessage } from "../atoms/ErrorMessage";
 import { Logo } from "../atoms/Logo";
@@ -69,7 +69,7 @@ interface FilterButtonProps {
 
 const FilterButton = ({
   onClick, filterCount, size, buttonClassName, badgeClassName,
-  ariaExpanded, label = "Filter", strokeWidth = 2,
+  ariaExpanded, label = "Filters", strokeWidth = 2,
 }: FilterButtonProps) => (
   <button
     type="button"
@@ -87,6 +87,125 @@ const FilterButton = ({
     )}
   </button>
 );
+
+// ─── Match lists ───────────────────────────────────────────────────
+// Both are memoized against the userProgress broadcast storm. Every swipe by
+// anyone in the room fans out a frame to every member, and the reducer spreads
+// a new room object for each one, so RoomScreen re-renders several times a
+// second. These lists render every match, not a window, and the match set is
+// the one part of the tree that grows without bound with the room's age, so at
+// a few hundred matches the reconcile lands right on top of the swipe
+// animation. `matches` keeps its identity across a userProgress update, so
+// memoizing here means the subtree only reconciles when a match actually
+// arrives. CardStack is memoized for the same reason.
+
+interface MatchListProps {
+  matches: Match[];
+  plexServerId?: string;
+  plexBaseUrl?: string;
+  localPlexReachable: boolean;
+}
+
+const DesktopMatchList = memo(({
+  matches, plexServerId, plexBaseUrl, localPlexReachable,
+}: MatchListProps) => (
+  <div className={styles.desktopMatchList}>
+    {matches.length === 0 ? (
+      <div className={styles.desktopMatchEmpty}>
+        Movies two or more<br />of you love will land here.
+      </div>
+    ) : (
+      matches.map((match) => {
+        const webUrl = buildPlexLinks(
+          match.media,
+          plexServerId,
+          plexBaseUrl,
+          localPlexReachable,
+        )?.webUrl;
+        const body = (
+          <>
+            <div className={styles.desktopMatchPoster}>
+              {match.media.posterUrl && (
+                <img
+                  className={styles.desktopMatchPosterImg}
+                  src={posterSrc(match.media.posterUrl)}
+                  alt={match.media.title}
+                  loading="lazy"
+                />
+              )}
+            </div>
+            <div className={styles.desktopMatchInfo}>
+              <div className={styles.desktopMatchTitle}>{match.media.title}</div>
+              <div className={styles.desktopMatchMeta}>
+                {match.media.year}
+                {match.media.rating ? ` · ★ ${match.media.rating}` : ""}
+              </div>
+            </div>
+          </>
+        );
+        // Without a link there is nothing to open, so the card renders inert
+        // rather than as a button that swallows the click.
+        return webUrl ? (
+          <button
+            type="button"
+            key={match.media.id}
+            className={styles.desktopMatchCard}
+            onClick={() => window.open(webUrl, "_blank", "noopener")}
+          >
+            {body}
+          </button>
+        ) : (
+          <div key={match.media.id} className={styles.desktopMatchCardStatic}>
+            {body}
+          </div>
+        );
+      })
+    )}
+  </div>
+));
+
+interface MobileMatchStripProps {
+  matches: Match[];
+  onOpen: () => void;
+}
+
+const MobileMatchStrip = memo(({ matches, onOpen }: MobileMatchStripProps) => (
+  /* A <button> here would override the scroll-snap and horizontal-overflow
+     defaults the module.css relies on. role, tabIndex, and onKeyDown supply
+     the same semantics to assistive tech. */
+  // biome-ignore lint/a11y/useSemanticElements: scroll-snap defaults require div; semantics covered by role + tabIndex + onKeyDown.
+  <div
+    className={styles.mobileMatchStrip}
+    onClick={onOpen}
+    role="button"
+    tabIndex={0}
+    onKeyDown={(e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onOpen();
+      }
+    }}
+    aria-label={`${matches.length} matches, tap to view`}
+  >
+    {matches.map((match) => (
+      <div key={match.media.id} className={styles.mobileMatchThumb}>
+        {match.media.posterUrl ? (
+          <img
+            className={styles.mobileMatchPoster}
+            src={posterSrc(match.media.posterUrl)}
+            alt={match.media.title}
+            loading="lazy"
+          />
+        ) : (
+          <div className={styles.mobileMatchPosterFallback}>
+            {match.media.title}
+          </div>
+        )}
+        <p className={styles.mobileMatchTitle}>{match.media.title}</p>
+      </div>
+    ))}
+  </div>
+));
 
 function useIsDesktop() {
   const [isDesktop, setIsDesktop] = useState(
@@ -146,8 +265,16 @@ export const RoomScreen = () => {
     setPendingStack([]);
   };
   const [copied, setCopied] = useState(false);
+  // Handle for the "Copied!" reset, so a second copy inside the window
+  // restarts it instead of inheriting the first timer's deadline, and leaving
+  // the room mid-window doesn't fire setCopied against an unmounted screen.
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(copiedTimerRef.current), []);
   const [usersPopupOpen, setUsersPopupOpen] = useState(false);
   const isDesktop = useIsDesktop();
+  // Stable identity so the memoized strip isn't re-rendered by every
+  // userProgress broadcast just to receive a fresh closure.
+  const openMatches = useCallback(() => setMatchesOpen(true), []);
 
   // New matches are detected by media identity, not by matches.length: a
   // length check misses a re-match and fires celebrations for the stale
@@ -197,17 +324,45 @@ export const RoomScreen = () => {
   }, [pendingStack.length]);
 
   // Gated on filterPanelOpen: an ungated handler fires on the same Esc
-  // keystroke as UsersPopup's and MatchMoment's.
-  useEscape(() => setFilterPanelOpen(false), filterPanelOpen);
+  // keystroke as UsersPopup's and MatchMoment's. Also stood down whenever one
+  // of those is on screen, because useEscape binds every handler to window
+  // with no arbitration: a single Esc over a match celebration would otherwise
+  // dismiss the celebration AND throw away the user's in-progress filter draft.
+  // Whichever overlay is up consumes the first press; the second closes the
+  // panel.
+  useEscape(
+    () => setFilterPanelOpen(false),
+    filterPanelOpen && pendingStack.length === 0 && !usersPopupOpen && !matchesOpen,
+  );
 
   // Prefetch the filter-field catalog so the filterChangeApplied toast can
   // resolve field titles before the user has opened the panel.
+  //
+  // An empty catalog counts as absent: requestFiltersError latches
+  // availableFilters to an empty set so the panel stops spinning, and the
+  // second effect below is the only thing that ever asks again. Without it one
+  // Plex hiccup (or a socket blip while the request is in flight) leaves the
+  // panel on "Loading filters..." or "No filters yet" for the rest of the
+  // page's life, because RoomScreen survives both a reconnect and the
+  // desktop/mobile breakpoint flip.
+  const filterCatalogEmpty = (createRoom?.availableFilters?.filters.length ?? 0) === 0;
   // biome-ignore lint/correctness/useExhaustiveDependencies: dispatch is the store dispatch, stable across renders.
   useEffect(() => {
-    if (!createRoom?.availableFilters) {
+    if (filterCatalogEmpty) {
       dispatch({ type: "requestFilters" });
     }
-  }, [createRoom?.availableFilters]);
+  }, [filterCatalogEmpty]);
+
+  // Retry on the panel's open transition, the moment the user would notice the
+  // catalog is missing. Deliberately not retried on the socket's `connected`
+  // event: that fires before loginSuccess, and the server gates filter reads on
+  // login, so the retry would answer itself with an error toast.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: must fire only on the open transition, not whenever the catalog state changes.
+  useEffect(() => {
+    if (filterPanelOpen && filterCatalogEmpty) {
+      dispatch({ type: "requestFilters" });
+    }
+  }, [filterPanelOpen]);
 
   // Must precede the early return below, or hook order shifts when `room`
   // flips between defined and undefined.
@@ -247,7 +402,8 @@ export const RoomScreen = () => {
 
     if (didCopy) {
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
     } else {
       // Last resort: surface the link so the user can copy it by hand.
       window.prompt("Copy this room link:", shareUrl);
@@ -353,50 +509,12 @@ export const RoomScreen = () => {
               <h2 className={styles.desktopSidebarTitle}>Matches</h2>
               <span className={styles.desktopSidebarCount}>{sortedMatches.length}</span>
             </div>
-            <div className={styles.desktopMatchList}>
-              {sortedMatches.length === 0 ? (
-                <div className={styles.desktopMatchEmpty}>
-                  Movies two or more<br />of you love will land here.
-                </div>
-              ) : (
-                sortedMatches.map((match) => {
-                  const webUrl = buildPlexLinks(
-                    match.media,
-                    config?.plexServerId,
-                    config?.plexBaseUrl,
-                    localPlexReachable === true,
-                  )?.webUrl;
-                  return (
-                  <button
-                    type="button"
-                    key={match.media.id}
-                    className={styles.desktopMatchCard}
-                    onClick={() =>
-                      webUrl && window.open(webUrl, "_blank", "noopener")
-                    }
-                  >
-                    <div className={styles.desktopMatchPoster}>
-                      {match.media.posterUrl && (
-                        <img
-                          className={styles.desktopMatchPosterImg}
-                          src={posterSrc(match.media.posterUrl)}
-                          alt={match.media.title}
-                          loading="lazy"
-                        />
-                      )}
-                    </div>
-                    <div className={styles.desktopMatchInfo}>
-                      <div className={styles.desktopMatchTitle}>{match.media.title}</div>
-                      <div className={styles.desktopMatchMeta}>
-                        {match.media.year}
-                        {match.media.rating ? ` · ★ ${match.media.rating}` : ""}
-                      </div>
-                    </div>
-                  </button>
-                  );
-                })
-              )}
-            </div>
+            <DesktopMatchList
+              matches={sortedMatches}
+              plexServerId={config?.plexServerId}
+              plexBaseUrl={config?.plexBaseUrl}
+              localPlexReachable={localPlexReachable === true}
+            />
           </aside>
 
           {/* Center: swipe stage */}
@@ -474,42 +592,7 @@ export const RoomScreen = () => {
         </div>
 
         {sortedMatches.length > 0 ? (
-          /* A <button> here would override the scroll-snap and
-             horizontal-overflow defaults the module.css relies on. role,
-             tabIndex, and onKeyDown supply the same semantics to
-             assistive tech. */
-          // biome-ignore lint/a11y/useSemanticElements: scroll-snap defaults require div; semantics covered by role + tabIndex + onKeyDown.
-          <div
-            className={styles.mobileMatchStrip}
-            onClick={() => setMatchesOpen(true)}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                setMatchesOpen(true);
-              }
-            }}
-            aria-label={`${sortedMatches.length} matches, tap to view`}
-          >
-            {sortedMatches.map((match) => (
-              <div key={match.media.id} className={styles.mobileMatchThumb}>
-                {match.media.posterUrl ? (
-                  <img
-                    className={styles.mobileMatchPoster}
-                    src={posterSrc(match.media.posterUrl)}
-                    alt={match.media.title}
-                    loading="lazy"
-                  />
-                ) : (
-                  <div className={styles.mobileMatchPosterFallback}>
-                    {match.media.title}
-                  </div>
-                )}
-                <p className={styles.mobileMatchTitle}>{match.media.title}</p>
-              </div>
-            ))}
-          </div>
+          <MobileMatchStrip matches={sortedMatches} onOpen={openMatches} />
         ) : (
           // Reserves the strip's vertical slot so the bottom bar doesn't shift
           // when the first match arrives.

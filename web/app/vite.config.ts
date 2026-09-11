@@ -32,21 +32,29 @@ export default defineConfig({
         // request, so a cached raw build would serve unresolved ones and
         // break the WebSocket URL.
         globPatterns: ['**/*.{js,css,ico,png,svg,webmanifest,woff2}'],
+        // generateSW otherwise defaults navigateFallback to 'index.html' and
+        // emits createHandlerBoundToURL('index.html'), which throws
+        // non-precached-url at module scope because globPatterns above keeps
+        // html out of the precache. That throw aborted the rest of sw.js, so
+        // neither runtimeCaching rule below ever registered.
+        navigateFallback: null,
         runtimeCaching: [
           {
-            // Never cache API or WebSocket upgrades. Match on pathname so the
-            // test works against full URLs.
-            urlPattern: ({ url }) => url.pathname.startsWith('/api/'),
-            handler: 'NetworkOnly',
-          },
-          {
-            // Posters: fresh art when online, cached copy when not.
+            // Posters: fresh art when online, cached copy when not. Must stay
+            // ahead of the /api/ rule: poster URLs are /api/poster/..., and
+            // Workbox takes the first route registered that matches.
             urlPattern: ({ url }) => url.pathname.includes('/poster/'),
             handler: 'NetworkFirst',
             options: {
               cacheName: 'posters',
               expiration: { maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 * 7 },
             },
+          },
+          {
+            // Never cache the rest of the API, or WebSocket upgrades. Match on
+            // pathname so the test works against full URLs.
+            urlPattern: ({ url }) => url.pathname.startsWith('/api/'),
+            handler: 'NetworkOnly',
           },
         ],
       },
@@ -66,8 +74,5 @@ export default defineConfig({
   build: {
     outDir: '../../dist/web',
     emptyOutDir: true,
-  },
-  define: {
-    'import.meta.env.VERSION': JSON.stringify(process.env.VERSION ?? 'dev'),
   },
 })

@@ -52,13 +52,13 @@ Following [Golang's project layout](https://github.com/golang-standards/project-
 │   └── plex/              # Plex API client
 ├── types/                 # Shared TypeScript types (server + frontend)
 │   └── reely.ts           # WebSocket protocol types, shared interfaces
-├── web/app/               # Frontend (React 18, Vite, Zustand)
+├── web/app/               # Frontend (React 19, Vite, Zustand)
 │   └── src/
 │       ├── api/           # WebSocket client wrapper
 │       ├── components/    # React components (atoms → molecules → organisms → screens)
 │       ├── store/         # Zustand store, reducer, types
 │       └── types.ts       # Frontend-only types
-├── CHANGELOG.md           # This project's changelog (0.y.z series)
+├── CHANGELOG.md           # This project's changelog (starts at 1.0.0)
 ├── RELEASE_NOTES.markdown # Upstream release history (preserved, do not edit)
 ├── VERSION                # Current version string
 └── docker-compose.yml     # Reference deployment with Docker secrets
@@ -82,13 +82,15 @@ Translation files live in `configs/localization/` and follow [BCP47](https://too
 
 All keys are present in all six locales (en, es, fr, pl, de, nl). Native speaker review of the German and Dutch translations is welcome.
 
+Address the user informally in every locale that distinguishes register -- German `du`, French `tu`, Spanish `tú`. reely is a party game, not a bank, and a bundle that mixes `du` and `Sie` between two adjacent strings reads as two different products.
+
 ## CI
 
 GitHub Actions runs on every push (`ci.yml`): typecheck + build + the full test suite, Biome lint (errors block, warnings surface), `pnpm audit` at warn level, a multi-arch Docker build, and a Trivy image scan at warn level. Tag pushes additionally run `release.yaml`, where a CRITICAL fixable CVE in the Trivy scan hard-blocks the publish. See `.github/workflows/`.
 
 ## Release process
 
-A version bump touches **four files** -- `VERSION`, `package.json`, `CHANGELOG.md`, and the `docker-compose.yml` image pin. The release workflow verifies all of them against the tag and fails the publish on any mismatch.
+A version bump touches **four files** -- `VERSION`, `package.json`, `CHANGELOG.md`, and the `docker-compose.yml` image pin. The release workflow verifies three of them against the tag -- `VERSION`, `package.json`, and the compose pin -- and fails the publish on any mismatch. The changelog is not gated by CI, so step 4 below is on you.
 
 1. Update `VERSION` to the release version (e.g. `1.0.0`).
 2. Update `version` in `package.json` to match.

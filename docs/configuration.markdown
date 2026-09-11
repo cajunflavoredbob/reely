@@ -7,7 +7,10 @@ configuration (env vars or `config.yaml`) and restart.
 
 ## Via YAML
 
-reely can be configured with a simple YAML document, which allows connecting to multiple Plex servers.
+reely can be configured with a simple YAML document. `servers` is a list for
+forward compatibility, but reely connects to exactly one Plex server and uses
+the first entry; if you list more, it logs a warning at startup saying so and
+ignores the rest.
 
 Here's a simple example:
 

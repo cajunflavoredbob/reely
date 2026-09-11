@@ -349,6 +349,63 @@ describe('reconnect backoff', () => {
     vi.advanceTimersByTime(2);
     expect(MockWebSocket.instances.length).toBe(beforeCount + 1);
   });
+
+  // The two tests above only ever escalate, so neither says anything about the
+  // STABLE_CONNECTION_MS reset. These pin it from both sides: a connection that
+  // proves stable clears the counter, and one that dies early must not.
+  it('resets the backoff once a connection has stayed up past the stability window', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+
+    // Escalate first, so a reset is actually observable.
+    for (let i = 0; i < 3; i++) {
+      MockWebSocket.latest().simulateClose();
+      vi.advanceTimersByTime(31_000);
+    }
+    expect(client.reconnectionAttempts).toBe(3);
+
+    // 10s is STABLE_CONNECTION_MS in the source.
+    MockWebSocket.latest().simulateOpen();
+    vi.advanceTimersByTime(10_001);
+    expect(client.reconnectionAttempts).toBe(0);
+
+    // So the next drop retries at the 500ms base, not the 30s cap.
+    const before = MockWebSocket.instances.length;
+    MockWebSocket.latest().simulateClose();
+    vi.advanceTimersByTime(501);
+    expect(MockWebSocket.instances.length).toBe(before + 1);
+  });
+
+  it('keeps escalating when a connection dies before it proves stable', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+
+    // Accept-then-close crash loop: each socket opens and drops well inside the
+    // stability window, so handleClose clears the reset timer before it fires.
+    // Moving the reset into handleOpen makes every retry 500ms forever, which
+    // is the condition the timer exists to prevent.
+    MockWebSocket.latest().simulateOpen();
+    vi.advanceTimersByTime(1_000);
+    MockWebSocket.latest().simulateClose();
+    expect(client.reconnectionAttempts).toBe(1);
+
+    vi.advanceTimersByTime(501);
+    MockWebSocket.latest().simulateOpen();
+    vi.advanceTimersByTime(1_000);
+    MockWebSocket.latest().simulateClose();
+    expect(client.reconnectionAttempts).toBe(2);
+
+    // Second delay doubled to 1s: nothing at 999ms, a new socket just past it.
+    const before = MockWebSocket.instances.length;
+    vi.advanceTimersByTime(999);
+    expect(MockWebSocket.instances.length).toBe(before);
+    vi.advanceTimersByTime(2);
+    expect(MockWebSocket.instances.length).toBe(before + 1);
+  });
 });
 
 describe('flushAfterRejoinHandler teardown', () => {
@@ -474,6 +531,29 @@ describe('rate() storm defenses', () => {
     expect(rates[0].payload.mediaId).toBe('m1');
   });
 
+  // Room affinity is a name, and the server recycles names: an idle room is
+  // destroyed after its 6h TTL and the next join under that name builds a new
+  // one. A queued vote older than the age bound therefore proves nothing about
+  // where it would land, so it is discarded rather than replayed.
+  it('drops a queued rate that outlived the staleness bound', async () => {
+    vi.useFakeTimers();
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+    const ws1 = MockWebSocket.latest();
+    ws1.simulateOpen();
+    ws1.simulateMessage({ type: 'joinRoomSuccess', payload: { roomName: 'room-a' } });
+    ws1.simulateClose();
+    await client.rate({ mediaId: 'm1', rating: 'like' });
+
+    // A phone that lost signal overnight, reconnecting hours later.
+    await vi.advanceTimersByTimeAsync(2 * 60 * 60 * 1_000);
+    const ws2 = MockWebSocket.latest();
+    ws2.simulateOpen();
+    ws2.simulateMessage({ type: 'joinRoomSuccess', payload: { roomName: 'room-a' } });
+
+    expect(ratesSent(ws2)).toHaveLength(0);
+  });
+
   it('leaveRoomSuccess clears the offline queue', async () => {
     vi.useFakeTimers();
     const ReelyClient = await loadClient();
@@ -584,6 +664,42 @@ describe('applyFilters wait is bounded and room-pinned', () => {
     expect(await settled).toMatch(/room-a/);
     expect(MockWebSocket.latest().sent.some((f) => f.includes('applyFilters'))).toBe(false);
   });
+
+  // Room affinity alone is not enough: currentRoomName survives a reconnect,
+  // so a parked apply for the SAME room waves straight through onto a socket
+  // that has neither logged in nor rejoined. The wait resumes on "connected",
+  // which fires before either, and the server drops the frame at its
+  // membership gate without replying.
+  it('does not send an apply on a socket that has not rejoined, even for the same room', async () => {
+    vi.useFakeTimers();
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+    const ws = MockWebSocket.latest();
+
+    ws.simulateOpen();
+    const join = client.joinOrCreateRoom({ roomName: 'room-a' });
+    await vi.advanceTimersByTimeAsync(0);
+    ws.simulateMessage({
+      type: 'joinRoomSuccess',
+      payload: { roomName: 'room-a', displayName: 'room-a', media: [], users: [], previousMatches: [], filters: [] },
+    });
+    await join;
+    ws.simulateClose();
+
+    const settled = client.applyFilters({ filters: [] }).then(
+      () => 'resolved',
+      (err: Error & { userFacing?: unknown }) => `${err.userFacing}: ${err.message}`,
+    );
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    const ws2 = MockWebSocket.latest();
+    ws2.simulateOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Tagged user-facing, because re-tapping Apply genuinely works.
+    expect(await settled).toMatch(/^true: The connection dropped/);
+    expect(ws2.sent.some((f) => f.includes('applyFilters'))).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -634,6 +750,153 @@ describe('rejoin flush keeps the rate dedup set', () => {
     // progress: the progress bar then disagrees with the card count.
     await client.rate({ mediaId: 'm1', rating: 'like' });
     expect(rateFrames().length).toBe(afterFlush);
+  });
+});
+
+// sentRateIds records at SEND time and the protocol has no rate ack, so any
+// frame the server drops leaves an id behind that silently eats every later
+// swipe of that card. The server's own per-user `media` is the only truth
+// available, and it arrives on exactly these three frames.
+describe('sentRateIds reconciles against server truth', () => {
+  const ratesSent = (ws: MockWebSocket) =>
+    ws.sent.map((s) => JSON.parse(s)).filter((m) => m.type === 'rate');
+
+  it('forgets an id the server still lists as unrated after a filter change', async () => {
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+    const ws = MockWebSocket.latest();
+    ws.simulateOpen();
+
+    await client.rate({ mediaId: 'm1', rating: 'like' });
+    expect(ratesSent(ws)).toHaveLength(1);
+
+    // The server never recorded that rate (it landed before the join finished,
+    // or past the WS rate limit), so m1 is still in this user's deck and the
+    // filter change puts the card back on screen.
+    ws.simulateMessage({
+      type: 'filterChangeApplied',
+      payload: { appliedBy: 'someone', filters: [], media: [{ id: 'm1' }] },
+    });
+
+    await client.rate({ mediaId: 'm1', rating: 'like' });
+    expect(ratesSent(ws)).toHaveLength(2);
+  });
+
+  it('keeps an id the server has recorded, so a repeat swipe still sends nothing', async () => {
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+    const ws = MockWebSocket.latest();
+    ws.simulateOpen();
+
+    await client.rate({ mediaId: 'm1', rating: 'like' });
+    // m1 is absent from the new deck, which is the server saying it took the
+    // vote. Reconciling must not widen into a blanket reset of the dedup set.
+    ws.simulateMessage({
+      type: 'filterChangeApplied',
+      payload: { appliedBy: 'someone', filters: [], media: [{ id: 'm2' }] },
+    });
+
+    await client.rate({ mediaId: 'm1', rating: 'like' });
+    expect(ratesSent(ws)).toHaveLength(1);
+  });
+
+  it('tolerates a join payload with no media array', async () => {
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+    const ws = MockWebSocket.latest();
+    ws.simulateOpen();
+    expect(() =>
+      ws.simulateMessage({ type: 'joinRoomSuccess', payload: {} }),
+    ).not.toThrow();
+    await client.rate({ mediaId: 'm1', rating: 'like' });
+    expect(ratesSent(ws)).toHaveLength(1);
+  });
+
+  // Ordering guard. The flush re-records the ids it replays, and the join
+  // payload lists those same cards because the server built its deck before
+  // the rates landed. Reconcile must therefore run BEFORE the flush, or the
+  // replayed vote is immediately followed by a duplicate.
+  it('re-records a flushed id even when the join payload still lists that card', async () => {
+    vi.useFakeTimers();
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+    const ws = MockWebSocket.latest();
+
+    ws.simulateOpen();
+    ws.simulateMessage({ type: 'joinRoomSuccess', payload: { roomName: 'room-a', media: [] } });
+    ws.simulateClose();
+    await client.rate({ mediaId: 'm1', rating: 'like' });
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    const ws2 = MockWebSocket.latest();
+    ws2.simulateOpen();
+    ws2.simulateMessage({
+      type: 'joinRoomSuccess',
+      payload: { roomName: 'room-a', media: [{ id: 'm1' }] },
+    });
+
+    expect(ratesSent(ws2)).toHaveLength(1);
+    await client.rate({ mediaId: 'm1', rating: 'like' });
+    expect(ratesSent(ws2)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// A join blocks on the server's first provider fetch, which budgets 30s per
+// HTTP call with a retry, so the reply can outlast the deadline every other
+// request uses. Giving up at 15s toasts a failure the user then watches
+// succeed, because the joinRoomSuccess still arrives and lands them in the room.
+describe('room-entry requests get a longer reply deadline', () => {
+  it('keeps waiting for a join reply past the ordinary request timeout', async () => {
+    vi.useFakeTimers();
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+    const ws = MockWebSocket.latest();
+    ws.simulateOpen();
+
+    const settled = client.joinOrCreateRoom({ roomName: 'room-a' }).then(
+      (msg) => msg.type,
+      (err: Error) => err.message,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Well past REQUEST_TIMEOUT_MS (15s), inside the room deadline.
+    await vi.advanceTimersByTimeAsync(40_000);
+    ws.simulateMessage({ type: 'joinRoomSuccess', payload: { roomName: 'room-a', media: [] } });
+
+    expect(await settled).toBe('joinRoomSuccess');
+  });
+
+  it('still gives up on a join that never gets a reply', async () => {
+    vi.useFakeTimers();
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+    MockWebSocket.latest().simulateOpen();
+
+    const settled = client.joinOrCreateRoom({ roomName: 'room-a' }).then(
+      () => 'resolved',
+      (err: Error) => err.message,
+    );
+    // 75s is ROOM_REQUEST_TIMEOUT_MS in the source.
+    await vi.advanceTimersByTimeAsync(75_001);
+
+    expect(await settled).toMatch(/Timed out/);
+  });
+
+  it('leaves the ordinary request deadline at 15s', async () => {
+    vi.useFakeTimers();
+    const ReelyClient = await loadClient();
+    const client = new ReelyClient();
+    MockWebSocket.latest().simulateOpen();
+
+    const settled = client.login({ userName: 'someone' }).then(
+      () => 'resolved',
+      (err: Error) => err.message,
+    );
+    await vi.advanceTimersByTimeAsync(15_001);
+
+    expect(await settled).toMatch(/Timed out/);
   });
 });
 

@@ -32,6 +32,11 @@ const isRetryableStatus = (status: number): boolean => status >= 500 && status <
 // the env loader also requires a scheme.
 const ALLOWED_PLEX_SCHEMES = new Set(['http:', 'https:']);
 
+// Section and filter keys are interpolated into token-bearing Plex URL paths,
+// where `/` or `..` would redirect the request to another endpoint. One rule,
+// applied everywhere a key enters a path.
+const SAFE_PLEX_KEY = /^[a-z0-9_-]+$/i;
+
 export class PlexApi {
   plexUrl: URL;
   options: PlexApiOptions;
@@ -117,6 +122,15 @@ export class PlexApi {
         await new Promise((r) => setTimeout(r, PLEX_RETRY_BACKOFF_MS * 2 ** (attempt - 1)));
         logger.debug(`Plex fetch retry ${attempt}: ${url.pathname}`);
       }
+      if (req) {
+        // Nothing reads a retried attempt's error page, and leaving the body
+        // unconsumed holds the connection. Cleared as well as cancelled: if
+        // this attempt throws at the transport layer, keeping the previous
+        // attempt's Response would report its stale status below and discard
+        // the network error that actually decided the outcome.
+        void req.body?.cancel().catch(() => {});
+        req = undefined;
+      }
       try {
         req = await fetch(url.href, {
           headers,
@@ -143,13 +157,21 @@ export class PlexApi {
       throw new Error(`Plex API error ${req.status}: ${body}`);
     }
 
+    let data: unknown;
     try {
-      const data: PlexMediaContainer<T> = await req.json();
-      return data.MediaContainer;
+      data = await req.json();
     } catch (err) {
       // `cause` keeps the underlying JSON error visible, not just the wrapper.
       throw new Error('Failed to parse Plex API response', { cause: err });
     }
+    // An interposed proxy or a Plex error envelope can answer 200 with JSON
+    // that has no MediaContainer. Returning it as T hands callers `undefined`
+    // typed as a container, which surfaces as a TypeError deep in a fan-out and
+    // gets logged as "a library section that failed" instead of the real cause.
+    if (typeof data !== 'object' || data === null || !('MediaContainer' in data)) {
+      throw new Error(`Plex API response has no MediaContainer: ${url.pathname}`);
+    }
+    return (data as PlexMediaContainer<T>).MediaContainer;
   }
 
   async isAvailable(): Promise<boolean> {
@@ -182,13 +204,30 @@ export class PlexApi {
       return [];
     }
 
-    let filteredLibraries = dirs;
+    // Checked once here, at the boundary where section keys enter the process,
+    // so getFilterValues and getLibraryItems both inherit the guard instead of
+    // each deciding for itself whether a Plex-supplied key is trustworthy.
+    let filteredLibraries = dirs.filter(({ key, title }) => {
+      if (SAFE_PLEX_KEY.test(key)) return true;
+      logger.warn(`Ignoring Plex library "${title}": unusable section key ${JSON.stringify(key)}`);
+      return false;
+    });
 
-    if (this.options.libraryTitleFilter?.length) {
-      filteredLibraries = filteredLibraries.filter(({ title }) =>
-        // biome-ignore lint/style/noNonNullAssertion: narrowed by enclosing .length check.
-        this.options.libraryTitleFilter!.includes(title),
-      );
+    const titleFilter = this.options.libraryTitleFilter;
+    if (titleFilter?.length) {
+      filteredLibraries = filteredLibraries.filter(({ title }) => titleFilter.includes(title));
+      if (filteredLibraries.length === 0) {
+        // The match is exact and case-sensitive, so a typo or a trailing space
+        // leaves reely with no libraries while the server still reports
+        // healthy. The only downstream symptom is room creation blaming
+        // filters the user never set, so name both sides here and point the
+        // operator at the config value instead.
+        logger.warn(
+          `libraryTitleFilter matched no Plex library. Configured: ${
+            JSON.stringify(titleFilter)
+          }; available: ${JSON.stringify(dirs.map(({ title }) => title))}`,
+        );
+      }
     }
 
     return filteredLibraries;
@@ -236,7 +275,18 @@ export class PlexApi {
       return results;
     };
 
-    const metaOnly = merge(await fetchMeta(true));
+    // Every section failing is an outage, not an empty filter vocabulary.
+    // Resolving with an empty Meta would let the provider's cache pin a filter
+    // panel holding nothing but the synthetic entries, and the client would be
+    // told the request succeeded.
+    const requireAnswer = (fulfilled: LibraryItems[]): LibraryItems[] => {
+      if (libraries.length > 0 && fulfilled.length === 0) {
+        throw new Error('Every library section failed when fetching filter metadata');
+      }
+      return fulfilled;
+    };
+
+    const metaOnly = merge(requireAnswer(await fetchMeta(true)));
     if (libraries.length === 0 || metaOnly.Type.length || metaOnly.FieldType.length) {
       return metaOnly;
     }
@@ -245,13 +295,19 @@ export class PlexApi {
     logger.warn(
       'getAllFilters: zero-size container returned no Meta; retrying with full fetch',
     );
-    return merge(await fetchMeta(false));
+    return merge(requireAnswer(await fetchMeta(false)));
   }
 
-  async getFilterValues(key: string): Promise<FilterValues & { Directory: FilterValue[] }> {
+  // `partial` is reely's own field, not Plex's: the caller builds a per-library
+  // key expansion from this and has to know it is looking at an incomplete
+  // picture, since a section that timed out contributes no keys at all.
+  async getFilterValues(
+    key: string,
+  ): Promise<FilterValues & { Directory: FilterValue[]; partial: boolean }> {
     // `key` reaches a Plex URL path: `/` or `..` would redirect this
     // token-bearing request to another endpoint. Never trust the caller here.
-    if (!/^[a-z0-9_-]+$/i.test(key)) {
+    // Section keys are checked at the fetchLibraries boundary.
+    if (!SAFE_PLEX_KEY.test(key)) {
       throw new Error(`Invalid filter key: ${JSON.stringify(key)}`);
     }
     // Movie libraries only. A library the filter doesn't apply to (Audiobooks
@@ -282,7 +338,12 @@ export class PlexApi {
         directory.push(...next.Directory);
       }
     }
-    return { ...first, Directory: directory, size: directory.length };
+    return {
+      ...first,
+      Directory: directory,
+      size: directory.length,
+      partial: fulfilled.length < libraries.length,
+    };
   }
 
   async getLibraryItems(
@@ -291,7 +352,7 @@ export class PlexApi {
   ): Promise<LibraryItems> {
     // Same guard as getFilterValues: `key` reaches a Plex URL path, so `..` and
     // `/` must not pass even though no user input feeds keys today.
-    if (!/^[a-z0-9_-]+$/i.test(key)) {
+    if (!SAFE_PLEX_KEY.test(key)) {
       throw new Error(`Invalid library key: ${JSON.stringify(key)}`);
     }
     // Unpaged, Plex returns the whole library in one response: megabytes on a
@@ -299,10 +360,15 @@ export class PlexApi {
     // into one LibraryItems; the consumer wants the full Metadata array plus
     // the fields the first page carries.
     const PAGE_SIZE = 1000;
+    // A server that honours Container-Size but ignores Container-Start answers
+    // every request with page one, and the short-page exit below never fires:
+    // the loop would run forever, adding PAGE_SIZE items each pass. No real
+    // library reaches this cap.
+    const MAX_PAGES = 100;
     let allMetadata: LibraryItems['Metadata'] = [];
     let firstPage: LibraryItems | undefined;
     let start = 0;
-    while (true) {
+    for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex++) {
       const pageParams = new URLSearchParams(filters);
       pageParams.set('X-Plex-Container-Start', String(start));
       pageParams.set('X-Plex-Container-Size', String(PAGE_SIZE));
@@ -315,6 +381,11 @@ export class PlexApi {
       allMetadata = allMetadata.concat(items);
       if (items.length < PAGE_SIZE) break;
       start += PAGE_SIZE;
+      if (pageIndex === MAX_PAGES - 1) {
+        logger.warn(
+          `getLibraryItems: stopped paging library ${key} at ${MAX_PAGES} pages; the server may be ignoring X-Plex-Container-Start`,
+        );
+      }
     }
     // biome-ignore lint/style/noNonNullAssertion: the loop always runs once and assigns firstPage.
     return { ...firstPage!, Metadata: allMetadata, size: allMetadata.length };

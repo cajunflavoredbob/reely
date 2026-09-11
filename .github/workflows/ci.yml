@@ -1,12 +1,18 @@
 name: CI
 
 # Push only. A `pull_request:` trigger double-runs every PR push (push and
-# pull_request fire on different refs, so concurrency can't dedupe them),
-# and this repo is private, so there are no fork PRs to catch.
+# pull_request fire on different refs, so concurrency can't dedupe them).
 on:
   push:
     branches: ["**"]
   workflow_dispatch:
+
+# Every job here only reads the tree and builds it. Without this block the
+# jobs inherit the repository default, which is read-write on repos that
+# were never switched to the restricted default, handing write scope to
+# every third-party action in the run.
+permissions:
+  contents: read
 
 # A new push cancels in-flight CI on the same ref; otherwise back-to-back
 # pushes leave stale runs burning Actions minutes.
@@ -25,16 +31,17 @@ jobs:
       matrix:
         task: [typecheck, build, test]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Nothing here writes to the repo; a persisted GITHUB_TOKEN would
-          # be reachable by every later step.
+          # Keeps the token out of .git/config, where every later step could
+          # read it. Narrowing what the token can do is the workflow-level
+          # `permissions:` block above; this setting alone does not do that.
           persist-credentials: false
       # pnpm version comes from `packageManager` in package.json. Keep it in
       # sync with the Dockerfile's pnpm pin or CI and the production image
       # run different pnpm releases.
-      - uses: pnpm/action-setup@v6.0.9
-      - uses: actions/setup-node@v7
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # Major-only float, so upstream Node 26.x breakage surfaces here
           # before it reaches the image, which pins an exact patch.
@@ -49,22 +56,32 @@ jobs:
     name: Docker build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Nothing here writes to the repo; a persisted GITHUB_TOKEN would
-          # be reachable by every later step.
+          # Keeps the token out of .git/config, where every later step could
+          # read it. Narrowing what the token can do is the workflow-level
+          # `permissions:` block above; this setting alone does not do that.
           persist-credentials: false
       # Both arches build here, matching release.yaml, or an arm64
       # regression only shows up at release. arm64 runs emulated and slower.
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      # The runtime stage's `apt-get upgrade` is keyed on a pinned parent and
+      # a fixed command, so without a changing build arg the gha cache serves
+      # the same upgrade layer indefinitely and the image ships stale Debian
+      # packages. Daily granularity keeps the rest of the cache useful.
+      - name: Stamp apt refresh date
+        id: apt
+        run: echo "stamp=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
       - name: Build image (no push)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: ./Dockerfile
           push: false
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            APT_REFRESH=${{ steps.apt.outputs.stamp }}
           # Layer reuse across runs; the multi-stage build is the long pole
           # on this workflow.
           cache-from: type=gha
@@ -77,13 +94,14 @@ jobs:
     name: pnpm audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Nothing here writes to the repo; a persisted GITHUB_TOKEN would
-          # be reachable by every later step.
+          # Keeps the token out of .git/config, where every later step could
+          # read it. Narrowing what the token can do is the workflow-level
+          # `permissions:` block above; this setting alone does not do that.
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.9
-      - uses: actions/setup-node@v7
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "26"
           cache: "pnpm"
@@ -99,13 +117,14 @@ jobs:
     name: biome lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Nothing here writes to the repo; a persisted GITHUB_TOKEN would
-          # be reachable by every later step.
+          # Keeps the token out of .git/config, where every later step could
+          # read it. Narrowing what the token can do is the workflow-level
+          # `permissions:` block above; this setting alone does not do that.
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.9
-      - uses: actions/setup-node@v7
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "26"
           cache: "pnpm"
@@ -116,25 +135,34 @@ jobs:
   # Scans the built image for CVEs in base-image OS packages and in the
   # modules as actually installed; pnpm audit only sees the lockfile.
   # Warn-level here (continue-on-error) so a fresh CVE doesn't block merges;
-  # release.yaml runs the same scan as a hard gate, so a fixable CRITICAL
-  # can sit in dev but can't reach a published tag. Its own job, so it gets
+  # release.yaml re-runs it as a hard gate at CRITICAL only, so a fixable
+  # CRITICAL can sit in dev but can't reach a published tag, while a fixable
+  # HIGH surfaces here and nowhere else. Its own job, so it gets
   # its own check name and the `docker` job stays a pure compile gate.
   trivy:
     name: Trivy image scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Nothing here writes to the repo; a persisted GITHUB_TOKEN would
-          # be reachable by every later step.
+          # Keeps the token out of .git/config, where every later step could
+          # read it. Narrowing what the token can do is the workflow-level
+          # `permissions:` block above; this setting alone does not do that.
           persist-credentials: false
-      - uses: docker/setup-buildx-action@v4
-      # Trivy scans through the Docker daemon, and build-push-action can
-      # only load one arch at a time. amd64 only: findings come from the
-      # base image and the npm install, which don't differ by arch. Shares
-      # the `type=gha` cache with the `docker` job, so this is mostly hits.
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      # Trivy scans through the Docker daemon, and build-push-action can only
+      # load one arch at a time, so this is amd64 only. Node modules are
+      # arch-independent, but `apt-get upgrade` in the Dockerfile resolves
+      # Debian packages per-architecture and Trivy keys OS findings on the
+      # installed version string, so the arm64 half of the published manifest
+      # can carry package CVEs neither this scan nor the release gate sees.
+      # Shares the `type=gha` cache with the `docker` job, so mostly hits.
+      # Same date stamp as that job, so scanning still hits its apt layer.
+      - name: Stamp apt refresh date
+        id: apt
+        run: echo "stamp=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
       - name: Build image (amd64, local load for scan)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: ./Dockerfile
@@ -142,10 +170,12 @@ jobs:
           load: true
           platforms: linux/amd64
           tags: reely:trivy-scan
+          build-args: |
+            APT_REFRESH=${{ steps.apt.outputs.stamp }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Trivy scan (PR warn-level)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: reely:trivy-scan
           format: table

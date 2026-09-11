@@ -17,7 +17,9 @@ type AvatarCssVars = { "--hue": number; "--progress": number };
 export const Avatar = memo(({ userName, avatarUrl, progress = 0 }: AvatarProps) => {
   // Shared util so Avatar and UserPill agree on a name's hue.
   const nameHue = userHue(userName);
-  const letter = userName.toUpperCase()[0];
+  // Indexing by code point: `[0]` on a name starting with an emoji yields half
+  // a surrogate pair, which draws as the replacement glyph.
+  const [letter] = [...userName.toUpperCase()];
 
   // SVG ids must be unique per instance and stable across renders.
   const uid = useId();

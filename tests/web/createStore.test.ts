@@ -191,6 +191,108 @@ describe('dispatch promise-rejection toast', () => {
     expect(toasts.some((t) => t.message.includes("isn't responding"))).toBe(true);
   });
 
+  // A wall-clock id collides for every request that rejects in the same
+  // millisecond, and one close rejects every parked waiter at once: React then
+  // sees duplicate keys and the group shares a single dismiss timer.
+  it('mints rejection toast ids through the store counter, not a clock', async () => {
+    clientMock.requestFilterValues = vi.fn().mockRejectedValue(new Error('timeout'));
+    const mod = await loadCreateStore();
+    mod.createStore();
+    const { dispatch } = mod.useZustandStore.getState();
+    // biome-ignore lint/suspicious/noExplicitAny: test action shape.
+    dispatch({ type: 'requestFilterValues', payload: { key: 'genre' } } as any);
+    // biome-ignore lint/suspicious/noExplicitAny: test action shape.
+    dispatch({ type: 'requestFilterValues', payload: { key: 'year' } } as any);
+    // Both rejections settle in the same macrotask, so Date.now() would match.
+    await new Promise((r) => setTimeout(r, 0));
+    const ids = mod.useZustandStore.getState().toasts.map((t) => t.id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids.every((id) => id.startsWith('toast-'))).toBe(true);
+  });
+
+  // The room set optimistically on dispatch is what drives Login's "joining…"
+  // CTA; no server reply is coming to clear it.
+  it('clears the optimistic room when a join request rejects', async () => {
+    clientMock.joinOrCreateRoom = vi.fn().mockRejectedValue(new Error('timeout'));
+    const mod = await loadCreateStore();
+    mod.createStore();
+    // biome-ignore lint/suspicious/noExplicitAny: test action shape.
+    mod.useZustandStore.getState().dispatch({ type: 'joinOrCreateRoom', payload: { roomName: 'movie-night' } } as any);
+    expect(mod.useZustandStore.getState().room?.joined).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mod.useZustandStore.getState().room).toBeUndefined();
+  });
+
+  // A 15s reply timeout is not a dead socket: the server can still answer, and
+  // it has already put the user in the room. Without the recovery the late
+  // success finds no room in state, the reducer discards it, and the user sits
+  // on the login screen as a member of a room they can't see.
+  it('recovers the room when a join reply lands after its own timeout', async () => {
+    clientMock.joinOrCreateRoom = vi.fn().mockRejectedValue(new Error('timeout'));
+    const mod = await loadCreateStore();
+    mod.createStore();
+    // biome-ignore lint/suspicious/noExplicitAny: test action shape.
+    mod.useZustandStore.getState().dispatch({ type: 'joinOrCreateRoom', payload: { roomName: 'movie-night' } } as any);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mod.useZustandStore.getState().room).toBeUndefined();
+
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'joinRoomSuccess', payload: { roomName: 'movie-night', media: [], users: [], previousMatches: [] } } as any,
+    }));
+
+    expect(mod.useZustandStore.getState().route).toBe('room');
+    expect(mod.useZustandStore.getState().room?.joined).toBe(true);
+    expect(mod.useZustandStore.getState().room?.name).toBe('movie-night');
+  });
+
+  // The reducer's "no room in state" guard still has to hold for a success
+  // nobody asked for; only a request this client made and lost recovers.
+  it('still ignores a join success with no request of ours behind it', async () => {
+    const mod = await loadCreateStore();
+    mod.createStore();
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'joinRoomSuccess', payload: { roomName: 'movie-night', media: [], users: [], previousMatches: [] } } as any,
+    }));
+    expect(mod.useZustandStore.getState().room).toBeUndefined();
+    expect(mod.useZustandStore.getState().route).not.toBe('room');
+  });
+
+  // Leaving is deliberate: a reply still in flight when the user walks out must
+  // not drag them back in.
+  it('does not recover the room once the user has left', async () => {
+    clientMock.joinOrCreateRoom = vi.fn().mockRejectedValue(new Error('timeout'));
+    const mod = await loadCreateStore();
+    mod.createStore();
+    // biome-ignore lint/suspicious/noExplicitAny: test action shape.
+    mod.useZustandStore.getState().dispatch({ type: 'joinOrCreateRoom', payload: { roomName: 'movie-night' } } as any);
+    await new Promise((r) => setTimeout(r, 0));
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'leaveRoomSuccess' } as any,
+    }));
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'joinRoomSuccess', payload: { roomName: 'movie-night', media: [], users: [], previousMatches: [] } } as any,
+    }));
+    expect(mod.useZustandStore.getState().room).toBeUndefined();
+  });
+
+  it('leaves the room in place when the rejecting request was not a join', async () => {
+    clientMock.applyFilters = vi.fn().mockRejectedValue(new Error('timeout'));
+    const mod = await loadCreateStore();
+    mod.createStore();
+    const { dispatch } = mod.useZustandStore.getState();
+    // biome-ignore lint/suspicious/noExplicitAny: test action shape.
+    dispatch({ type: 'joinOrCreateRoom', payload: { roomName: 'movie-night' } } as any);
+    // biome-ignore lint/suspicious/noExplicitAny: test action shape.
+    dispatch({ type: 'applyFilters', payload: { filters: [] } } as any);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mod.useZustandStore.getState().room).toBeDefined();
+  });
+
   it('does NOT add a toast when fire-and-forget dispatches resolve cleanly', async () => {
     const mod = await loadCreateStore();
     mod.createStore();
@@ -234,14 +336,77 @@ describe('loading-escape timer', () => {
   it('is cleared by signal abort (HMR cycle)', async () => {
     vi.useFakeTimers();
     const mod = await loadCreateStore();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
     mod.createStore();
-    // Grab the first store before the re-call swaps the export, or the second
-    // store's own 5s timer masks whether the first's was cleared.
-    const firstStore = mod.useZustandStore;
+    // Assert on the handle, not on state: both stores' timers run the same
+    // callback against the module-level `useZustandStore` export, so a leaked
+    // first timer mutates the SECOND store and is invisible in any route.
+    const escapeIndex = setTimeoutSpy.mock.calls.findIndex((call) => call[1] === 5000);
+    const escapeTimer = setTimeoutSpy.mock.results[escapeIndex]?.value;
+    expect(escapeTimer).toBeDefined();
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+    // The second call aborts the first's controller, which fires the listener.
+    mod.createStore();
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(escapeTimer);
+  });
+
+  // The URL's room belongs to the boot path. Once the timer hands control to
+  // the login form the user picks their own, and a surviving pendingRoomJoin
+  // fires a second join that creates a room nobody asked for.
+  it('drops the URL auto-join when it hands over to the login form', async () => {
+    vi.useFakeTimers();
+    setupDomGlobals({
+      href: 'https://reely.example.com/?roomName=movie-night',
+      userName: 'alice',
+    });
+    const mod = await loadCreateStore();
     mod.createStore();
     vi.advanceTimersByTime(5_001);
-    // Without abort + clearTimeout, the first timer navigates it to 'login'.
-    expect(firstStore.getState().route).toBe('loading');
+    expect(mod.useZustandStore.getState().route).toBe('login');
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
+    }));
+    expect(clientMock.joinOrCreateRoom).not.toHaveBeenCalled();
+  });
+});
+
+// localStorage THROWS rather than returning null when the browser blocks site
+// data. createStore runs before React mounts and there is no error boundary
+// above it, so an unguarded read is a blank page on a share link and a spinner
+// that never resolves otherwise.
+describe('blocked localStorage', () => {
+  const blockStorage = () => {
+    const blocked = () => {
+      throw new DOMException('The operation is insecure.', 'SecurityError');
+    };
+    vi.stubGlobal('localStorage', {
+      getItem: blocked,
+      setItem: blocked,
+      removeItem: blocked,
+    });
+  };
+
+  it('still reaches the login screen on a share link', async () => {
+    setupDomGlobals({ href: 'https://reely.example.com/?roomName=movie-night' });
+    blockStorage();
+    const mod = await loadCreateStore();
+    expect(() => mod.createStore()).not.toThrow();
+    expect(mod.useZustandStore.getState().route).toBe('login');
+  });
+
+  it('survives the connected handler and a loginSuccess write', async () => {
+    setupDomGlobals();
+    blockStorage();
+    const mod = await loadCreateStore();
+    mod.createStore();
+    expect(() => clientMock.dispatchEvent(new Event('connected'))).not.toThrow();
+    expect(mod.useZustandStore.getState().route).toBe('login');
+    expect(() => clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
+    }))).not.toThrow();
+    expect(mod.useZustandStore.getState().user).toEqual({ userName: 'alice' });
   });
 });
 

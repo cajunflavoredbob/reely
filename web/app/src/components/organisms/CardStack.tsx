@@ -171,6 +171,11 @@ export const CardStack = memo(
                   config: { duration: 150 },
                 })
                 .then(() => {
+                  // Runs even if the stack unmounted inside the throw: this is
+                  // the only place onCardDismissed fires, and Room turns it
+                  // into the `rate` frame, so skipping it loses the swipe on
+                  // both the server and the local deck with no way to re-record
+                  // it.
                   dispatch({
                     type: "finalizeRemove",
                     payload: { id: action.payload.id },
@@ -221,6 +226,18 @@ export const CardStack = memo(
       }),
     );
 
+    // react-spring's frameloop is global, so a controller left mid-throw keeps
+    // animating long after unmount. Stopping resolves the pending start()
+    // promise right away, which runs the swipe-out continuation at unmount
+    // instead of stranding a rating behind an animation nobody is watching.
+    const itemsRef = useRef(items);
+    itemsRef.current = items;
+    useEffect(() => {
+      return () => {
+        for (const item of itemsRef.current) item.controller.stop();
+      };
+    }, []);
+
     const rateItem = (direction: "left" | "right") => {
       // Gate on a live connection, same as the drag and keyboard paths: a tap
       // while disconnected removes the card locally but rate() is dropped, so
@@ -246,6 +263,13 @@ export const CardStack = memo(
     // biome-ignore lint/correctness/useExhaustiveDependencies: rateItem is deliberately captured by closure; its deps are listed instead.
     useEffect(() => {
       const handler = (e: KeyboardEvent) => {
+        // OS key auto-repeat, not a fresh press. Without this, holding an
+        // arrow rates card after card at the repeat rate, and the ratings it
+        // records for media the user never saw are permanent server-side.
+        if (e.repeat) {
+          return;
+        }
+
         if (connectionStatus !== "connected") {
           return;
         }
@@ -333,7 +357,6 @@ export const CardStack = memo(
                   <path d={HEART_PATH} stroke="var(--ry-pink)" strokeWidth="2" />
                 </svg>
               </div>
-              <p className={styles.emptyText}>That's everything.</p>
               <p className={styles.emptySubtext}>
                 <Tr
                   name={
@@ -347,10 +370,14 @@ export const CardStack = memo(
           )}
           {!isEmpty && (
             <>
+              {/* disabled mirrors rateItem's own connection gate, so the
+                  buttons stop advertising a hover and press they will not
+                  honour while the socket is down. */}
               <button
                 type="button"
                 className={styles.dislikeButton}
                 onClick={() => rateItem("left")}
+                disabled={connectionStatus !== "connected"}
                 aria-label="Pass"
               >
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -361,6 +388,7 @@ export const CardStack = memo(
                 type="button"
                 className={styles.likeButton}
                 onClick={() => rateItem("right")}
+                disabled={connectionStatus !== "connected"}
                 aria-label="Like"
               >
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="white" aria-hidden="true">

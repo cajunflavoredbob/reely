@@ -6,7 +6,7 @@ services:
     # Pinned to an exact release so a pull can't move you to a different
     # version: upgrading means editing this tag yourself. Available tags:
     #   https://hub.docker.com/r/cajunflavoredbob/reely/tags
-    image: cajunflavoredbob/reely:1.1.8
+    image: cajunflavoredbob/reely:1.1.9
     ports:
       - "8000:8000"
     environment:
@@ -35,6 +35,13 @@ services:
 volumes:
   reely_data:
 
+# Outside Swarm, Compose bind-mounts each of these into /run/secrets/ with the
+# host file's owner and mode intact; the `uid`/`gid`/`mode` keys are Swarm-only
+# and are ignored here. The container runs as the image's unprivileged `node`
+# user (UID 1000), so a secret the host owner alone can read (`chmod 600`, or a
+# file created by root) is unreadable inside and the container exits on EACCES
+# in a restart loop. Make each file world-readable (`chmod 644`) or chown it to
+# UID 1000. The directory needs to be traversable by that user too.
 secrets:
   plex_token:
     file: ./secrets/plex_token.txt

@@ -10,6 +10,22 @@ import {
   recordAuthFailure,
 } from '../middleware/authFailureThrottle';
 
+// Reduces a configured or received origin to its canonical serialization, or
+// undefined if it isn't one. Operators copy origins out of a browser address
+// bar, which appends a trailing slash, and host case is not significant: a raw
+// string compare turns either spelling into a 403 on every handshake, under a
+// log line telling the operator to set the variable they already set.
+// A URL with no real origin (file:, data:) serializes to "null", which must
+// never match anything.
+const normalizeOrigin = (value: string): string | undefined => {
+  try {
+    const { origin } = new URL(value);
+    return origin === 'null' ? undefined : origin.toLowerCase();
+  } catch {
+    return undefined;
+  }
+};
+
 // Cross-Site WebSocket Hijacking guard. Browsers always send Origin on a WS
 // handshake; non-browser clients (no CSWSH risk) send none. Allowed when Origin
 // is absent, matches the request Host, or is listed in ALLOWED_ORIGINS.
@@ -32,13 +48,27 @@ export const isOriginAllowed = (req: IncomingMessage): boolean => {
     typeof reqHost === 'string' &&
     originHost.toLowerCase() === reqHost.toLowerCase()
   ) return true;
-  const allowed = getConfig().allowedOrigins;
-  return Array.isArray(allowed) && allowed.includes(origin);
+  const configured = getConfig().allowedOrigins;
+  // The env loader always produces a list, but the natural YAML spelling
+  // (`allowedOrigins: https://example.com`) is a scalar. Accept it rather than
+  // silently ignoring a config that reads as correct.
+  const allowed: readonly string[] | undefined =
+    typeof configured === 'string' ? [configured] : configured;
+  if (!Array.isArray(allowed)) return false;
+  const candidate = normalizeOrigin(origin);
+  if (!candidate) return false;
+  return allowed.some((entry) => normalizeOrigin(entry) === candidate);
 };
 
 // The per-connection WS message limit caps volume per socket, so without this
 // one IP could open hundreds of sockets and multiply it. Generous enough for a
 // household behind NAT.
+//
+// Behind a reverse proxy the peer address is the proxy, so every client shares
+// one key and this becomes a whole-deployment ceiling of 20 concurrent
+// sockets. Unlike the counting limiters, which only slow a shared source down,
+// this one refuses connections outright: a large deployment behind a proxy
+// needs this number raised.
 const MAX_WS_PER_IP = 20;
 // Bounds the tracking Map itself: a flood of distinct source addresses would
 // otherwise grow it without limit. Far above any realistic deployment.

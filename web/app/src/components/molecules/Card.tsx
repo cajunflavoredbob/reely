@@ -13,21 +13,33 @@ export interface CardProps {
 
 export const Card = ({ media, href }: CardProps) => {
   const [showMoreInfo, setShowMoreInfo] = useState(false);
+  // Holds the src that failed rather than a boolean, so a card re-rendered with
+  // a different poster starts trusting it again without a reset effect.
+  const [failedPoster, setFailedPoster] = useState<string | undefined>(undefined);
 
   // Single src, no srcSet: the poster handler proxies Plex artwork as-is and
   // ignores a width param, so variants would refetch the same full-size image.
   const poster = posterSrc(media.posterUrl);
 
-  const mediaTitle = `${media.title}${media.type === "movie" ? ` (${media.year})` : ""}`;
+  // A deleted or re-scanned Plex item, or a rate-limited poster request, would
+  // otherwise leave the browser's broken-image glyph over the card; dropping
+  // the img falls back to the card's black background and title overlay.
+  const posterBroken = poster !== undefined && poster === failedPoster;
+
+  // `year` is optional on Media, and a template literal stringifies a missing
+  // one as the literal "undefined", so the suffix is built conditionally.
+  const yearSuffix = media.type === "movie" && media.year ? ` (${media.year})` : "";
+  const mediaTitle = `${media.title}${yearSuffix}`;
 
   const inner = (
     <>
-      {poster && (
+      {poster && !posterBroken && (
         <img
           className={styles.poster}
           src={poster}
           alt={`${media.title} poster`}
           draggable={false}
+          onError={() => setFailedPoster(poster)}
         />
       )}
       <div className={styles.grain} />

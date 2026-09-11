@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.12/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
@@ -66,5 +66,19 @@
     "globals": [
       "globalThis"
     ]
-  }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "web/app/index.html"
+      ],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "useValidLang": "off"
+          }
+        }
+      }
+    }
+  ]
 }

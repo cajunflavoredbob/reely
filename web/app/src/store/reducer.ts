@@ -1,5 +1,15 @@
+import type { FilterValue } from "../../../../types/reely";
 import type { Toast } from "../components/atoms/Toast";
 import type { Actions, Store } from "./types";
+
+// Parked under a key whose value list failed to load. A plain [] cannot carry
+// that meaning: the panel reads an empty list as "this field has no enumerable
+// values" and swaps in the free-text control, which can't produce the tag ids
+// an enumerated field matches on. This one is compared by reference, so the
+// panel tells a failed fetch from a genuinely empty field and offers a retry
+// instead of leaving the row on "Loading values…" forever. Never mutated, and
+// never handed to anything that would copy it.
+export const FILTER_VALUES_UNAVAILABLE: FilterValue[] = [];
 
 // Auto-dismiss delay for error toasts; without it failure messages pile up
 // forever on a flaky connection. The connection-failure toast is exempt: it
@@ -64,7 +74,15 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
       if (action.payload.requiresConfiguration) {
         return { ...state, config: action.payload, route: "config" };
       }
-      return { ...state, config: action.payload };
+      // Configured now. Rescue a store parked on the config screen, which
+      // nothing else routes out of: the user would sit on "isn't set up yet"
+      // until they reloaded. Only from "config", because this message also
+      // arrives on every reconnect and must not evict anyone from their room.
+      return {
+        ...state,
+        config: action.payload,
+        ...(state.route === "config" ? { route: "login" as const } : {}),
+      };
     }
     case "navigate":
       return {
@@ -82,6 +100,16 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
       };
     case "setUser":
       return { ...state, user: action.payload };
+    case "clearUser":
+      return { ...state, user: undefined };
+    case "roomRequestFailed":
+      // Only the optimistic room a dispatch just set. A joined room means the
+      // failed request was something else in flight, and clearing it would
+      // blank a working room screen.
+      if (!state.room || state.room.joined) return state;
+      return { ...state, room: undefined };
+    case "addErrorToast":
+      return { ...state, ...addErrorToast(state, action.payload.message) };
     case "loginSuccess": {
       if (action.payload) {
         return {
@@ -183,7 +211,14 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
     case "loginError":
     case "joinRoomError":
     case "createRoomError":
-      return { ...state, error: action.payload, route: "login", room: undefined };
+      return {
+        ...state,
+        error: action.payload,
+        // An unconfigured server can't host a room, so a failure there stays on
+        // the config screen; a login form would just repeat the same error.
+        route: state.route === "config" ? "config" : "login",
+        room: undefined,
+      };
     case "leaveRoomSuccess":
       return { ...state, room: undefined, route: "login" };
     case "leaveRoomError":
@@ -225,19 +260,29 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
           availableFilters: { filters: [], filterTypes: {} },
         },
       };
-    case "requestFilterValuesError":
-      // Resolved-with-no-values, so the panel drops its loading state and
-      // falls back to the free-text SearchControl.
-      return {
+    case "requestFilterValuesError": {
+      const { key } = action.payload;
+      const current = state.createRoom?.filterValues?.[key];
+      // Values already arrived for this key, so the row still works: keep them
+      // rather than trading a usable control for an error nobody can act on.
+      if (current !== undefined && current !== FILTER_VALUES_UNAVAILABLE) return state;
+      const marked: Store = {
         ...state,
         createRoom: {
           ...state.createRoom,
           filterValues: {
             ...state.createRoom?.filterValues,
-            [action.payload.key]: [],
+            [key]: FILTER_VALUES_UNAVAILABLE,
           },
         },
       };
+      // One toast per key while that key's failure is still on the row. A media
+      // provider that is down fails every pre-populated row at once, and two
+      // requests can be in flight for the same key (the panel's mount prefetch
+      // racing its open transition), so an unconditional toast is a pile.
+      if (current === FILTER_VALUES_UNAVAILABLE) return marked;
+      return { ...marked, ...addErrorToast(state, "Couldn't load filter values") };
+    }
     // The server contract guarantees state.room here, but the cases guard
     // anyway so a violated invariant no-ops instead of throwing.
     case "match":
@@ -312,12 +357,22 @@ export const reducer = (state: Store = initialState, action: Actions): Store => 
         },
       };
     }
+    case "requestFilterValues": {
+      // Goes to the WS client like the other ServerMessage variants, but a
+      // request for a key that already failed is the row's Retry button: drop
+      // the marker so the row shows its loading state again and the next
+      // failure is allowed to speak up.
+      const { key } = action.payload;
+      if (state.createRoom?.filterValues?.[key] !== FILTER_VALUES_UNAVAILABLE) return state;
+      const filterValues = { ...state.createRoom?.filterValues };
+      delete filterValues[key];
+      return { ...state, createRoom: { ...state.createRoom, filterValues } };
+    }
     case "login":
     case "logout":
     case "leaveRoom":
     case "setLocale":
     case "requestFilters":
-    case "requestFilterValues":
     case "applyFilters":
       return state;
     default: {

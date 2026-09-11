@@ -6,6 +6,7 @@ import { ReadableStream } from 'node:stream/web';
 import { loggerMockFactory } from '../helpers';
 vi.mock('../../internal/app/reely/logger', () => loggerMockFactory());
 
+import { logger } from '../../internal/app/reely/logger';
 import { handler as posterHandler } from '../../internal/app/reely/handlers/poster';
 import type { PosterParams } from '../../internal/app/reely/handlers/poster';
 import type { ReelyProvider } from '../../internal/app/reely/providers/types';
@@ -76,6 +77,16 @@ const makeStream = (buf: Buffer): ReadableStream<Uint8Array> =>
     start(controller) {
       controller.enqueue(buf);
       controller.close();
+    },
+  });
+
+// A stream that delivers one chunk and then fails, the shape of a Plex
+// connection dropped mid-artwork (server restart, flaky LAN).
+const makeFailingStream = (buf: Buffer, err: Error): ReadableStream<Uint8Array> =>
+  new ReadableStream({
+    start(controller) {
+      controller.enqueue(buf);
+      controller.error(err);
     },
   });
 
@@ -223,5 +234,108 @@ describe('poster handler: abort + stream-error handling', () => {
 
     res.emit('close');
     expect(capturedSignal?.aborted).toBe(true);
+  });
+
+  // pipe() does not forward source errors, so a Readable with no 'error'
+  // listener throws where nothing can catch it: that reaches main.ts's
+  // uncaughtException handler and takes the whole server down, every room
+  // with it.
+  it('destroys the response when the stream errors mid-body', async () => {
+    const provider = makeProvider({
+      getArtwork: vi.fn().mockResolvedValue([
+        makeFailingStream(Buffer.from('partial'), new Error('connection reset')),
+        new Headers({ 'content-type': 'image/jpeg' }),
+      ]),
+    });
+    const req = makeReq({ providerIndex: '0', metadataId: '1', thumbId: '2' });
+    const res = makeRes([provider]);
+
+    await posterHandler(req, res);
+    // Let the pipe pull the first chunk and then surface the error.
+    for (let i = 0; i < 10; i += 1) await new Promise((r) => setImmediate(r));
+
+    expect(res.destroy).toHaveBeenCalled();
+    // Headers were already on the wire, so no status may be rewritten.
+    expect(res.statusCode).toBe(200);
+    expect(res.send).not.toHaveBeenCalled();
+  });
+
+  // A user who swipes on quickly, or navigates away, cancels in-flight poster
+  // GETs. If the cancel lands before the upstream headers do, the fetch rejects
+  // here rather than on the stream, and it is the same benign condition.
+  it('does not log an error or answer a dead socket when the client aborted first', async () => {
+    const provider = makeProvider({
+      getArtwork: vi.fn().mockImplementation(
+        async (_key: string, signal: AbortSignal) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => {
+              const err = new Error('This operation was aborted');
+              err.name = 'AbortError';
+              reject(err);
+            });
+          }),
+      ),
+    });
+    const req = makeReq({ providerIndex: '0', metadataId: '1', thumbId: '2' });
+    const res = makeRes([provider]);
+
+    const pending = posterHandler(req, res);
+    res.emit('close');
+    await pending;
+
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('poster handler: log flooding', () => {
+  // Express matches :param as [^/]+, so a segment is capped only by Node's
+  // 16KB header limit. Unclipped, one unauthenticated request writes its own
+  // payload into the log, 600 times a minute.
+  it('clips an over-long metadataId out of the warn line', async () => {
+    const provider = makeProvider();
+    const req = makeReq({
+      providerIndex: '0',
+      metadataId: 'A'.repeat(15000),
+      thumbId: '2',
+    });
+    const res = makeRes([provider]);
+
+    await posterHandler(req, res);
+
+    expect(res.statusCode).toBe(400);
+    const logged = vi.mocked(logger.warn).mock.calls.map(String).join('');
+    expect(logged.length).toBeLessThan(200);
+    expect(logged).toContain('...');
+  });
+
+  it('clips an over-long providerIndex out of the warn line', async () => {
+    const provider = makeProvider();
+    const req = makeReq({
+      providerIndex: 'Z'.repeat(15000),
+      metadataId: '1',
+      thumbId: '2',
+    });
+    const res = makeRes([provider]);
+
+    await posterHandler(req, res);
+
+    expect(res.statusCode).toBe(404);
+    const logged = vi.mocked(logger.warn).mock.calls.map(String).join('');
+    expect(logged.length).toBeLessThan(200);
+  });
+
+  // A 40-digit id is not a Plex ratingKey; rejecting on length keeps it out
+  // of the upstream URL as well as out of the log.
+  it('rejects an all-numeric id longer than the cap', async () => {
+    const provider = makeProvider();
+    const req = makeReq({ providerIndex: '0', metadataId: '1'.repeat(40), thumbId: '2' });
+    const res = makeRes([provider]);
+
+    await posterHandler(req, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(provider.getArtwork).not.toHaveBeenCalled();
   });
 });

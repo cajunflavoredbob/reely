@@ -31,6 +31,14 @@ const STABLE_CONNECTION_MS = 10_000;
 // Reply deadline. Stops a dropped reply hanging the promise, and the UI.
 const REQUEST_TIMEOUT_MS = 15_000;
 
+// Reply deadline for the requests that put a user in a room. Those block on
+// the server's first provider fetch, which budgets 30s per HTTP call with one
+// retry and a short backoff, so a cold read of a large library legitimately
+// runs past a minute. At REQUEST_TIMEOUT_MS the user gets "the server isn't
+// responding" and then watches the join succeed anyway, because the
+// joinRoomSuccess still arrives and drops them into the room behind the toast.
+const ROOM_REQUEST_TIMEOUT_MS = 75_000;
+
 /**
  * Error whose message is safe to show the user verbatim.
  *
@@ -47,16 +55,27 @@ export class ReelyClient extends EventTarget {
   reconnectionAttempts = 0;
   private stableConnectionTimer?: ReturnType<typeof setTimeout>;
   // Swipes made while the socket was down, flushed on the next open. Bounded
-  // so a long outage can't grow it without limit.
+  // by count so a long outage can't grow it without limit, and by age so a
+  // tab that slept for hours can't replay yesterday's votes.
   //
   // Each entry carries its room so a flush can't replay it into a DIFFERENT
   // room: all rooms draw from one library, so the server's media.has() guard
   // would take the cross-room vote as legitimate. Untagged entries (queued
   // before any join) flush unconditionally.
-  private pendingRates: Array<{ msg: ServerMessage; roomName?: string }> = [];
+  private pendingRates: Array<{
+    msg: ServerMessage;
+    roomName?: string;
+    queuedAt: number;
+  }> = [];
 
   // Canonical name of the current room; tags queued rates.
   private currentRoomName?: string;
+
+  // Bumped on every socket construction. currentRoomName survives a reconnect,
+  // so room affinity alone cannot tell a send on the original connection from
+  // one on a brand-new socket that has not logged in or rejoined yet, and the
+  // server drops that second kind on the floor with no reply.
+  private connectionEpoch = 0;
 
   // Handler waiting to flush pendingRates on the next post-reconnect
   // join/createRoomSuccess. On the instance so each reconnect cycle replaces
@@ -74,6 +93,12 @@ export class ReelyClient extends EventTarget {
     this.addEventListener("createRoomSuccess", this.captureRoomName);
     this.addEventListener("leaveRoomSuccess", this.clearRateState);
     this.addEventListener("logoutSuccess", this.clearRateState);
+    // Registered here, not in handleOpen, so it runs BEFORE that reconnect's
+    // flush listener: the flush deliberately re-records the ids it replays and
+    // must not have them reconciled back off again.
+    this.addEventListener("joinRoomSuccess", this.reconcileRatedIds);
+    this.addEventListener("createRoomSuccess", this.reconcileRatedIds);
+    this.addEventListener("filterChangeApplied", this.reconcileRatedIds);
     this.connect();
   }
 
@@ -82,6 +107,32 @@ export class ReelyClient extends EventTarget {
     const data = (e as MessageEvent<ClientMessage>).data;
     if (data.type === "joinRoomSuccess" || data.type === "createRoomSuccess") {
       this.currentRoomName = data.payload.roomName;
+    }
+  };
+
+  // Let server truth overrule the local dedup memory. `media` on these frames
+  // is already filtered by what THIS user has rated, so an id still in it was
+  // never recorded server-side: the `rate` was dropped (sent before the join
+  // finished, or past the server's WS rate limit) while sentRateIds recorded
+  // it at send time. filterChangeApplied then puts the card back in the deck,
+  // where every re-swipe is silently eaten and the progress bar never moves.
+  // Forgetting those ids makes the card ratable again.
+  private reconcileRatedIds = (e: Event) => {
+    if (!(e instanceof MessageEvent)) return;
+    const data = (e as MessageEvent<ClientMessage>).data;
+    if (
+      data.type !== "joinRoomSuccess" &&
+      data.type !== "createRoomSuccess" &&
+      data.type !== "filterChangeApplied"
+    ) {
+      return;
+    }
+    // handleMessage shape-guards only `type`, so treat the payload as
+    // untrusted rather than throwing inside a dispatchEvent.
+    const media = data.payload?.media;
+    if (!Array.isArray(media)) return;
+    for (const item of media) {
+      this.sentRateIds.delete(item.id);
     }
   };
 
@@ -99,6 +150,7 @@ export class ReelyClient extends EventTarget {
       this.ws.removeEventListener("error", this.handleError);
     }
 
+    this.connectionEpoch += 1;
     this.ws = new WebSocket(API_URL);
     this.ws.addEventListener("message", this.handleMessage);
     this.ws.addEventListener("close", this.handleClose, { once: true });
@@ -142,8 +194,8 @@ export class ReelyClient extends EventTarget {
   private handleOpen = () => {
     // Do NOT flush queued rates here: the new socket hasn't logged in or
     // rejoined, so the server would drop every one. Flush on the next
-    // join-success instead; with no join the queue waits or ages out at
-    // MAX_PENDING_RATES.
+    // join-success instead; with no join the queue waits, evicting its oldest
+    // past MAX_PENDING_RATES and discarding stale entries when it does flush.
     //
     // Tear down the prior reconnect's listener BEFORE registering this one;
     // every open without a join-success would otherwise leak two listeners.
@@ -168,6 +220,15 @@ export class ReelyClient extends EventTarget {
       // to the head, so order holds across reconnects.
       const remaining: typeof queued = [];
       for (const entry of queued) {
+        // Age out before the room check: a name match is not proof of the same
+        // room. The server destroys an idle room after its TTL and rebuilds a
+        // fresh one under that name on the next join, so an overnight queue
+        // would otherwise drop day-old votes into a room whose members never
+        // saw those cards.
+        if (Date.now() - entry.queuedAt > ReelyClient.MAX_PENDING_RATE_AGE_MS) {
+          console.warn(`Dropped queued "rate" that outlived the staleness bound`);
+          continue;
+        }
         // A rate queued in room A must not flush into room B. Untagged
         // entries flush unconditionally.
         if (entry.roomName !== undefined && entry.roomName !== joinedRoom) {
@@ -227,8 +288,8 @@ export class ReelyClient extends EventTarget {
   // of per-type {once:true} listeners leaks the unfired ones, which pile up
   // across reconnects and fire on later unrelated messages of that type.
   //
-  // Rejects after REQUEST_TIMEOUT_MS so a dropped reply surfaces as an error
-  // instead of hanging the caller; cleanup runs on that path too.
+  // Rejects after `timeoutMs` so a dropped reply surfaces as an error instead
+  // of hanging the caller; cleanup runs on that path too.
   //
   // `match` correlates a reply to its request. Several requestFilterValues
   // calls run at once (one per filter key), so matching on TYPE alone resolves
@@ -237,6 +298,7 @@ export class ReelyClient extends EventTarget {
   waitForAnyMessage = <K extends ClientMessage["type"]>(
     types: K[],
     match?: (msg: FilterClientMessageByType<ClientMessage, K>) => boolean,
+    timeoutMs: number = REQUEST_TIMEOUT_MS,
   ): Promise<FilterClientMessageByType<ClientMessage, K>> => {
     return new Promise((resolve, reject) => {
       const handlers = new Map<K, EventListener>();
@@ -274,7 +336,7 @@ export class ReelyClient extends EventTarget {
       timer = setTimeout(() => {
         cleanup();
         reject(new Error(`Timed out waiting for a server reply (${types.join(" / ")})`));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
     });
   };
 
@@ -285,6 +347,10 @@ export class ReelyClient extends EventTarget {
     msg: ServerMessage,
     replyTypes: K[],
     match?: (msg: FilterClientMessageByType<ClientMessage, K>) => boolean,
+    // Reply deadline only. The wait-for-open phase below stays on
+    // REQUEST_TIMEOUT_MS: that one is about reaching the server at all, not
+    // about how long the server's own work takes.
+    replyTimeoutMs: number = REQUEST_TIMEOUT_MS,
   ): Promise<FilterClientMessageByType<ClientMessage, K>> {
     // Bound the wait-for-open phase: waitForConnected never rejects, so a
     // request made during an outage parks forever and fires minutes later on
@@ -306,7 +372,7 @@ export class ReelyClient extends EventTarget {
       clearTimeout(connectTimer);
     }
     this.sendMessage(msg);
-    return await this.waitForAnyMessage(replyTypes, match);
+    return await this.waitForAnyMessage(replyTypes, match, replyTimeoutMs);
   }
 
   login = async (login: Login) =>
@@ -324,6 +390,8 @@ export class ReelyClient extends EventTarget {
     return this.request(
       { type: "joinRoom", payload: joinRoomRequest },
       ["joinRoomSuccess", "joinRoomError"],
+      undefined,
+      ROOM_REQUEST_TIMEOUT_MS,
     );
   };
 
@@ -333,6 +401,8 @@ export class ReelyClient extends EventTarget {
     return this.request(
       { type: "joinOrCreateRoom", payload: joinRoomRequest },
       ["joinRoomSuccess", "createRoomSuccess", "joinRoomError", "createRoomError"],
+      undefined,
+      ROOM_REQUEST_TIMEOUT_MS,
     );
   };
 
@@ -346,6 +416,8 @@ export class ReelyClient extends EventTarget {
     return this.request(
       { type: "createRoom", payload: createRoomRequest },
       ["createRoomSuccess", "createRoomError"],
+      undefined,
+      ROOM_REQUEST_TIMEOUT_MS,
     );
   };
 
@@ -429,6 +501,7 @@ export class ReelyClient extends EventTarget {
     // room change applies room A's filters to room B and wipes every member's
     // deck.
     const requestedIn = this.currentRoomName;
+    const requestedOn = this.connectionEpoch;
     await this.waitForConnectedWithin();
     // Undefined means no join had completed, so there is no affinity to
     // enforce; same rule as untagged entries in the rate queue.
@@ -440,11 +513,24 @@ export class ReelyClient extends EventTarget {
         `Those filters were for "${requestedIn}", so they were not applied here.`,
       );
     }
+    // Same room name, different socket: the wait resumed on "connected", which
+    // fires before this connection has logged in or rejoined, so the server
+    // would drop the frame at its membership gate without replying. Surface it
+    // instead, since one more tap on Apply does work.
+    if (this.connectionEpoch !== requestedOn) {
+      throw new UserFacingError(
+        "The connection dropped before those filters were sent. Please apply them again.",
+      );
+    }
     this.sendMessage({ type: "applyFilters", payload });
   };
 
   // Queue cap; the oldest swipes drop past it. Only a pathological case hits it.
   private static readonly MAX_PENDING_RATES = 50;
+
+  // Age cap on a queued swipe, kept well under the server's 6h room TTL so a
+  // queued vote can never outlive the room generation it was cast in.
+  private static readonly MAX_PENDING_RATE_AGE_MS = 60 * 60 * 1_000;
 
   // mediaIds already rated this session. Stops a stuck client looping rate
   // dispatches over an OPEN socket from tripping the server's WS rate limit,
@@ -469,7 +555,7 @@ export class ReelyClient extends EventTarget {
         const dupIdx = this.pendingRates.findIndex(
           (m) => m.msg.type === "rate" && m.msg.payload.mediaId === mediaId,
         );
-        const entry = { msg, roomName: this.currentRoomName };
+        const entry = { msg, roomName: this.currentRoomName, queuedAt: Date.now() };
         if (dupIdx !== -1) {
           this.pendingRates[dupIdx] = entry;
         } else {

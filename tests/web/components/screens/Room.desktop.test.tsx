@@ -285,7 +285,9 @@ describe('RoomScreen (desktop): matches sidebar', () => {
     expect(windowOpen.mock.calls[0]?.[1]).toBe('_blank');
   });
 
-  it('clicking a match card does nothing when no plexServerId is configured', () => {
+  // Without a link there is nothing to open, so the card must not advertise a
+  // click at all. MatchesList renders its linkless rows the same way.
+  it('renders the match card inert (not a button) when no plexServerId is configured', () => {
     withState({
       room: { name: 'r', users: [], matches: [makeMatch('a', 100)], media: [] },
       config: {},
@@ -293,10 +295,21 @@ describe('RoomScreen (desktop): matches sidebar', () => {
     const windowOpen = vi.fn();
     vi.stubGlobal('open', windowOpen);
     const { container } = render(<RoomScreen />);
-    const card = container.querySelector('[class*="desktopMatchCard"]') as HTMLButtonElement;
+    const card = container.querySelector('[class*="desktopMatchCard"]') as HTMLElement;
+    expect(card.tagName).toBe('DIV');
+    expect(card.getAttribute('role')).toBeNull();
     fireEvent.click(card);
-    // No URL, so the `webUrl && window.open(...)` short-circuit blocks it.
     expect(windowOpen).not.toHaveBeenCalled();
+  });
+
+  it('renders the match card as a button when a link is available', () => {
+    withState({
+      room: { name: 'r', users: [], matches: [makeMatch('a', 100)], media: [] },
+      config: { plexServerId: 'SRV1' },
+    });
+    const { container } = render(<RoomScreen />);
+    const card = container.querySelector('[class*="desktopMatchCard"]') as HTMLElement;
+    expect(card.tagName).toBe('BUTTON');
   });
 });
 

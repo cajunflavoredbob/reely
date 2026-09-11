@@ -230,7 +230,132 @@ describe('loadConfig env/yaml merge', () => {
     });
   });
 
-  describe('EXPOSE_PLEX_BASE_URL (audits 10 #165 + 12 #226)', () => {
+  // The replacement is deliberate, but a YAML-only libraryTitleFilter going
+  // with it puts every movie library in the deck, so it has to be logged.
+  describe('the env server replacing the YAML one is announced', () => {
+    const warnings = async (yamlServers: unknown) => {
+      mockLoadFromYaml.mockResolvedValue({ servers: yamlServers });
+      const { loadConfig } = await import('../../internal/app/reely/config/main');
+      const { logger } = await import('../../internal/app/reely/logger');
+      await loadConfig('/tmp/fake.yaml');
+      return (logger.warn as unknown as ReturnType<typeof vi.fn>).mock.calls
+        .map((call) => String(call[0]));
+    };
+
+    it('names the fields the env server dropped', async () => {
+      process.env.PLEX_URL = 'http://env.host:32400';
+      process.env.PLEX_TOKEN = 'env-tok';
+
+      const warned = await warnings([
+        { url: 'http://yaml:32400', token: 'yaml-tok', libraryTitleFilter: ['Kids Movies'] },
+      ]);
+
+      expect(warned.some((msg) => msg.includes('libraryTitleFilter'))).toBe(true);
+    });
+
+    it('says nothing when no YAML server was replaced', async () => {
+      process.env.PLEX_URL = 'http://env.host:32400';
+      process.env.PLEX_TOKEN = 'env-tok';
+
+      expect(await warnings([])).toEqual([]);
+    });
+  });
+
+  // Secrets are read inside the env layer, gated on an env-var partner. A
+  // partner that lives in config.yaml does not open that gate, so the secret
+  // used to be read, validated and then thrown away.
+  describe('docker secrets fill gaps left by the merge', () => {
+    let secretsDir: string;
+
+    beforeEach(async () => {
+      const { mkdtempSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      secretsDir = mkdtempSync(join(tmpdir(), 'reely-loadconfig-secrets-'));
+      process.env.SECRETS_DIR = secretsDir;
+    });
+
+    afterEach(async () => {
+      const { rmSync } = await import('node:fs');
+      rmSync(secretsDir, { recursive: true, force: true });
+    });
+
+    const writeSecret = async (name: string, contents: string) => {
+      const { writeFileSync } = await import('node:fs');
+      const { join } = await import('node:path');
+      writeFileSync(join(secretsDir, name), contents);
+    };
+
+    it('gives a tokenless YAML server the plex_token secret', async () => {
+      await writeSecret('plex_token', 'secret-tok\n');
+      mockLoadFromYaml.mockResolvedValue({
+        servers: [{ url: 'http://yaml:32400' }],
+      });
+
+      const { loadConfig } = await import('../../internal/app/reely/config/main');
+      const [config, errors] = await loadConfig('/tmp/fake.yaml');
+
+      expect(errors).toEqual([]);
+      expect(config.servers[0].token).toBe('secret-tok');
+    });
+
+    it('leaves a token that came from config.yaml alone and says the secret went unused', async () => {
+      await writeSecret('plex_token', 'secret-tok\n');
+      mockLoadFromYaml.mockResolvedValue({
+        servers: [{ url: 'http://yaml:32400', token: 'yaml-tok' }],
+      });
+
+      const { loadConfig } = await import('../../internal/app/reely/config/main');
+      const { logger } = await import('../../internal/app/reely/logger');
+      const [config] = await loadConfig('/tmp/fake.yaml');
+
+      expect(config.servers[0].token).toBe('yaml-tok');
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('plex_token secret file was read but nothing used it'),
+      );
+    });
+
+    it('does not guess which of several tokenless servers the secret belongs to', async () => {
+      await writeSecret('plex_token', 'secret-tok\n');
+      mockLoadFromYaml.mockResolvedValue({
+        servers: [{ url: 'http://a:32400' }, { url: 'http://b:32400' }],
+      });
+
+      const { loadConfig } = await import('../../internal/app/reely/config/main');
+      const [config] = await loadConfig('/tmp/fake.yaml');
+
+      expect(config.servers.every((server) => !server.token)).toBe(true);
+    });
+
+    it('gives a YAML basicAuth user the auth_pass secret', async () => {
+      await writeSecret('auth_pass', 'secret-pass\n');
+      mockLoadFromYaml.mockResolvedValue({
+        servers: [{ url: 'http://yaml:32400', token: 'yaml-tok' }],
+        basicAuth: { userName: 'yaml-user' },
+      });
+
+      const { loadConfig } = await import('../../internal/app/reely/config/main');
+      const [config, errors] = await loadConfig('/tmp/fake.yaml');
+
+      expect(errors).toEqual([]);
+      expect(config.basicAuth?.password).toBe('secret-pass');
+    });
+
+    it('says nothing when the env layer already placed the secret', async () => {
+      await writeSecret('plex_token', 'secret-tok\n');
+      process.env.PLEX_URL = 'http://env.host:32400';
+      mockLoadFromYaml.mockResolvedValue({});
+
+      const { loadConfig } = await import('../../internal/app/reely/config/main');
+      const { logger } = await import('../../internal/app/reely/logger');
+      const [config] = await loadConfig('/tmp/fake.yaml');
+
+      expect(config.servers[0].token).toBe('secret-tok');
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('EXPOSE_PLEX_BASE_URL', () => {
     const baseEnv = () => {
       process.env.PLEX_URL = 'http://env.host:32400';
       process.env.PLEX_TOKEN = 'tok';

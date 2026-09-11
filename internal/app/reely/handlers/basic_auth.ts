@@ -54,8 +54,15 @@ export const handler = (req: Request, res: Response, next: NextFunction): void =
 
   // 429 before the credential compare, so a brute force of the only access
   // gate can't guess at line rate. Once throttled even correct credentials
-  // wait out the window: that is the lockout, and it is at most 60s. Must use
-  // the same key as the WS upgrade path, which shares this budget.
+  // wait out the rest of the fixed window: that is the lockout, and it runs
+  // for at most 60s from the first failure in the window, never longer, since
+  // a throttled request returns here without recording another failure.
+  //
+  // Keyed on the socket peer, so behind a reverse proxy every user shares one
+  // bucket and the lockout is deployment-wide: ten bad guesses from any
+  // visitor lock out everyone for the rest of the window. Deliberate, and the
+  // price of a key an attacker cannot forge. Must use the same key as the WS
+  // upgrade path, which shares this budget.
   const ip = clientKey(req.socket.remoteAddress);
   const retryAfter = authFailureRetryAfter(ip);
   if (retryAfter > 0) {

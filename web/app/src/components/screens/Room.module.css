@@ -1,6 +1,23 @@
-/* Mobile screen wrapper */
-.screen {
-  padding: 0px 0px max(env(safe-area-inset-bottom), var(--s3)) 0;
+/* Mobile screen wrapper.
+
+   Doubled class for (0,2,0): .screenLayout sets `padding` as a shorthand at
+   (0,1,0) too, so at equal specificity whichever module the bundler emits last
+   wins. This one happens to be emitted after Layout's today only because
+   Room.tsx imports it after Layout; reordering those imports would silently
+   hand the whole rule back to .screenLayout.
+
+   Four-value shorthand, matching .screenLayout's: index.html ships
+   viewport-fit=cover, so on a notched phone the layout viewport extends under
+   the status bar and the notch cutout. Zeroing the top/left/right insets puts
+   the logo and the user pills behind the clock and battery in portrait, and
+   under the cutout in landscape. The minimums stay at 0 because this screen
+   supplies its own gutters; only the bottom keeps --s3. */
+.screen.screen {
+  padding:
+    max(env(safe-area-inset-top), 0px)
+    max(env(safe-area-inset-right), 0px)
+    max(env(safe-area-inset-bottom), var(--s3))
+    max(env(safe-area-inset-left), 0px);
 }
 
 /* ───────── Mobile top bar ───────── */
@@ -19,12 +36,27 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  /* Without this the group is an unshrinkable flex item: its pills are
+     nowrap + flex-shrink:0, so on a 320px phone with three users the row
+     runs past the screen edge and .screenLayout's overflow:hidden clips it
+     with no scroll path back. */
+  min-width: 0;
 }
 
 .mobileSwipingCount {
   font-size: 11px;
   color: var(--ry-text-2);
   white-space: nowrap;
+}
+
+/* The narrowest phones cannot fit the logo, three pills and this label at
+   once. Dropping the label is better than letting the pills run off the edge,
+   where .screenLayout clips them unreachably; the head count is still one tap
+   away in the users popup. */
+@media (max-width: 359px) {
+  .mobileSwipingCount {
+    display: none;
+  }
 }
 
 /* ───────── Mobile bottom bar ───────── */
@@ -35,6 +67,17 @@
   gap: 10px;
   padding: 0 16px;
   flex-shrink: 0;
+
+  /* Match-thumb geometry, declared once here so the strip and the empty
+     placeholder that stands in for it derive the same height and cannot
+     drift. The poster is 2/3 aspect, so its height is 1.5x its width: reading
+     the width as the height is what left the placeholder 26px short and made
+     the whole bottom bar jump when the first match landed. */
+  --ry-match-thumb-w: 52px;
+  --ry-match-thumb-gap: 4px;
+  --ry-match-title-size: 9px;
+  --ry-match-title-lh: 1.5;
+  --ry-match-strip-pad: 4px;
 }
 
 .mobileActions {
@@ -117,7 +160,7 @@
   display: flex;
   overflow-x: auto;
   gap: 10px;
-  padding-bottom: 4px;
+  padding-bottom: var(--ry-match-strip-pad);
   scrollbar-width: none;
   cursor: pointer;
 }
@@ -129,13 +172,13 @@
 .mobileMatchThumb {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--ry-match-thumb-gap);
   flex-shrink: 0;
-  width: 52px;
+  width: var(--ry-match-thumb-w);
 }
 
 .mobileMatchPoster {
-  width: 52px;
+  width: var(--ry-match-thumb-w);
   aspect-ratio: 2 / 3;
   border-radius: 6px;
   object-fit: cover;
@@ -143,7 +186,7 @@
 }
 
 .mobileMatchPosterFallback {
-  width: 52px;
+  width: var(--ry-match-thumb-w);
   aspect-ratio: 2 / 3;
   border-radius: 6px;
   background: var(--ry-bg-2);
@@ -158,19 +201,28 @@
 }
 
 .mobileMatchTitle {
-  font-size: 9px;
+  font-size: var(--ry-match-title-size);
+  /* Stated rather than inherited from body, so the placeholder's calc below
+     is grounded in this file. Same 1.5 main.css sets. */
+  line-height: var(--ry-match-title-lh);
   color: var(--ry-text-1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  width: 52px;
+  width: var(--ry-match-thumb-w);
   margin: 0;
 }
 
 .mobileMatchEmpty {
-  /* The strip's footprint (52px poster + 4px gap + 9px title + 4px pad), so
-     the bottom bar height holds steady across the first match. */
-  height: 73px;
+  /* The strip's exact footprint: poster (width x 3/2) + thumb gap + title
+     line box + strip padding. Keeps the bottom bar height steady across the
+     first match. */
+  height: calc(
+    var(--ry-match-thumb-w) * 3 / 2
+    + var(--ry-match-thumb-gap)
+    + var(--ry-match-title-size) * var(--ry-match-title-lh)
+    + var(--ry-match-strip-pad)
+  );
   display: flex;
   align-items: center;
   justify-content: center;
@@ -219,16 +271,24 @@
   position: relative;
   z-index: 3;
   flex-shrink: 0;
+  /* Backstop. Every child of this row resists shrinking (nowrap buttons,
+     flex-shrink:0 pills, dividers and logo), so a full room at the 900px
+     breakpoint can outgrow it and hand the document a horizontal scrollbar.
+     Clipping keeps that overflow out of the page scroller; the min-width:0
+     below is what lets the row give ground before it comes to that. */
+  overflow: hidden;
 }
 
 .desktopRoomMeta {
   display: flex;
   align-items: center;
   gap: 14px;
+  min-width: 0;
 }
 
 .desktopRoomName {
   text-align: center;
+  min-width: 0;
 }
 
 .desktopRoomLabel {
@@ -244,6 +304,11 @@
   font-weight: 600;
   color: var(--ry-text-0);
   margin-top: 1px;
+  /* Room names run to 48 characters with no required spaces, so an unbroken
+     run has nothing to wrap at. Same ellipsis treatment the match titles get. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .desktopDivider {
@@ -257,6 +322,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .desktopSwipingCount {
@@ -434,6 +500,18 @@
 
 .desktopMatchCard:hover {
   background: var(--ry-bg-3);
+}
+
+/* No Plex link to open, so the card drops the pointer and hover affordances
+   rather than advertising a click that would do nothing. MatchesList renders
+   its linkless rows the same way. */
+.desktopMatchCardStatic {
+  composes: desktopMatchCard;
+  cursor: default;
+}
+
+.desktopMatchCardStatic:hover {
+  background: var(--ry-bg-2);
 }
 
 .desktopMatchPoster {

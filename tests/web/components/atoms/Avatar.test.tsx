@@ -19,6 +19,13 @@ describe('Avatar', () => {
     expect(container.querySelector('text')?.textContent).toBe('T');
   });
 
+  // Indexing by code unit handed the <text> node half a surrogate pair, which
+  // draws as the replacement glyph instead of the character.
+  it('renders the whole first character when the name starts with an astral one', () => {
+    const { container } = render(<Avatar userName="🎬alice" />);
+    expect(container.querySelector('text')?.textContent).toBe('🎬');
+  });
+
   // Scaffolding for User.avatarImage: unreachable on Plex (no per-user
   // avatars), kept to pin the intended Emby/JF behavior.
   it('renders an <image> from avatarUrl when provided AND omits the letter fallback', () => {

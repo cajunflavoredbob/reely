@@ -72,6 +72,23 @@ describe('MatchMoment: toast variant (isBig=false)', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
+  // Room rebuilds onDismiss as a fresh arrow on every render and re-renders on
+  // every userProgress broadcast. When requestDismiss was keyed on that
+  // identity, each re-render tore down and re-armed the 3s timer, so the toast
+  // stayed pinned over the stack for as long as anyone kept swiping.
+  it('still auto-dismisses while the parent re-renders with a new onDismiss each second', () => {
+    const onDismiss = vi.fn();
+    const { rerender } = render(
+      <MatchMoment match={match()} isBig={false} onDismiss={() => onDismiss()} />,
+    );
+    for (let i = 0; i < 3; i++) {
+      vi.advanceTimersByTime(1_000);
+      rerender(<MatchMoment match={match()} isBig={false} onDismiss={() => onDismiss()} />);
+    }
+    vi.advanceTimersByTime(350);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
   it('does NOT auto-dismiss when isBig is true (the big-celebration overlay holds until explicitly dismissed)', () => {
     const onDismiss = vi.fn();
     render(<MatchMoment match={match()} isBig={true} onDismiss={onDismiss} />);
@@ -108,6 +125,34 @@ describe('MatchMoment: toast variant (isBig=false)', () => {
     const onDismiss = vi.fn();
     render(<MatchMoment match={match()} isBig={false} onDismiss={onDismiss} replaced />);
     vi.advanceTimersByTime(5_000);
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  // A timer armed before the demotion still holds the top entry's onDismiss,
+  // which clears Room's ENTIRE pending stack. Letting it fire wipes the brand
+  // new match's celebration before it renders.
+  it('cancels a pending exit when demoted inside the 350ms exit window', () => {
+    const onDismiss = vi.fn();
+    const { rerender } = render(
+      <MatchMoment match={match()} isBig={false} onDismiss={onDismiss} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    vi.advanceTimersByTime(100);
+    rerender(<MatchMoment match={match()} isBig={false} onDismiss={onDismiss} replaced />);
+    vi.advanceTimersByTime(1_000);
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  // Same stale-closure hazard, reached through the parent's prune instead.
+  it('drops a pending exit timer when unmounted inside the 350ms exit window', () => {
+    const onDismiss = vi.fn();
+    const { unmount } = render(
+      <MatchMoment match={match()} isBig={false} onDismiss={onDismiss} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    vi.advanceTimersByTime(100);
+    unmount();
+    vi.advanceTimersByTime(1_000);
     expect(onDismiss).not.toHaveBeenCalled();
   });
 
@@ -188,6 +233,31 @@ describe('MatchMoment: big variant (isBig=true)', () => {
     render(<MatchMoment match={match()} isBig={true} onDismiss={onDismiss} />);
     fireEvent.click(screen.getByRole('dialog'));
     expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  // aria-modal tells assistive tech the rest of the page is hidden, so focus
+  // has to come in with the overlay and go back out with it. The Tab cycle
+  // itself is not trapped; jsdom cannot exercise that.
+  it('moves focus onto "Keep swiping" and restores it to the trigger on close', () => {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const { unmount } = render(
+      <MatchMoment match={match()} isBig={true} onDismiss={vi.fn()} />,
+    );
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep swiping' }));
+    unmount();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
+
+  it('leaves focus alone in the toast variant (not a modal)', () => {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    render(<MatchMoment match={match()} isBig={false} onDismiss={vi.fn()} />);
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
   });
 
   it('responds to Escape in the big variant (useEscape gated on isBig)', () => {

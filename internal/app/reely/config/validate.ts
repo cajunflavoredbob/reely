@@ -1,5 +1,6 @@
 import { isRecord, type ReelyError } from '../util/assert';
 import {
+  AllowedOriginsInvalid,
   BasicAuthInvalid,
   BasicAuthPasswordInvalid,
   BasicAuthUserNameInvalid,
@@ -24,6 +25,11 @@ import {
 
 // Mapped to pino levels in logger.ts.
 const VALID_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'];
+
+// Kept in step with ROOT_PATH_ALLOWLIST in handlers/template.ts, which is what
+// actually decides whether a prefix is rendered. Duplicated rather than
+// imported so the validator keeps no dependency on the request layer.
+const ROOT_PATH_ALLOWED = /^(\/[A-Za-z0-9._\-/]*)?$/;
 
 // The `value is string` predicate narrows at the call site, so follow-on logic
 // (URL parse, length, startsWith) sees a typed string.
@@ -111,11 +117,25 @@ export const normalizeAndValidateConfig = (
           if (requireString(server.url, errors, ServerUrlMustBeString, 'a server url must be specified')) {
             // Parse only. Redaction registration lives in config/redact.ts so
             // this stays a pure (unknown) -> ReelyError[].
+            //
+            // The protocol check is the point: `new URL("plex.local:32400")`
+            // succeeds by reading "plex.local:" as the scheme, so the parse
+            // alone lets the most common way of writing a Plex address through
+            // to the Plex client, which rejects it much later with a scheme
+            // error naming a protocol the operator never typed. The env loader
+            // makes the same demand via normalizeUrl.
+            //
+            // The url is deliberately not echoed back: this message is printed
+            // at boot, where the configured Plex address is a value the
+            // redacting logger exists to keep out of pasted logs.
+            let protocol: string | undefined;
             try {
-              new URL(server.url);
-            } catch {
+              protocol = new URL(server.url).protocol;
+            } catch { /* reported below */ }
+            if (protocol !== 'http:' && protocol !== 'https:') {
               errors.push(new ServerUrlInvalid(
-                `"${server.url}" is not a valid URL. Include the protocol, e.g. http://${server.url}`,
+                'a server url must be a full URL including the protocol, ' +
+                  'e.g. "http://192.168.1.10:32400"',
               ));
             }
           }
@@ -157,6 +177,43 @@ export const normalizeAndValidateConfig = (
           errors.push(new ServerBasePathInvalid('rootPath must not be "/"'));
         } else if (!value.rootPath.startsWith('/')) {
           errors.push(new ServerBasePathInvalid('rootPath must start with "/"'));
+        } else {
+          // handlers/template.ts applies ROOT_PATH_ALLOWLIST to every request
+          // and falls back to "" for anything outside it, so a rootPath the
+          // renderer will not honour otherwise boots clean and then serves
+          // every page with no prefix, with nothing in the log pointing at
+          // rootPath. Normalize the same way template.ts does first, or a
+          // value it accepts would fail here.
+          const candidate = value.rootPath.replace(/\s+/g, '').replace(/\/$/, '');
+          if (candidate.includes('..') || !ROOT_PATH_ALLOWED.test(candidate)) {
+            errors.push(new ServerBasePathInvalid(
+              'rootPath may contain only letters, digits, "." "_" "-" and ' +
+                '"/", and must not contain ".."',
+            ));
+          }
+        }
+      }
+    }
+
+    // The env layer splits ALLOWED_ORIGINS into a list, so a bare string
+    // reaches here only from YAML (`allowedOrigins: https://example.com`).
+    // The WS origin check guards with Array.isArray, so a scalar would fail
+    // closed and silently reject the very origin it names: coerce it rather
+    // than leave the operator debugging a deny they cannot see.
+    if (typeof value.allowedOrigins === 'string') {
+      value.allowedOrigins = [value.allowedOrigins];
+    }
+    if (value.allowedOrigins !== undefined) {
+      if (!Array.isArray(value.allowedOrigins)) {
+        errors.push(new AllowedOriginsInvalid('allowedOrigins must be a list of strings'));
+      } else {
+        for (const origin of value.allowedOrigins) {
+          requireString(
+            origin,
+            errors,
+            AllowedOriginsInvalid,
+            'allowedOrigins must be a list of strings',
+          );
         }
       }
     }

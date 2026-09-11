@@ -1,7 +1,22 @@
-.screen {
+/* Doubled class, and the full four-value shorthand rather than
+   padding-left/right longhands. Layout's .screenLayout sets `padding` as a
+   shorthand at the same (0,1,0) specificity, and this module is emitted BEFORE
+   Layout.module.css (Login.tsx imports it first, and module execution is
+   depth-first in import order), so at equal specificity .screenLayout wins and
+   anything written here is dead. (0,2,0) settles it without depending on
+   bundler emit order at all.
+
+   The horizontal insets go to zero because .inner supplies its own 28px
+   gutter. Stacking both left the 56px headline 64px short of the room it needs
+   at 320px, where "tonight's" no longer fits the line and .screenLayout's
+   overflow:hidden clips it. */
+.screen.screen {
   align-items: center;
-  padding-left: 0;
-  padding-right: 0;
+  padding:
+    max(env(safe-area-inset-top), var(--s9))
+    max(env(safe-area-inset-right), 0px)
+    max(env(safe-area-inset-bottom), var(--s3))
+    max(env(safe-area-inset-left), 0px);
 }
 
 .inner {
@@ -194,6 +209,7 @@
 
 /* Name input (empty/editing state) */
 .nameInputWrapper {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -204,8 +220,33 @@
   transition: border-color 100ms;
 }
 
+/* The same gradient focus ring the room field gets. .nameInput sets
+   outline:none, and main.css suppresses the UA ring too, so before this the
+   only keyboard focus signal was a hairline nudging from 0.08 to 0.16 white
+   alpha: about 1.5:1, well under the 3:1 a focus indicator needs. */
+.nameInputWrapper::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: calc(var(--ry-radius-input) + 1px);
+  padding: 1px;
+  background: var(--ry-grad);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  -webkit-mask-composite: destination-out;
+  opacity: 0;
+  transition: opacity 150ms;
+  pointer-events: none;
+}
+
 .nameInputWrapper:focus-within {
-  border-color: var(--ry-line-strong);
+  border-color: transparent;
+}
+
+.nameInputWrapper:focus-within::before {
+  opacity: 1;
 }
 
 .nameInputAvatar {
@@ -224,6 +265,16 @@
   color: var(--ry-text-0);
   caret-color: var(--ry-pink);
   min-width: 0;
+}
+
+/* iOS Safari zooms the visual viewport when a focused control computes below
+   16px, and it never zooms back out on blur. .screenLayout is overflow:hidden,
+   so the page cannot be panned back either and the CTA ends up off-screen.
+   Scoped to touch pointers so the desktop type scale is untouched. */
+@media (hover: none) and (pointer: coarse) {
+  .nameInput {
+    font-size: 16px;
+  }
 }
 
 .nameInput::placeholder {

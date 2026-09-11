@@ -18,9 +18,11 @@ import type { RouteContext } from './types';
 const EMPTY_SET: ReadonlySet<string> = Object.freeze(new Set<string>());
 
 // Progress fraction, safe on both ends. 0 when total <= 0, so an empty-media
-// room can't put Infinity / NaN on the wire. Clamped to 1 because applyFilters
-// preserves userProgress while media.size can shrink, so count > total is
-// legitimate; unclamped, 51/40 reaches the wire, persists, and renders "128%".
+// room can't put Infinity / NaN on the wire. Still clamped to 1 even though
+// applyFilters now rebases the counters: loadRoom restores a persisted count
+// against a media set refetched from a library that may have shrunk since, so
+// count > total survives that path. Unclamped, 51/40 reaches the wire,
+// persists, and renders "128%".
 export const safeProgress = (count: number, total: number): number =>
   total > 0 ? Math.min(1, count / total) : 0;
 
@@ -86,6 +88,15 @@ export class Room {
   // titles retain bytes; the rest share references with room.media.
   private static readonly MATCHED_MEDIA_CAP = 2000;
 
+  // Cap on distinct identities a room will ever track. userProgress, ratings
+  // and userRated are keyed on a self-asserted userName with no eviction, and
+  // login deliberately preserves a renamed user's progress, so one socket that
+  // logs in under a fresh name before each swipe grows all three (and the room
+  // file on disk) without bound. The two caps above bound the cheap maps; this
+  // bounds the expensive ones. Real rooms are limited by the WS connection
+  // count and never come near it.
+  private static readonly MAX_ROOM_IDENTITIES = 500;
+
   constructor(req: CreateRoomRequest, ctx: RouteContext) {
     this.routeContext = ctx;
     this.roomName = req.roomName;
@@ -124,7 +135,19 @@ export class Room {
     // intact. Ratings, userProgress and matches survive filter changes;
     // already-rated media just won't reappear in the swipe queue.
     const seq = ++this.applySeq;
-    const mediaMap = await this.fetchMedia(newFilters);
+    let mediaMap: Map<string, Media>;
+    try {
+      mediaMap = await this.fetchMedia(newFilters);
+    } catch (err) {
+      // Give the number back if we are still the newest apply. An apply that
+      // commits nothing (NoMediaError) must not supersede one already parked on
+      // its Plex fetch: that one would return null and, since the caller treats
+      // null as "say nothing", its user would get no deck change and no error
+      // at all. The guard matters because a THIRD apply may have started while
+      // we were fetching, and it owns the sequence now.
+      if (this.applySeq === seq) this.applySeq = seq - 1;
+      throw err;
+    }
     // Commit only if no newer apply started mid-fetch. null tells the caller
     // not to broadcast filterChangeApplied for media the room never adopted.
     if (seq !== this.applySeq) {
@@ -143,9 +166,40 @@ export class Room {
     }
     this.filters = newFilters;
     this.media = Promise.resolve(mediaMap);
+    this.rebaseProgress(mediaMap);
     // Filtering is activity: refresh the TTL so an actively-filtered room lives.
     this.lastSwipeAt = Date.now();
     return [...mediaMap.values()];
+  }
+
+  /**
+   * Re-derive every userProgress counter against a freshly installed media map.
+   *
+   * userProgress is a free-running count of ratings, but the denominator is the
+   * CURRENT media set. Narrow the set and the counter outgrows it: swipe 200
+   * cards, then filter down to 50, and safeProgress clamps 200/50 to a full
+   * ring for the rest of the session while getMediaForUser is still handing out
+   * unrated cards. The only honest numerator is the user's rated ids that the
+   * new set still contains, which is exactly what getMediaForUser subtracts.
+   */
+  private rebaseProgress(mediaMap: Map<string, Media>) {
+    for (const [userName, previous] of this.userProgress.entries()) {
+      let rebased = 0;
+      const rated = this.userRated.get(userName);
+      if (rated) {
+        for (const mediaId of rated) {
+          if (mediaMap.has(mediaId)) rebased += 1;
+        }
+      }
+      if (rebased === previous) continue;
+      this.userProgress.set(userName, rebased);
+      // Only connected users have a ring on screen, and filterChangeApplied
+      // carries no progress, so without this their rings stay on the old value
+      // until their next swipe.
+      if (this.users.has(userName)) {
+        this.notifyProgress({ userName } as User, safeProgress(rebased, mediaMap.size));
+      }
+    }
   }
 
   async getMediaForUser(userName: string): Promise<Media[]> {
@@ -171,6 +225,17 @@ export class Room {
   // already-resolved promise. Otherwise a rate racing a filter change writes a
   // match that is never notified, never archived, and unresolvable later.
   async storeRating(userName: string, rating: Rate, matchedAt: number) {
+    // Refuse before touching the TTL clock, or the flood that filled the room
+    // would also keep it alive to be refilled.
+    if (
+      !this.userProgress.has(userName) &&
+      this.userProgress.size >= Room.MAX_ROOM_IDENTITIES
+    ) {
+      logger.warn(
+        `Room "${this.roomName}" is tracking ${this.userProgress.size} identities; ignoring rating from ${userName}.`,
+      );
+      return;
+    }
     // Every accepted rating refreshes the TTL clock.
     this.lastSwipeAt = matchedAt;
     // Snapshot once: applyFilters reassigns this.media, so awaiting it twice
@@ -224,6 +289,10 @@ export class Room {
     const matches: Match[] = [];
     // Snapshot once so a concurrent applyFilters can't swap it mid-loop.
     const media = await this.media;
+    // Collected and logged once at debug. Per-match at info re-emitted the same
+    // lines on every join and every reconnect-driven rejoin, for every device,
+    // for the life of the room, against a container that ships no log rotation.
+    const unresolved: string[] = [];
 
     // One pass per rating tuple: likers, latest matchedAt, and whether userName
     // liked it.
@@ -243,9 +312,15 @@ export class Room {
         if (matchedMedia) {
           matches.push({ matchedAt, media: matchedMedia, users: likers });
         } else {
-          logger.info(`Match references mediaId ${mediaId}, which is not in the current media set.`);
+          unresolved.push(mediaId);
         }
       }
+    }
+
+    if (unresolved.length > 0) {
+      logger.debug(
+        `${unresolved.length} match(es) reference media missing from the current set: ${unresolved.join(', ')}`,
+      );
     }
 
     return matches;
@@ -369,6 +444,13 @@ export const createRoom = async (
   // room.media), and the later writer would orphan the earlier room's client.
   if (rooms.has(room.roomName)) {
     throw new RoomExistsError(`${createRequest.roomName} already exists.`);
+  }
+  // The size check above is just as stale as the has() check: N creates fired
+  // while the registry sat one slot under the cap all parked on the Plex fetch,
+  // all passed it, and all commit. MAX_ROOMS is the only backstop against a
+  // create flood, so it has to hold at commit time, not just at request time.
+  if (rooms.size >= MAX_ROOMS) {
+    throw new RoomLimitError(`Room limit reached (${MAX_ROOMS}). Try again later.`);
   }
   rooms.set(room.roomName, room);
   return room;

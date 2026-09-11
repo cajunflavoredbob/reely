@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+// Every function roomStore imports from node:fs/promises must appear here.
+// Vitest's factory mock throws on a missing key, and saveRoom's own try/catch
+// would swallow that throw, leaving the tests green over a save that never ran.
 vi.mock('node:fs/promises', () => ({
   mkdir: vi.fn().mockResolvedValue(undefined),
   writeFile: vi.fn().mockResolvedValue(undefined),
+  rename: vi.fn().mockResolvedValue(undefined),
   readFile: vi.fn(),
   readdir: vi.fn().mockResolvedValue([]),
+  stat: vi.fn().mockResolvedValue({ mtimeMs: Date.now() }),
   unlink: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -112,9 +117,129 @@ describe('saveRoom', () => {
   it('logs an error and does not throw if writeFile fails', async () => {
     vi.mocked(fs.writeFile).mockRejectedValueOnce(new Error('disk full'));
     await expect(saveRoom(makeRoom())).resolves.toBeUndefined();
+    expect(vi.mocked(fs.rename)).not.toHaveBeenCalled();
     expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
       expect.stringContaining('Failed to save room'),
     );
+  });
+
+  // The write goes to a uniquely named tmp and only becomes the room file on
+  // the rename, so a crash mid-write can never truncate the live file.
+  it('writes a tmp file and renames it onto the room file', async () => {
+    await saveRoom(makeRoom({ roomName: 'atomic' }));
+
+    const tmpPath = String(vi.mocked(fs.writeFile).mock.calls[0][0]);
+    expect(tmpPath).toMatch(/atomic\.json\.\d+\.[0-9a-f]+\.tmp$/);
+
+    expect(vi.mocked(fs.rename)).toHaveBeenCalledOnce();
+    const [from, to] = vi.mocked(fs.rename).mock.calls[0];
+    expect(String(from)).toBe(tmpPath);
+    expect(String(to)).toBe(tmpPath.replace(/\.\d+\.[0-9a-f]+\.tmp$/, ''));
+    expect(vi.mocked(fs.rename).mock.invocationCallOrder[0])
+      .toBeGreaterThan(vi.mocked(fs.writeFile).mock.invocationCallOrder[0]);
+  });
+
+  it('logs an error and does not throw if rename fails', async () => {
+    vi.mocked(fs.rename).mockRejectedValueOnce(new Error('cross-device link'));
+    await expect(saveRoom(makeRoom())).resolves.toBeUndefined();
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to save room'),
+    );
+  });
+
+  // Nothing else knows the tmp path, and the sweep only reaps by age, so a
+  // failed save that left it behind would keep it for an hour minimum.
+  it('removes the tmp file when the write fails', async () => {
+    vi.mocked(fs.writeFile).mockRejectedValueOnce(new Error('ENOSPC'));
+    await saveRoom(makeRoom({ roomName: 'nospace' }));
+
+    const tmpPath = String(vi.mocked(fs.writeFile).mock.calls[0][0]);
+    expect(vi.mocked(fs.unlink)).toHaveBeenCalledWith(tmpPath);
+  });
+
+  it('does not throw when the tmp cleanup also fails', async () => {
+    vi.mocked(fs.writeFile).mockRejectedValueOnce(new Error('ENOSPC'));
+    vi.mocked(fs.unlink).mockRejectedValueOnce(new Error('EACCES'));
+    await expect(saveRoom(makeRoom())).resolves.toBeUndefined();
+  });
+
+  // A data dir the container user cannot write disables persistence silently:
+  // /health still returns 200, so this log line is the operator's only signal.
+  it('names the unwritable directory when the save fails with EACCES', async () => {
+    vi.mocked(fs.mkdir).mockRejectedValueOnce(
+      Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }),
+    );
+    await saveRoom(makeRoom());
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.stringContaining('is not writable by uid'),
+    );
+  });
+
+  it('leaves an ordinary failure message unadorned', async () => {
+    vi.mocked(fs.writeFile).mockRejectedValueOnce(
+      Object.assign(new Error('ENOSPC: no space left'), { code: 'ENOSPC' }),
+    );
+    await saveRoom(makeRoom());
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.not.stringContaining('is not writable by uid'),
+    );
+  });
+});
+
+// Six call sites save the same room and four are fire-and-forget, so two saves
+// of one room overlap routinely. Without ordering the last rename wins, which
+// is not the same as the newest snapshot winning.
+describe('saveRoom write ordering', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('commits overlapping saves of one room in snapshot order', async () => {
+    const ratings = new Map<string, unknown[]>([['m1', [['alice', 'like', 1]]]]);
+    const room = makeRoom({ roomName: 'ordered', ratings });
+
+    // The first write parks, exactly as a spun-down disk would.
+    let releaseFirst: () => void = () => {};
+    const firstWriteStarted = new Promise<void>((resolveStarted) => {
+      vi.mocked(fs.writeFile).mockImplementationOnce((async () => {
+        resolveStarted();
+        await new Promise<void>((r) => { releaseFirst = r; });
+      }) as never);
+    });
+
+    const first = saveRoom(room);
+    await firstWriteStarted;
+
+    // A swipe lands, then a second save snapshots the newer state.
+    ratings.set('m2', [['bob', 'like', 2]]);
+    const second = saveRoom(room);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+
+    expect(vi.mocked(fs.rename)).toHaveBeenCalledTimes(2);
+    // The second save's write must not even start before the first commits.
+    expect(vi.mocked(fs.writeFile).mock.invocationCallOrder[1])
+      .toBeGreaterThan(vi.mocked(fs.rename).mock.invocationCallOrder[0]);
+    const lastWritten = JSON.parse(String(vi.mocked(fs.writeFile).mock.calls[1][1]));
+    expect(lastWritten.ratings).toHaveLength(2);
+  });
+
+  it('does not serialize saves of different rooms behind each other', async () => {
+    let releaseFirst: () => void = () => {};
+    const firstWriteStarted = new Promise<void>((resolveStarted) => {
+      vi.mocked(fs.writeFile).mockImplementationOnce((async () => {
+        resolveStarted();
+        await new Promise<void>((r) => { releaseFirst = r; });
+      }) as never);
+    });
+
+    const slow = saveRoom(makeRoom({ roomName: 'slow' }));
+    await firstWriteStarted;
+    await saveRoom(makeRoom({ roomName: 'other' }));
+
+    expect(vi.mocked(fs.rename)).toHaveBeenCalledOnce();
+    releaseFirst();
+    await slow;
+    expect(vi.mocked(fs.rename)).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -254,9 +379,9 @@ describe('cleanupExpiredRooms', () => {
     expect(vi.mocked(fs.unlink)).not.toHaveBeenCalled();
   });
 
-  it('removes and warns about unreadable room files', async () => {
+  it('removes and warns about a room file that is not valid JSON', async () => {
     mockReaddirOnce(['corrupt.json']);
-    vi.mocked(fs.readFile).mockRejectedValueOnce(new Error('corrupt'));
+    vi.mocked(fs.readFile).mockResolvedValueOnce('{ not json' as never);
 
     await cleanupExpiredRooms(ROOM_TTL_MS);
 
@@ -264,6 +389,109 @@ describe('cleanupExpiredRooms', () => {
     expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
       expect.stringContaining('corrupt.json'),
     );
+  });
+
+  // An I/O error says nothing about the contents. Deleting on it answers a
+  // transient permissions or descriptor problem by destroying user data.
+  it.each([
+    { name: 'EACCES', code: 'EACCES' },
+    { name: 'EMFILE', code: 'EMFILE' },
+    { name: 'EIO', code: 'EIO' },
+  ])('keeps a room file that fails to read with $name', async ({ code }) => {
+    mockReaddirOnce(['unreadable.json']);
+    const err = Object.assign(new Error(`${code}: read failed`), { code });
+    vi.mocked(fs.readFile).mockRejectedValueOnce(err);
+
+    await cleanupExpiredRooms(ROOM_TTL_MS);
+
+    expect(vi.mocked(fs.unlink)).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.stringContaining('unreadable.json'),
+    );
+  });
+
+  // A failed unlink is a mount or permissions problem, not a corrupt file, so
+  // it must not be reported as one (and must not be reported as a success).
+  it('reports a failed expiry unlink without calling the file corrupt', async () => {
+    const stale = Date.now() - (ROOM_TTL_MS + 60_000);
+    mockReaddirOnce(['locked.json']);
+    vi.mocked(fs.readFile).mockResolvedValueOnce(
+      JSON.stringify({ updatedAt: stale, lastSwipeAt: stale }) as never,
+    );
+    vi.mocked(fs.unlink).mockRejectedValueOnce(
+      Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }),
+    );
+
+    await cleanupExpiredRooms(ROOM_TTL_MS);
+
+    expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.info)).not.toHaveBeenCalledWith(
+      expect.stringContaining('Expired room file'),
+    );
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to unlink expired room file'),
+    );
+  });
+
+  // A sweep already racing another one is normal; only a real failure is news.
+  it('stays quiet when the expiry unlink loses a race (ENOENT)', async () => {
+    const stale = Date.now() - (ROOM_TTL_MS + 60_000);
+    mockReaddirOnce(['gone.json']);
+    vi.mocked(fs.readFile).mockResolvedValueOnce(
+      JSON.stringify({ updatedAt: stale, lastSwipeAt: stale }) as never,
+    );
+    vi.mocked(fs.unlink).mockRejectedValueOnce(
+      Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' }),
+    );
+
+    await cleanupExpiredRooms(ROOM_TTL_MS);
+
+    expect(vi.mocked(logger.error)).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
+  });
+
+  // A save killed between writeFile and rename strands its tmp, and the .json
+  // filter would otherwise skip it for the life of the volume.
+  it('reaps an abandoned .tmp file older than the age floor', async () => {
+    mockReaddirOnce(['stranded.json.123.abcd.tmp']);
+    vi.mocked(fs.stat).mockResolvedValueOnce(
+      { mtimeMs: Date.now() - 2 * 60 * 60 * 1000 } as never,
+    );
+
+    await cleanupExpiredRooms(ROOM_TTL_MS);
+
+    expect(vi.mocked(fs.unlink)).toHaveBeenCalledOnce();
+    expect(String(vi.mocked(fs.unlink).mock.calls[0][0])).toContain('.tmp');
+    expect(vi.mocked(fs.readFile)).not.toHaveBeenCalled();
+  });
+
+  // The age floor is what keeps the sweep off a write still in flight.
+  it('leaves a recent .tmp file alone', async () => {
+    mockReaddirOnce(['inflight.json.123.abcd.tmp']);
+    vi.mocked(fs.stat).mockResolvedValueOnce({ mtimeMs: Date.now() } as never);
+
+    await cleanupExpiredRooms(ROOM_TTL_MS);
+
+    expect(vi.mocked(fs.unlink)).not.toHaveBeenCalled();
+  });
+
+  // Re-checked after the unlink await: a join can reach users.set() during the
+  // I/O wait, and removing the room then would leave the joiner rating an
+  // orphan Room while the next join builds a second, divergent one.
+  it('keeps and re-saves a room a client joined during the unlink await', async () => {
+    const stale = Date.now() - (ROOM_TTL_MS + 60_000);
+    const users = new Map<string, unknown>();
+    const room = makeRoom({ roomName: 'revived-mem', lastSwipeAt: stale, users });
+    mockGetAllRooms.mockReturnValueOnce([room]);
+    vi.mocked(fs.unlink).mockImplementationOnce((async () => {
+      users.set('alice', {});
+    }) as never);
+
+    await cleanupExpiredRooms(ROOM_TTL_MS);
+
+    expect(mockRemoveRoom).not.toHaveBeenCalled();
+    expect(vi.mocked(fs.rename)).toHaveBeenCalledOnce();
+    expect(String(vi.mocked(fs.rename).mock.calls[0][1])).toContain('revived-mem.json');
   });
 });
 
@@ -361,6 +589,36 @@ describe('scheduleSaveRoom / cancelPendingSave / flushPendingSaves', () => {
   });
 });
 
+// Shutdown awaits flushPendingSaves and then process.exit()s, so anything the
+// flush does not wait for is a save the exit can cut off.
+describe('flushPendingSaves as a shutdown barrier', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('waits for a fire-and-forget save already in flight', async () => {
+    let releaseWrite: () => void = () => {};
+    const writeStarted = new Promise<void>((resolveStarted) => {
+      vi.mocked(fs.writeFile).mockImplementationOnce((async () => {
+        resolveStarted();
+        await new Promise<void>((r) => { releaseWrite = r; });
+      }) as never);
+    });
+
+    // The join, disconnect and applyFilters paths all save like this; none of
+    // them goes through the debounce queue the flush iterates.
+    void saveRoom(makeRoom({ roomName: 'in-flight' }));
+    await writeStarted;
+
+    let flushed = false;
+    const flush = flushPendingSaves().then(() => { flushed = true; });
+    await new Promise<void>((r) => { setImmediate(r); });
+    expect(flushed).toBe(false);
+
+    releaseWrite();
+    await flush;
+    expect(vi.mocked(fs.rename)).toHaveBeenCalledOnce();
+  });
+});
+
 describe('loadRoom', () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
@@ -427,6 +685,70 @@ describe('loadRoom', () => {
     expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
       expect.stringMatching(reason),
     );
+  });
+});
+
+// Array.isArray in the shape check only proves ratings is an array. A bad
+// tuple inside builds a Map of corrupt values with no error, and the [u, r, t]
+// destructure in getMatches then yields an undefined liker.
+describe('loadRoom ratings validation', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const withRatings = (ratings: unknown) => ({
+    roomName: 'r', ratings, userProgress: [], createdAt: 1, updatedAt: 2,
+  });
+
+  it.each([
+    { name: 'an entry that is not a pair', ratings: [['m1']] },
+    { name: 'an entry whose tuple list is not an array', ratings: [['m1', 'nope']] },
+    { name: 'a non-string mediaId', ratings: [[7, []]] },
+    { name: 'a two-element rating tuple', ratings: [['m1', [['alice', 'like']]]] },
+    { name: 'a rating that is neither like nor dislike', ratings: [['m1', [['alice', 'maybe', 1]]]] },
+    { name: 'a non-string user in a rating tuple', ratings: [['m1', [[7, 'like', 1]]]] },
+    { name: 'a non-numeric rating time', ratings: [['m1', [['alice', 'like', 'soon']]]] },
+  ])('rejects a room file with $name', async ({ ratings }) => {
+    vi.mocked(fs.readFile).mockResolvedValueOnce(
+      JSON.stringify(withRatings(ratings)) as never,
+    );
+    expect(await loadRoom('bad-ratings', {} as never)).toBeNull();
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.stringMatching(/malformed ratings/),
+    );
+  });
+
+  it('rejects a room file whose ratings are not an array at all', async () => {
+    vi.mocked(fs.readFile).mockResolvedValueOnce(
+      JSON.stringify(withRatings('nope')) as never,
+    );
+    expect(await loadRoom('bad-ratings', {} as never)).toBeNull();
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.stringMatching(/ratings must be an array/),
+    );
+  });
+
+  // storeRating maintains userRated incrementally, so a restore is the only
+  // place it gets rebuilt. Without it getMediaForUser falls back to an empty
+  // set and re-serves every card the user already rated, with the re-rates
+  // dropped and their progress counter stuck at the restore point.
+  it('rebuilds the userRated reverse index from the persisted ratings', async () => {
+    vi.mocked(fs.readFile).mockResolvedValueOnce(
+      JSON.stringify({
+        roomName: 'indexed',
+        ratings: [
+          ['m1', [['alice', 'like', 1], ['bob', 'dislike', 2]]],
+          ['m2', [['alice', 'dislike', 3]]],
+        ],
+        userProgress: [['alice', 2], ['bob', 1]],
+        createdAt: 1,
+        updatedAt: 2,
+      }) as never,
+    );
+
+    const room = await loadRoom('indexed', {} as never);
+
+    expect(room?.userRated.get('alice')).toEqual(new Set(['m1', 'm2']));
+    expect(room?.userRated.get('bob')).toEqual(new Set(['m1']));
+    expect(room?.userRated.size).toBe(2);
   });
 });
 

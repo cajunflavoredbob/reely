@@ -6,10 +6,12 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 // @use-gesture/react here: the SUT resolves them through the web/app pnpm
 // tree, which vitest externalizes past where the mock factory runs. So the
 // dismissal path (rateItem -> dispatch remove -> controller.start().then(
-// onCardDismissed)) is unreachable; the real Controller needs a rAF loop
-// jsdom never advances, so .then(cb) never fires. Driving it would need an
-// injectable Controller factory or a real-browser harness. Everything else
-// is covered below.
+// onCardDismissed)) is unreachable by animation; the real Controller needs a
+// rAF loop jsdom never advances, so a throw never runs to completion here.
+// The one way in is unmounting mid-throw, which stops the controllers and
+// resolves their promises; see the unmount test below. Watching a throw
+// finish normally would need an injectable Controller factory or a
+// real-browser harness. Everything else is covered below.
 const { useStoreMock } = vi.hoisted(() => ({ useStoreMock: vi.fn() }));
 
 vi.mock('../../../../web/app/src/store', () => ({
@@ -70,9 +72,11 @@ afterEach(() => {
 });
 
 describe('CardStack: empty state', () => {
-  it('renders the empty heart + "That\'s everything." copy when no cards', () => {
-    render(<CardStack cards={[]} renderCard={renderCard} onCardDismissed={vi.fn()} />);
-    expect(screen.getByText("That's everything.")).toBeDefined();
+  it('renders the empty heart when no cards', () => {
+    const { container } = render(
+      <CardStack cards={[]} renderCard={renderCard} onCardDismissed={vi.fn()} />,
+    );
+    expect(container.querySelector('[class*="emptyIcon"] svg')).not.toBeNull();
   });
 
   // Tr renders the raw key when no translation matches, and the store mock
@@ -80,6 +84,14 @@ describe('CardStack: empty state', () => {
   it('renders the RATE_SECTION_EXHAUSTED_CARDS Tr key in the empty subtext', () => {
     render(<CardStack cards={[]} renderCard={renderCard} onCardDismissed={vi.fn()} />);
     expect(screen.getByText('RATE_SECTION_EXHAUSTED_CARDS')).toBeDefined();
+  });
+
+  // The empty state is the app's most-translated surface, so the copy has to
+  // come from the bundle alone: a hardcoded English headline used to sit above
+  // the Tr and stack two languages in one block.
+  it('renders no untranslated copy alongside the Tr key', () => {
+    render(<CardStack cards={[]} renderCard={renderCard} onCardDismissed={vi.fn()} />);
+    expect(screen.queryByText("That's everything.")).toBeNull();
   });
 
   // Without this the hasActiveFilters ternary can regress and fail nothing.
@@ -159,6 +171,21 @@ describe('CardStack: connection-status gates (button + keyboard early-return)', 
     expect(onCardDismissed).not.toHaveBeenCalled();
   });
 
+  // The affordance has to match the gate: without disabled the buttons keep
+  // hover, the press scale and cursor: pointer while doing nothing.
+  it('disables the Pass + Like buttons while disconnected', () => {
+    withState({ connectionStatus: 'disconnected' });
+    render(<CardStack cards={[card('a')]} renderCard={renderCard} onCardDismissed={vi.fn()} />);
+    expect((screen.getByRole('button', { name: 'Pass' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Like' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('leaves the Pass + Like buttons enabled while connected', () => {
+    render(<CardStack cards={[card('a')]} renderCard={renderCard} onCardDismissed={vi.fn()} />);
+    expect((screen.getByRole('button', { name: 'Pass' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Like' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   // The keydown handler guards on connection first, arrow key second: Space,
   // Enter and letters must never swipe.
   it('non-arrow keys never fire onCardDismissed even when connected', () => {
@@ -191,6 +218,17 @@ describe('CardStack: arrow keys from editable elements are ignored', () => {
     expect(screen.queryByTestId('card-c5')).toBeNull();
     fireEvent.keyDown(window, { code: 'ArrowRight' });
     expect(screen.getByTestId('card-c5')).toBeDefined();
+  });
+
+  // OS auto-repeat, not a fresh press. Holding an arrow otherwise rates a
+  // card per repeat tick, and those ratings are permanent server-side.
+  it('a repeating ArrowRight (held key) does NOT rate', () => {
+    render(
+      <CardStack cards={sevenCards()} renderCard={renderCard} onCardDismissed={vi.fn()} />,
+    );
+    fireEvent.keyDown(window, { code: 'ArrowRight', repeat: true });
+    fireEvent.keyDown(window, { code: 'ArrowLeft', repeat: true });
+    expect(screen.queryByTestId('card-c5')).toBeNull();
   });
 
   it('ArrowLeft from a text input does NOT rate', () => {
@@ -233,6 +271,35 @@ describe('CardStack: arrow keys from editable elements are ignored', () => {
   });
 });
 
+// The one dismissal-path assertion jsdom can make without a rAF loop: the
+// unmount cleanup stops every controller, and stopping resolves the pending
+// throw promise, so the continuation runs there and then.
+describe('CardStack: a swipe caught by an unmount still reports the rating', () => {
+  it('fires onCardDismissed when the stack unmounts inside the throw', async () => {
+    const onCardDismissed = vi.fn();
+    const cards = Array.from({ length: 7 }, (_, i) => card(`c${i}`));
+    const { unmount } = render(
+      <CardStack cards={cards} renderCard={renderCard} onCardDismissed={onCardDismissed} />,
+    );
+
+    // Starts the 150ms throw on card-c0; jsdom never advances it to completion.
+    fireEvent.keyDown(window, { code: 'ArrowRight' });
+    expect(onCardDismissed).not.toHaveBeenCalled();
+
+    // Room remounts the stack on any mediaVersion bump (a rejoin, or another
+    // member's filter change), which can land mid-throw. The rating is the
+    // only producer of the server `rate` frame, so it must not be dropped:
+    // that media set may not contain the card again.
+    unmount();
+    // The stop() resolves the throw promise a tick or two later, so poll
+    // rather than counting microtasks.
+    await vi.waitFor(() => expect(onCardDismissed).toHaveBeenCalledTimes(1));
+
+    expect(onCardDismissed.mock.calls[0]?.[0]?.id).toBe('c0');
+    expect(onCardDismissed.mock.calls[0]?.[1]).toBe('right');
+  });
+});
+
 describe('CardStack: memo blocks all prop-change re-renders (documented invariant)', () => {
   // areEqual returns true unconditionally: spring controllers own their
   // animation state, and re-rendering on a prop change tears them down
@@ -249,5 +316,25 @@ describe('CardStack: memo blocks all prop-change re-renders (documented invarian
     );
     // The memo blocks the re-render, so 'b' must not appear.
     expect(screen.queryByTestId('card-b')).toBeNull();
+  });
+
+  // The prop change on its own cannot catch a missing comparator: the rendered
+  // deck comes from the reducer's mount-time lazy initializer either way. What
+  // the memo actually pins is which `cards` array the reducer closure sees on
+  // the next 'add', so rate a card and check where its replacement came from.
+  it('a later add pulls the next card from the mount-time array, not the replacement prop', () => {
+    const original = Array.from({ length: 7 }, (_, i) => card(`c${i}`));
+    const replacement = Array.from({ length: 7 }, (_, i) => card(`d${i}`));
+    const { rerender } = render(
+      <CardStack cards={original} renderCard={renderCard} onCardDismissed={vi.fn()} />,
+    );
+    rerender(
+      <CardStack cards={replacement} renderCard={renderCard} onCardDismissed={vi.fn()} />,
+    );
+    fireEvent.keyDown(window, { code: 'ArrowRight' });
+    // Without the comparator the re-render would hand the reducer the new
+    // array and 'add' would mount card-d5 instead.
+    expect(screen.getByTestId('card-c5')).toBeDefined();
+    expect(screen.queryByTestId('card-d5')).toBeNull();
   });
 });

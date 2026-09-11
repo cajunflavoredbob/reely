@@ -107,6 +107,19 @@ describe('loadFromEnv: PLEX_URL scheme enforcement', () => {
     await expect(loadFromEnv()).rejects.toThrow(/has no scheme/);
   });
 
+  // This throw is logged at fatal before registerRedactions has run, so the
+  // message must name the variable without echoing the address.
+  it('names PLEX_URL without echoing the configured address', async () => {
+    vi.stubEnv('PLEX_URL', 'plex.local:32400');
+    vi.stubEnv('PLEX_TOKEN', 'tok');
+    const err = await loadFromEnv().then(
+      () => { throw new Error('loadFromEnv resolved instead of rejecting'); },
+      (e: Error) => e,
+    );
+    expect(err.message).toMatch(/PLEX_URL has no scheme/);
+    expect(err.message).not.toContain('plex.local');
+  });
+
   it('accepts http:// PLEX_URL', async () => {
     vi.stubEnv('PLEX_URL', 'http://plex.local:32400');
     vi.stubEnv('PLEX_TOKEN', 'tok');
@@ -175,6 +188,65 @@ describe('loadFromEnv: partial-bundle gates', () => {
   it('emits NO tlsConfig bundle when only TLS_CERT is set', async () => {
     vi.stubEnv('TLS_CERT', '/etc/ssl/cert.pem');
     expect((await loadFromEnv())?.tlsConfig).toBeUndefined();
+  });
+});
+
+describe('loadFromEnv: a blank half of a pair is a misconfiguration, not an opt-out', () => {
+  // `AUTH_PASS=${REELY_PASS}` in a compose file with REELY_PASS unset reaches
+  // the container as AUTH_PASS=. Dropping the bundle there boots the server
+  // with authentication off while the operator believes it is on.
+  it('throws when AUTH_PASS is empty and AUTH_USER has a value', async () => {
+    vi.stubEnv('AUTH_USER', 'admin');
+    vi.stubEnv('AUTH_PASS', '');
+    await expect(loadFromEnv()).rejects.toThrow(/AUTH_PASS is set to an empty value/);
+  });
+
+  it('throws when AUTH_PASS is whitespace only', async () => {
+    vi.stubEnv('AUTH_USER', 'admin');
+    vi.stubEnv('AUTH_PASS', '   ');
+    await expect(loadFromEnv()).rejects.toThrow(/AUTH_PASS is set to an empty value/);
+  });
+
+  it('throws when AUTH_USER is empty and AUTH_PASS has a value', async () => {
+    vi.stubEnv('AUTH_USER', '');
+    vi.stubEnv('AUTH_PASS', 'hunter2');
+    await expect(loadFromEnv()).rejects.toThrow(/AUTH_USER is set to an empty value/);
+  });
+
+  it('throws when TLS_KEY is empty and TLS_CERT has a value', async () => {
+    vi.stubEnv('TLS_CERT', '/etc/ssl/cert.pem');
+    vi.stubEnv('TLS_KEY', '');
+    await expect(loadFromEnv()).rejects.toThrow(/TLS_KEY is set to an empty value/);
+  });
+
+  // A template .env with every var listed and left blank is an opt-out, not a
+  // half-configured pair.
+  it('accepts both halves blank as "not configured"', async () => {
+    vi.stubEnv('AUTH_USER', '');
+    vi.stubEnv('AUTH_PASS', '');
+    vi.stubEnv('TLS_CERT', '');
+    vi.stubEnv('TLS_KEY', '');
+    const out = await loadFromEnv();
+    expect(out?.basicAuth).toBeUndefined();
+    expect(out?.tlsConfig).toBeUndefined();
+  });
+
+  // An unset partner still means "this bundle was never configured"; only a
+  // supplied-but-empty one is an error.
+  it('still drops the bundle silently when the partner var is absent', async () => {
+    vi.stubEnv('AUTH_USER', 'admin');
+    expect((await loadFromEnv())?.basicAuth).toBeUndefined();
+  });
+
+  // The secret supplies the password, so a leftover blank AUTH_PASS is not a
+  // gap at all.
+  it('does not throw when a docker secret fills the blank half', async () => {
+    dockerSecretMock.mockImplementation((name: string) =>
+      Promise.resolve(name === 'auth_pass' ? 'secret-pass' : undefined),
+    );
+    vi.stubEnv('AUTH_USER', 'admin');
+    vi.stubEnv('AUTH_PASS', '');
+    expect((await loadFromEnv())?.basicAuth?.password).toBe('secret-pass');
   });
 });
 

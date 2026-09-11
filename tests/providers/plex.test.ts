@@ -10,6 +10,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // PlexApi is mocked at the class boundary, so the assertions are on the
 // URLSearchParams the provider hands to api.getLibraryItems.
 
+// The degraded paths below log warnings; mocked so a passing run stays quiet.
+import { loggerMockFactory } from '../helpers';
+vi.mock('../../internal/app/reely/logger', () => loggerMockFactory());
+
 // vi.hoisted so vi.mock's hoisted factory can read the class.
 const { mockApi, PlexApiMock } = vi.hoisted(() => {
   const mockApi = {
@@ -59,7 +63,7 @@ const makeProvider = () =>
     token: 'tok',
   } as any);
 
-describe('Plex provider: getFilterValues dedup (unchanged behavior, pre-#299)', () => {
+describe('Plex provider: getFilterValues dedup (unchanged behavior)', () => {
   it('dedupes by title, keeping the first per-library key as the canonical', async () => {
     mockApi.getFilterValues.mockResolvedValue({
       size: 3,
@@ -101,7 +105,7 @@ describe('Plex provider: getFilterValues dedup (unchanged behavior, pre-#299)', 
   });
 });
 
-describe('Plex provider: cross-library expansion (audit #299)', () => {
+describe('Plex provider: cross-library expansion', () => {
   it('builds the expansion lookup during getFilterValues', async () => {
     mockApi.getFilterValues.mockResolvedValue({
       size: 3,
@@ -351,5 +355,233 @@ describe('Plex provider: operator vocabulary normalization', () => {
       { key: '>>=', title: 'is after' },
       { key: '<<=', title: 'is before' },
     ]);
+  });
+});
+
+// `library` never reaches Plex: filtersToPlexQueryString drops the key and the
+// provider narrows the fan-out itself. Every other test here seeds one library,
+// which makes the narrowing a no-op.
+describe('Plex provider: library scoping', () => {
+  const twoLibraries = () => {
+    mockApi.getLibraries.mockResolvedValue([
+      { key: 'lib-1', title: 'Movies', type: 'movie' },
+      { key: 'lib-2', title: 'Family Movies', type: 'movie' },
+    ]);
+  };
+
+  it('fans out to every library when no library filter is applied', async () => {
+    twoLibraries();
+    const provider = makeProvider();
+    await provider.getMedia({});
+    expect(mockApi.getLibraryItems.mock.calls.map((c) => c[0])).toEqual(['lib-1', 'lib-2']);
+  });
+
+  it("'is' narrows the fan-out to the selected library", async () => {
+    twoLibraries();
+    const provider = makeProvider();
+    await provider.getMedia({
+      filters: [{ key: 'library', operator: '=', value: ['lib-2'] }],
+    });
+    expect(mockApi.getLibraryItems.mock.calls.map((c) => c[0])).toEqual(['lib-2']);
+    // The synthetic key is not something Plex understands.
+    const params = mockApi.getLibraryItems.mock.calls[0]?.[1].filters as URLSearchParams;
+    expect(params.has('library')).toBe(false);
+  });
+
+  // The field is advertised as a tag, so the UI offers "is not". Inclusion-only
+  // narrowing returned exactly the library the user meant to exclude.
+  it("'is not' excludes the selected library instead of selecting it", async () => {
+    twoLibraries();
+    const provider = makeProvider();
+    await provider.getMedia({
+      filters: [{ key: 'library', operator: '!=', value: ['lib-2'] }],
+    });
+    expect(mockApi.getLibraryItems.mock.calls.map((c) => c[0])).toEqual(['lib-1']);
+  });
+});
+
+// A section that rejects is skipped, but every section rejecting is an outage,
+// not an empty result: resolving with [] caches the outage for the whole TTL
+// and tells the user their filters excluded everything.
+describe('Plex provider: upstream failure is not an empty deck', () => {
+  it('rejects when every library section fails', async () => {
+    mockApi.getLibraryItems.mockRejectedValue(new Error('ECONNRESET'));
+    const provider = makeProvider();
+    await expect(provider.getMedia({})).rejects.toThrow(/every library section failed/i);
+  });
+
+  it('still resolves with the survivors when only some sections fail', async () => {
+    mockApi.getLibraries.mockResolvedValue([
+      { key: 'lib-1', title: 'Movies', type: 'movie' },
+      { key: 'lib-2', title: 'Family Movies', type: 'movie' },
+    ]);
+    mockApi.getLibraryItems.mockImplementation(async (key: string) => {
+      if (key === 'lib-1') throw new Error('ECONNRESET');
+      return { size: 1, Metadata: [{ ratingKey: 'b', title: 'B', key: '/library/metadata/2' }] };
+    });
+    const provider = makeProvider();
+    const media = await provider.getMedia({});
+    expect(media.map((m) => m.id)).toEqual(['b']);
+  });
+
+  // A filter that narrows the fan-out to nothing is a real empty result, and
+  // the room's "no items with the specified filters" message is accurate.
+  it('resolves empty when the library filter leaves no section to query', async () => {
+    const provider = makeProvider();
+    const media = await provider.getMedia({
+      filters: [{ key: 'library', operator: '=', value: ['lib-missing'] }],
+    });
+    expect(media).toEqual([]);
+    expect(mockApi.getLibraryItems).not.toHaveBeenCalled();
+  });
+});
+
+// A zero-length library list is a resolved value, so the hour-long cache above
+// it would pin the empty answer long after Plex recovered.
+describe('Plex provider: empty library list', () => {
+  it('rejects rather than reporting an empty library list', async () => {
+    mockApi.getLibraries.mockResolvedValue([]);
+    const provider = makeProvider();
+    await expect(provider.getLibraries()).rejects.toThrow(/no movie libraries/i);
+    await expect(provider.getMedia({})).rejects.toThrow(/no movie libraries/i);
+  });
+
+  it('rejects when Plex has libraries but none of them hold movies', async () => {
+    mockApi.getLibraries.mockResolvedValue([
+      { key: 'lib-9', title: 'TV Shows', type: 'show' },
+    ]);
+    const provider = makeProvider();
+    await expect(provider.getLibraries()).rejects.toThrow(/no movie libraries/i);
+  });
+});
+
+// Nothing populates the expansion until someone opens the filter panel, but a
+// restored room replays its persisted filters before that ever happens.
+describe('Plex provider: expansion on a cold process', () => {
+  const twoLibrariesWithGenres = () => {
+    mockApi.getLibraries.mockResolvedValue([
+      { key: 'lib-1', title: 'Movies', type: 'movie' },
+      { key: 'lib-2', title: 'Family Movies', type: 'movie' },
+    ]);
+    mockApi.getFilterValues.mockResolvedValue({
+      size: 2,
+      Directory: [
+        { title: 'Action', key: '15' },
+        { title: 'Action', key: '23' },
+      ],
+    });
+  };
+
+  it('resolves the per-library keys before querying, with no panel open first', async () => {
+    twoLibrariesWithGenres();
+    const provider = makeProvider();
+    // Straight to getMedia, the way loadRoom replays persisted filters.
+    await provider.getMedia({
+      filters: [{ key: 'genre', operator: '=', value: ['15'] }],
+    });
+    expect(mockApi.getFilterValues).toHaveBeenCalledWith('genre');
+    const params = mockApi.getLibraryItems.mock.calls[0]?.[1].filters as URLSearchParams;
+    expect(params.getAll('genre')).toEqual(['15', '23']);
+  });
+
+  it('leaves the value unexpanded when the lookup cannot be fetched', async () => {
+    twoLibrariesWithGenres();
+    mockApi.getFilterValues.mockRejectedValue(new Error('Plex API error 500'));
+    const provider = makeProvider();
+    await provider.getMedia({
+      filters: [{ key: 'genre', operator: '=', value: ['15'] }],
+    });
+    const params = mockApi.getLibraryItems.mock.calls[0]?.[1].filters as URLSearchParams;
+    expect(params.getAll('genre')).toEqual(['15']);
+  });
+
+  it('asks Plex once per key, not once per getMedia', async () => {
+    twoLibrariesWithGenres();
+    const provider = makeProvider();
+    const filters = [{ key: 'genre', operator: '=' as const, value: ['15'] }];
+    await provider.getMedia({ filters });
+    await provider.getMedia({ filters });
+    expect(mockApi.getFilterValues).toHaveBeenCalledTimes(1);
+  });
+
+  // One library has nothing to expand, so the extra round-trip is pure cost.
+  it('skips the lookup entirely on a single-library server', async () => {
+    const provider = makeProvider();
+    await provider.getMedia({
+      filters: [{ key: 'genre', operator: '=', value: ['15'] }],
+    });
+    expect(mockApi.getFilterValues).not.toHaveBeenCalled();
+  });
+
+  // Both are answered locally; neither has an expansion to build.
+  it('does not look up the synthetic keys', async () => {
+    twoLibrariesWithGenres();
+    const provider = makeProvider();
+    await provider.getMedia({
+      filters: [
+        { key: 'library', operator: '=', value: ['lib-1'] },
+        { key: 'rating', operator: '=', value: ['3'] },
+      ],
+    });
+    expect(mockApi.getFilterValues).not.toHaveBeenCalled();
+  });
+});
+
+// A section that times out contributes no keys, so replacing the expansion
+// with what the survivors returned drops the missing library from every later
+// filtered query.
+describe('Plex provider: partially failed filter-value fetch', () => {
+  it('keeps the keys a complete fetch had already found', async () => {
+    mockApi.getFilterValues.mockResolvedValueOnce({
+      size: 2,
+      partial: false,
+      Directory: [
+        { title: 'Action', key: '15' },
+        { title: 'Action', key: '23' },
+      ],
+    });
+    const provider = makeProvider();
+    await provider.getFilterValues('genre');
+
+    // Second fetch: the library that owns key 23 timed out.
+    mockApi.getFilterValues.mockResolvedValueOnce({
+      size: 1,
+      partial: true,
+      Directory: [{ title: 'Action', key: '15' }],
+    });
+    await provider.getFilterValues('genre');
+
+    await provider.getMedia({
+      filters: [{ key: 'genre', operator: '=', value: ['15'] }],
+    });
+    const params = mockApi.getLibraryItems.mock.calls[0]?.[1].filters as URLSearchParams;
+    expect(params.getAll('genre')).toEqual(['15', '23']);
+  });
+
+  it('still replaces the expansion outright when every section answered', async () => {
+    mockApi.getFilterValues.mockResolvedValueOnce({
+      size: 2,
+      partial: false,
+      Directory: [
+        { title: 'Action', key: '15' },
+        { title: 'Action', key: '23' },
+      ],
+    });
+    const provider = makeProvider();
+    await provider.getFilterValues('genre');
+
+    // The second library was removed in Plex, so key 23 is gone for good.
+    mockApi.getFilterValues.mockResolvedValueOnce({
+      size: 1,
+      partial: false,
+      Directory: [{ title: 'Action', key: '15' }],
+    });
+    await provider.getFilterValues('genre');
+
+    await provider.getMedia({
+      filters: [{ key: 'genre', operator: '=', value: ['15'] }],
+    });
+    const params = mockApi.getLibraryItems.mock.calls[0]?.[1].filters as URLSearchParams;
+    expect(params.getAll('genre')).toEqual(['15']);
   });
 });

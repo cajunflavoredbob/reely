@@ -16,7 +16,11 @@ differs from the `Host` reely receives, set the `ALLOWED_ORIGINS` env var to
 the external origin(s) instead (comma-separated), e.g.
 `ALLOWED_ORIGINS=https://reely.example.com`.
 
-The examples below all include `proxy_set_header Host $host;`.
+Each example below preserves the original `Host`, but the way it does so
+differs per proxy: nginx needs the `proxy_set_header Host $host;` directive
+shown, HAProxy forwards the client's `Host` unchanged by default, and Apache
+needs `ProxyPreserveHost On` because its default is `Off` (it would otherwise
+send `Host: localhost:8000` and every upgrade would be rejected).
 
 ## Nginx
 
@@ -88,7 +92,7 @@ backend reely-http
   mode http
   balance roundrobin
   option forwardfor
-  server localhost:8000
+  server reely localhost:8000
 ```
 
 ## Apache2
@@ -99,6 +103,7 @@ Make sure to enable Apache2 mods first: a2enmod mod_proxy mod_proxy_wstunnel mod
 <VirtualHost *:80>
   ServerName reely.example.com
   ServerAlias reely.example.com
+  ProxyPreserveHost On
   ProxyPass / http://localhost:8000/
   RewriteEngine on
   RewriteCond %{HTTP:Upgrade} websocket [NC]

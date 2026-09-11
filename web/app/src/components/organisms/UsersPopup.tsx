@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { UserProgress } from "../../../../../types/reely";
 import { CloseIcon } from "../atoms/CloseIcon";
 import { UserPill } from "../atoms/UserPill";
@@ -26,6 +26,19 @@ export const UsersPopup = ({
 }: UsersPopupProps) => {
   // Escape closes, matching every sibling overlay.
   useEscape(onClose);
+
+  // The dialog declares aria-modal, which tells assistive tech everything
+  // behind it is hidden, so leaving focus on the trigger parks a keyboard user
+  // on content they can no longer reach. Move focus onto the close button and
+  // hand it back when the dialog goes. The Tab cycle is still not trapped.
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    closeBtnRef.current?.focus();
+    return () => {
+      if (previous instanceof HTMLElement) previous.focus();
+    };
+  }, []);
 
   // "Me" first, then descending progress, so the most-engaged users sit at
   // the top.
@@ -67,6 +80,7 @@ export const UsersPopup = ({
               className={styles.closeBtn}
               onClick={onClose}
               aria-label="Close"
+              ref={closeBtnRef}
             >
               <CloseIcon size={16} strokeWidth={2.5} />
             </button>

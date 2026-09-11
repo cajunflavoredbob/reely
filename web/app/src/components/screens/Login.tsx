@@ -5,6 +5,9 @@ import { ProviderIcon } from "../atoms/ProviderIcon";
 import { Layout } from "../layout/Layout";
 import { useStore } from "../../store";
 import { sanitizeUserInput, sanitizeRoomNameDisplay } from "../../utils/sanitize";
+// The shared constant, not a copy of 48: types/sanitize.ts exists precisely so
+// the server's sanitizer and this form can't drift apart.
+import { ROOM_NAME_MAX_LEN } from "../../../../../types/sanitize";
 
 export const LoginScreen = () => {
   const [{ user, error, room, config, connectionStatus }, dispatch] =
@@ -208,12 +211,11 @@ export const LoginScreen = () => {
                 type="text"
                 aria-label="Room name"
                 placeholder="name your room"
-                // Mirrors the server's ROOM_NAME_MAX_LEN (util/sanitize.ts).
-                maxLength={48}
+                maxLength={ROOM_NAME_MAX_LEN}
                 value={roomName}
                 onChange={(e) => {
                   // Same cap here so the bound holds if maxLength is dropped.
-                  setRoomName(sanitizeRoomNameDisplay(e.target.value, 48));
+                  setRoomName(sanitizeRoomNameDisplay(e.target.value, ROOM_NAME_MAX_LEN));
                   setRoomNameError(undefined);
                 }}
               />

@@ -35,6 +35,15 @@ export type Actions =
     payload: Store["connectionStatus"];
   }
   | { type: "setUser"; payload: User }
+  // Drops the cached identity when the server-side session behind it is gone,
+  // so the Login screen logs in again instead of joining as a stale user.
+  | { type: "clearUser" }
+  // A join/create request that never got a reply. Clears the optimistic room
+  // the dispatch put in place so the CTA stops reading as "joining…".
+  | { type: "roomRequestFailed" }
+  // Failure toast minted through the store's own counter. Lets createStore
+  // raise one without hand-rolling an id.
+  | { type: "addErrorToast"; payload: { message: string } }
   | ClientActions
   | ClientMessage;
 

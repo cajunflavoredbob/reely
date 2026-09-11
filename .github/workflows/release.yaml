@@ -15,14 +15,19 @@ jobs:
     name: Tests (release gate)
     runs-on: ubuntu-latest
     if: github.ref_type == 'tag'
+    # This job only reads the tree; the repository default would otherwise
+    # hand write scope to every action in it.
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Nothing here writes to the repo; a persisted GITHUB_TOKEN would
-          # be reachable by every later step.
+          # Keeps the token out of .git/config, where every later step could
+          # read it. Narrowing what the token can do is the job's
+          # `permissions:` block above; this setting alone does not do that.
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.9
-      - uses: actions/setup-node@v7
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "26"
           cache: "pnpm"
@@ -43,13 +48,18 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Nothing here writes to the repo; a persisted GITHUB_TOKEN would
-          # be reachable by every later step.
+          # Keeps the token out of .git/config, where every later step could
+          # read it. Narrowing what the token can do is the job's
+          # `permissions:` block above; this setting alone does not do that.
           persist-credentials: false
+          # Full history plus tags: the version step compares this tag against
+          # every other release tag to decide whether `:latest` may move.
+          fetch-depth: 0
+          fetch-tags: true
 
-      - name: Set version from tag
+      - name: Set version and image tags from tag
         id: version
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -68,18 +78,63 @@ jobs:
             echo "package.json version does not match ${VERSION}"
             exit 1
           fi
+          # Fail loudly rather than silently skipping the `:latest` decision
+          # below: if the checkout didn't bring the tags down, the comparison
+          # would see an empty list and quietly never publish the alias.
+          if ! git tag --list 'v*' | grep -qxF "v${VERSION}"; then
+            echo "Tag v${VERSION} is not in the local tag list; tags were not fetched"
+            exit 1
+          fi
+          # `:latest` only ever moves forward. workflow_dispatch accepts any
+          # tag ref (re-running an old release after a transient push failure
+          # is routine) and a maintenance tag can land after a newer release;
+          # either one would otherwise repoint the alias at an older build and
+          # silently downgrade every install that tracks it, including the
+          # Unraid template and the README quickstart.
+          #
+          # Plain vMAJOR.MINOR.PATCH tags only, because `sort -V` orders
+          # 1.2.0-rc1 *after* 1.2.0: leaving prereleases in would stop the GA
+          # that follows one from ever taking the alias, and would let a
+          # prerelease claim it.
+          NEWEST="$(git tag --list 'v*' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sed 's/^v//' | sort -V | tail -n1)"
+          {
+            echo "tags<<TAGS_EOF"
+            echo "cajunflavoredbob/reely:${VERSION}"
+            if [[ "${NEWEST}" == "${VERSION}" ]]; then
+              echo "cajunflavoredbob/reely:latest"
+            else
+              echo "::notice::${NEWEST} is newer than ${VERSION}; leaving :latest alone" >&2
+            fi
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      # The runtime stage's `apt-get upgrade` is keyed on a pinned parent and
+      # a fixed command, so without a changing build arg the gha cache serves
+      # the same upgrade layer indefinitely and a release tagged weeks later
+      # publishes the Debian package state from the day that entry was first
+      # written. Stamped once per job, not per step, so the scan below and
+      # the push further down build the exact same apt layer.
+      - name: Stamp apt refresh date
+        id: apt
+        run: echo "stamp=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
       # Scan before the multi-arch push so a fixable CRITICAL blocks the
       # publish. Single-arch local load because Trivy needs a daemon-loaded
       # image; the push below reuses every layer via the `type=gha` cache.
+      # Caveat: only amd64 is scanned. `apt-get upgrade` in the Dockerfile
+      # resolves Debian packages per-architecture, so the arm64 half of the
+      # manifest this job pushes can carry OS-package CVEs this gate never
+      # sees. Closing that means scanning an OCI layout of both platforms.
       - name: Build image (amd64, local load for scan)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: ./Dockerfile
@@ -87,11 +142,13 @@ jobs:
           load: true
           platforms: linux/amd64
           tags: reely:release-scan
+          build-args: |
+            APT_REFRESH=${{ steps.apt.outputs.stamp }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Trivy scan (release gate -- CRITICAL fails build)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: reely:release-scan
           format: table
@@ -107,30 +164,39 @@ jobs:
         # DOCKERHUB_TOKEN should be a PAT scoped to read/write on the
         # `cajunflavoredbob/reely` repository only. An account-wide token
         # hands over every repository if the secret leaks.
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build & push Docker image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           # Namespace is pinned, not derived from the login secret, so it
-          # always matches deploy/unraid-template.xml.
-          tags: |
-            cajunflavoredbob/reely:${{ steps.version.outputs.version }}
-            cajunflavoredbob/reely:latest
+          # always matches deploy/unraid-template.xml. `:latest` is included
+          # only when the version step decided this tag is the newest.
+          tags: ${{ steps.version.outputs.tags }}
+          build-args: |
+            APT_REFRESH=${{ steps.apt.outputs.stamp }}
           # Same `type=gha` scope as ci.yml, so the release build reuses the
           # layers ci.yml just built for the tagged commit.
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # login-action leaves the Docker Hub PAT in ~/.docker/config.json for
+      # the rest of the job. Clear it before the release step runs, so a
+      # third-party action never executes alongside a live registry push
+      # credential it has no reason to touch.
+      - name: Log out of Docker Hub
+        if: always()
+        run: docker logout
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           name: v${{ steps.version.outputs.version }}
           generate_release_notes: true

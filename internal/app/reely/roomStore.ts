@@ -1,5 +1,5 @@
 import { join, resolve, sep } from 'node:path';
-import { mkdir, readFile, writeFile, rename, readdir, unlink } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, readdir, stat, unlink } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import type { CreateRoomRequest, Filter } from '../../../types/reely';
 import { logger } from './logger';
@@ -84,27 +84,66 @@ const sanitizeLoadedFilters = (
   return undefined;
 };
 
-export const saveRoom = async (room: Room): Promise<void> => {
+// A bind-mounted data dir whose host directory is not owned by the container
+// user fails every save while the app keeps serving from memory and /health
+// keeps returning 200, so the log line is the only signal an operator gets:
+// make it name the cause instead of printing a bare errno.
+const describeSaveFailure = (err: unknown): string => {
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code !== 'EACCES' && code !== 'EPERM') return String(err);
+  const uid = process.getuid?.();
+  return (
+    `${String(err)} (${ROOMS_DIR} is not writable by uid ` +
+    `${uid === undefined ? 'unknown' : uid}; rooms will not survive a restart)`
+  );
+};
+
+const writeRoomFile = async (roomName: string, data: PersistedRoom): Promise<void> => {
+  let tmp: string | undefined;
   try {
     await mkdir(ROOMS_DIR, { recursive: true });
-    const data: PersistedRoom = {
-      roomName: room.roomName,
-      displayName: room.displayName,
-      filters: room.filters,
-      ratings: [...room.ratings.entries()],
-      userProgress: [...room.userProgress.entries()],
-      createdAt: room.createdAt,
-      updatedAt: Date.now(),
-      lastSwipeAt: room.lastSwipeAt,
-    };
-    const target = roomFilePath(room.roomName);
-    // pid + random bytes: concurrent saves of one room must not share a tmp path.
-    const tmp = `${target}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    const target = roomFilePath(roomName);
+    // pid + random bytes: a save of this room in another process sharing the
+    // data volume must not share a tmp path.
+    tmp = `${target}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     await writeFile(tmp, JSON.stringify(data), 'utf-8');
     await rename(tmp, target);
   } catch (err) {
-    logger.error(`Failed to save room "${room.roomName}": ${String(err)}`);
+    logger.error(`Failed to save room "${roomName}": ${describeSaveFailure(err)}`);
+    // An ordinary ENOSPC/EIO strands the tmp file, and the TTL sweep only
+    // reaps by age, so clear it here while the path is still known.
+    if (tmp) await unlink(tmp).catch(() => {});
   }
+};
+
+// One write chain per room. Two overlapping saves rename onto the same target
+// and the last rename wins, which is not the same as the newest snapshot
+// winning; chaining makes commit order match snapshot order.
+const saveChains = new Map<string, Promise<void>>();
+
+export const saveRoom = (room: Room): Promise<void> => {
+  // Snapshot synchronously. Taken after an await it would pick up mutations
+  // that belong to a later save, so an older save could persist newer state.
+  const data: PersistedRoom = {
+    roomName: room.roomName,
+    displayName: room.displayName,
+    filters: room.filters,
+    ratings: [...room.ratings.entries()],
+    userProgress: [...room.userProgress.entries()],
+    createdAt: room.createdAt,
+    updatedAt: Date.now(),
+    lastSwipeAt: room.lastSwipeAt,
+  };
+  const previous = saveChains.get(room.roomName) ?? Promise.resolve();
+  // writeRoomFile never rejects, so the chain can't be poisoned by one bad save.
+  const chained = previous.then(() => writeRoomFile(room.roomName, data));
+  saveChains.set(room.roomName, chained);
+  void chained.then(() => {
+    // Only the tail clears the entry; clearing unconditionally would let the
+    // next save start a second, unordered chain for the same room.
+    if (saveChains.get(room.roomName) === chained) saveChains.delete(room.roomName);
+  });
+  return chained;
 };
 
 // Debounced room save; a burst of swipes coalesces into one write per room.
@@ -156,6 +195,10 @@ export const flushPendingSaves = async (): Promise<void> => {
   pendingSaves.clear();
   for (const { timer } of pending) clearTimeout(timer);
   await Promise.allSettled(pending.map(({ room }) => saveRoom(room)));
+  // The fire-and-forget saves (join, disconnect, applyFilters, a debounce timer
+  // that already fired) were never in pendingSaves. Without this the flush is
+  // not a barrier: one of them can rename over its output after it returns.
+  await Promise.allSettled([...saveChains.values()]);
 };
 
 export const loadRoom = async (roomName: string, ctx: RouteContext): Promise<Room | null> => {
@@ -234,6 +277,28 @@ export const loadRoom = async (roomName: string, ctx: RouteContext): Promise<Roo
   }
 };
 
+// Deliberately generous. A real save renames within milliseconds, so an hour
+// old means abandoned rather than in flight, including a tmp belonging to
+// another process sharing the data volume.
+const TMP_FILE_MAX_AGE_MS = 60 * 60 * 1000;
+
+// A save killed between writeFile and rename strands its tmp file, and the
+// .json filter in the disk pass would skip it forever.
+const reapStaleTmpFile = async (filePath: string, now: number): Promise<void> => {
+  try {
+    const { mtimeMs } = await stat(filePath);
+    if (now - mtimeMs < TMP_FILE_MAX_AGE_MS) return;
+    await unlink(filePath);
+    logger.info(`Removed abandoned room temp file ${filePath}`);
+  } catch (err) {
+    // ENOENT means a rename or another sweep got there first.
+    const e = err as NodeJS.ErrnoException;
+    if (e.code !== 'ENOENT') {
+      logger.warn(`Failed to remove room temp file ${filePath}: ${e.message}`);
+    }
+  }
+};
+
 // Sweep in-memory rooms and room files idle past ttlMs. The only expiry policy.
 //
 // A room with connected clients is never expired: eviction orphans their Room
@@ -283,42 +348,65 @@ export const cleanupExpiredRooms = async (ttlMs: number = ROOM_TTL_MS): Promise<
     await mkdir(ROOMS_DIR, { recursive: true });
     const files = await readdir(ROOMS_DIR);
     for (const file of files) {
+      if (file.endsWith('.tmp')) {
+        await reapStaleTmpFile(join(ROOMS_DIR, file), now);
+        continue;
+      }
       if (!file.endsWith('.json')) continue;
       // Live rooms belong to the pass above; the disk pass must not delete
       // their files. Filename minus .json is the canonical name.
       const canonicalName = file.slice(0, -'.json'.length);
       if (hasRoom(canonicalName)) continue;
       const filePath = join(ROOMS_DIR, file);
+      let data: PersistedRoom;
       try {
         const raw = await readFile(filePath, 'utf-8');
         // A non-object JSON literal (`42`, `null`) parses fine but throws on
         // property access. The sweep reads two timestamps, so a shallow object
         // check is enough; isPersistedRoomShape would be overkill.
         const parsed: unknown = JSON.parse(raw);
-        const data = (parsed && typeof parsed === 'object')
+        data = (parsed && typeof parsed === 'object')
           ? (parsed as PersistedRoom)
           : ({} as PersistedRoom);
-        const effectiveLastSwipe = data.lastSwipeAt ?? data.updatedAt;
-        // No usable timestamp counts as ancient: `undefined < cutoff` is false,
-        // so without the explicit check such files never sweep.
-        if (effectiveLastSwipe === undefined || effectiveLastSwipe < cutoff) {
-          // Re-check after the readFile await: a queued join can run
-          // loadRoom -> saveRoom during the I/O window, and unlinking that
-          // fresh file leaves an active room with no disk presence.
-          if (hasRoom(canonicalName)) continue;
+      } catch (err) {
+        // Only a parse failure proves the contents are garbage. EACCES, EMFILE,
+        // EIO and EBUSY say nothing about the file, and deleting on them throws
+        // away a room a later sweep could have read; loadRoom keeps the file
+        // for the same reason.
+        if (err instanceof SyntaxError) {
+          await unlink(filePath).catch(() => {});
+          // Full filePath, not the basename: an operator greps for the path.
+          logger.warn(`Removed corrupt room file ${filePath}: ${err.message}`);
+        } else {
+          logger.error(
+            `Could not read room file ${filePath} (kept): ${(err as Error).message}`,
+          );
+        }
+        continue;
+      }
+      const effectiveLastSwipe = data.lastSwipeAt ?? data.updatedAt;
+      // No usable timestamp counts as ancient: `undefined < cutoff` is false,
+      // so without the explicit check such files never sweep.
+      if (effectiveLastSwipe === undefined || effectiveLastSwipe < cutoff) {
+        // Re-check after the readFile await: a queued join can run
+        // loadRoom -> saveRoom during the I/O window, and unlinking that
+        // fresh file leaves an active room with no disk presence.
+        if (hasRoom(canonicalName)) continue;
+        // Its own catch, outside the read: a failed unlink is a permissions or
+        // mount problem, not a corrupt file, and must not be logged as one.
+        try {
           await unlink(filePath);
           logger.info(
             `Expired room file ${filePath}` +
               (effectiveLastSwipe === undefined ? ' (no timestamp -- treated as ancient)' : ''),
           );
+        } catch (err) {
+          // ENOENT is benign: another sweep or an operator already removed it.
+          const e = err as NodeJS.ErrnoException;
+          if (e.code !== 'ENOENT') {
+            logger.error(`Failed to unlink expired room file ${filePath}: ${e.message}`);
+          }
         }
-      } catch (err) {
-        // Unreadable or corrupt room file; remove it so it can't accumulate.
-        await unlink(filePath).catch(() => {});
-        // Full filePath, not the basename: an operator greps for the path.
-        logger.warn(
-          `Removed unreadable room file ${filePath}: ${(err as Error).message}`,
-        );
       }
     }
   } catch (err) {

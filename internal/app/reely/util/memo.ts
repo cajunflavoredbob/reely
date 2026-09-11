@@ -29,8 +29,13 @@ export const cachePromise = <T>(
       const now = Date.now();
       if (!promise || (ttlMs !== undefined && now - at > ttlMs)) {
         at = now;
-        promise = fn();
-        promise.catch(() => { promise = undefined; });
+        const pending = fn();
+        promise = pending;
+        // Only clear the slot if it still holds this promise: a late rejection
+        // from a TTL-expired generation would otherwise discard the newer
+        // promise that replaced it, and the next caller would start a second
+        // fetch against the upstream that is already struggling.
+        pending.catch(() => { if (promise === pending) promise = undefined; });
       }
       return promise;
     },
@@ -78,6 +83,15 @@ export const memo1TTL = <T, A extends unknown[]>(
   return (key: string, ...rest: A) => {
     const entry = cache.get(key);
     if (entry && Date.now() < entry.expiresAt) return entry.result;
+    // Sweep on every miss. Without it the only release path is a repeat request
+    // for the same key, so a key nobody asks for again pins its value (whole
+    // Media[] library snapshots, for getMediaCached) until the process exits.
+    // The map is capped at maxEntries, so the scan is cheap; an Infinity expiry
+    // (the memo1 alias) is never swept.
+    const sweepAt = Date.now();
+    for (const [cachedKey, cached] of cache) {
+      if (sweepAt >= cached.expiresAt) cache.delete(cachedKey);
+    }
     // Refreshing an existing key replaces it in place: no growth, nothing to evict.
     if (!cache.has(key) && cache.size >= maxEntries) {
       const oldest = cache.keys().next().value;

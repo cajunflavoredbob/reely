@@ -95,7 +95,25 @@ describe('addRedaction JSON-escaped form', () => {
     expect(captured[0]).toContain('****');
   });
 
+  // String.raw, not 'a\b': that literal is 'a' + U+0008 BACKSPACE, so the case
+  // this test is named for (a password JSON.stringify doubles into '\\') was
+  // only ever covered by accident.
   it('masks a backslash-containing password inside a JSON.stringify dump', async () => {
+    const { logger, addRedaction } = await import(
+      '../../internal/app/reely/logger'
+    );
+    const password = String.raw`domain\user`;
+    addRedaction(password);
+    logger.debug(JSON.stringify({ password }));
+    // The JSON body holds the doubled form; neither it nor the raw form may
+    // survive.
+    expect(captured[0]).not.toContain(String.raw`domain\\user`);
+    expect(captured[0]).not.toContain(password);
+    expect(captured[0]).toContain('****');
+  });
+
+  // The control character the old literal actually exercised, kept explicit.
+  it('masks a password containing a control character', async () => {
     const { logger, addRedaction } = await import(
       '../../internal/app/reely/logger'
     );

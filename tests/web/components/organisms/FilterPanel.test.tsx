@@ -22,6 +22,7 @@ vi.mock('../../../../web/app/src/store', () => ({
 }));
 
 import { FilterPanel } from '../../../../web/app/src/components/organisms/FilterPanel';
+import { FILTER_VALUES_UNAVAILABLE } from '../../../../web/app/src/store/reducer';
 import type { Filter, Filters } from '../../../../types/reely';
 
 // Minimal catalog: one integer field, one string field, one operator each.
@@ -242,6 +243,191 @@ describe('FilterPanel: Clear mode (room has filters, draft is empty)', () => {
   });
 });
 
+describe('FilterPanel: a newly added row with no value yet', () => {
+  // addFilter seeds a non-boolean row with an empty value, so Apply is
+  // disabled. The hint has to say a value is missing rather than fall through
+  // to the copy describing who an Apply would reach.
+  const addYearRow = () => {
+    withState({
+      createRoom: { availableFilters: baseFilters() },
+      room: { activeFilters: [] },
+    });
+    render(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /Add filter/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Year/ }));
+  };
+
+  it('shows the "PICK A VALUE" footer hint, not the scope copy', () => {
+    addYearRow();
+    expect(screen.getByText(/PICK A VALUE/)).toBeDefined();
+    expect(screen.queryByText(/APPLIES FOR EVERYONE/)).toBeNull();
+  });
+
+  it('keeps Apply disabled until the row has a value', () => {
+    addYearRow();
+    expect(
+      (screen.getByRole('button', { name: 'Apply filters' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+});
+
+describe('FilterPanel: a draft row whose key is missing from the catalog', () => {
+  // room.activeFilters and the filter catalog are two independent server
+  // payloads and can disagree: Plex drops the synthetic `library` filter once
+  // the server is down to one movie library, while the persisted room file
+  // still carries it. The row renders as nothing, so counting it toward
+  // canApply left the room locked to a filter nobody could see or remove.
+  const withOrphanedRow = () =>
+    withState({
+      createRoom: { availableFilters: baseFilters() },
+      room: { activeFilters: [{ key: 'library', operator: '=', value: ['3'] }] },
+    });
+
+  it('still shows the "No filters yet" copy rather than a blank body', () => {
+    withOrphanedRow();
+    render(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} />);
+    expect(screen.getByText(/No filters yet/i)).toBeDefined();
+  });
+
+  it('offers Clear mode instead of an enabled Apply', () => {
+    withOrphanedRow();
+    render(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} />);
+    const btn = screen.getByRole('button', { name: 'Clear filters' }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+  });
+
+  it('does not resubmit the unknown row on Apply', () => {
+    const onApply = vi.fn();
+    withOrphanedRow();
+    render(<FilterPanel onClose={vi.fn()} onApply={onApply} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(onApply).toHaveBeenCalledWith([]);
+  });
+
+  // While the catalog is in flight every key looks unknown, so the fallback
+  // has to keep the seeded draft applicable rather than flip to Clear mode.
+  it('does not flip to Clear mode while the catalog is still loading', () => {
+    withState({
+      createRoom: { availableFilters: undefined },
+      room: { activeFilters: [{ key: 'year', operator: '=', value: ['2024'] }] },
+    });
+    render(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'Apply filters' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull();
+  });
+});
+
+describe('FilterPanel: a row whose values failed to load', () => {
+  // Three empty-ish states share one slot: no entry (request in flight), a
+  // plain [] (the field has no enumerable values) and the failure marker. The
+  // marker has to reach the user as an error with a way out, or the row spins
+  // on "Loading values…" until the panel is reopened, which used to re-fire
+  // the request and toast again for every row.
+  const withFailedGenre = () =>
+    withState({
+      createRoom: {
+        availableFilters: baseFilters(),
+        filterValues: { genre: FILTER_VALUES_UNAVAILABLE },
+      },
+      room: { activeFilters: [{ key: 'genre', operator: '=', value: [] }] },
+    });
+
+  const expandGenre = () => {
+    render(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /Genre/ }));
+  };
+
+  it('shows the failure and a Retry instead of spinning on "Loading values"', () => {
+    withFailedGenre();
+    expandGenre();
+    expect(screen.getByText(/Couldn't load values/)).toBeDefined();
+    expect(screen.queryByText(/Loading values/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeDefined();
+  });
+
+  // The free-text box can't produce the tag ids an enumerated field matches
+  // on, so a failure must never be mistaken for "this field has no values".
+  it('does not fall back to the free-text control', () => {
+    withFailedGenre();
+    expandGenre();
+    expect(screen.queryByPlaceholderText(/Add genre/i)).toBeNull();
+  });
+
+  it('a genuinely empty value list still gets the free-text control', () => {
+    withState({
+      createRoom: {
+        availableFilters: baseFilters(),
+        filterValues: { genre: [] },
+      },
+      room: { activeFilters: [{ key: 'genre', operator: '=', value: [] }] },
+    });
+    expandGenre();
+    expect(screen.getByPlaceholderText(/Add genre/i)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
+  // The toast storm: every guard used to test for a missing entry, so a failed
+  // key was re-requested on mount and on every expand and panel open.
+  it('does not re-request a failed key on its own', () => {
+    withFailedGenre();
+    expandGenre();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('re-requests once when the user clicks Retry', () => {
+    withFailedGenre();
+    expandGenre();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'requestFilterValues',
+      payload: { key: 'genre' },
+    });
+  });
+
+  it('still requests values for a key nothing is known about', () => {
+    withState({
+      createRoom: { availableFilters: baseFilters(), filterValues: {} },
+      room: { activeFilters: [{ key: 'genre', operator: '=', value: [] }] },
+    });
+    render(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} />);
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'requestFilterValues',
+      payload: { key: 'genre' },
+    });
+  });
+});
+
+// requestFiltersError parks `{ filters: [], filterTypes: {} }` on any getFilters
+// failure, so an empty catalog means "we couldn't ask", not "this room has no
+// fields". Judging keys against it makes every draft row unknown, and the
+// footer of a filtered room turns into an enabled "Clear filters": one click
+// from wiping the whole room's filters, in a panel claiming there are none.
+describe('FilterPanel: catalog fetch failed (empty filter set)', () => {
+  const withEmptyCatalog = () =>
+    withState({
+      createRoom: { availableFilters: { filters: [], filterTypes: {} } as any },
+      room: { activeFilters: [{ key: 'year', operator: '=', value: ['2024'] }] },
+    });
+
+  it('does not offer Clear mode for a room that has filters', () => {
+    withEmptyCatalog();
+    render(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull();
+    expect(screen.queryByText(/CLEARS ALL FILTERS/)).toBeNull();
+  });
+
+  it('keeps the button as a harmless re-Apply of what is already active', () => {
+    const onApply = vi.fn();
+    withEmptyCatalog();
+    render(<FilterPanel onClose={vi.fn()} onApply={onApply} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Apply filters' }));
+    expect(onApply).toHaveBeenCalledWith([
+      { key: 'year', operator: '=', value: ['2024'] },
+    ]);
+  });
+});
+
 describe('FilterPanel: isDrawer layout switch', () => {
   it('uses the drawer-content class when isDrawer is true', () => {
     withState({ createRoom: { availableFilters: baseFilters() } });
@@ -284,5 +470,30 @@ describe('FilterPanel: re-open re-sync (isOpen toggle false -> true)', () => {
       rerender(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} isOpen={true} />);
     });
     expect((screen.getByRole('button', { name: 'Apply filters' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // The other half of the invariant, and the half the walk above cannot see:
+  // held open, another user's filterChangeApplied must not wipe the rows you
+  // are mid-edit on. Desktop keeps the panel mounted, so this is the common
+  // case, not the corner one.
+  it('does NOT re-sync the draft while the panel stays open', () => {
+    withState({
+      createRoom: { availableFilters: baseFilters() },
+      room: { activeFilters: [{ key: 'year', operator: '=', value: ['2020'] }] },
+    });
+    const { rerender } = render(
+      <FilterPanel onClose={vi.fn()} onApply={vi.fn()} isOpen={true} />,
+    );
+    expect(screen.getByText('Year')).toBeDefined();
+    // Another member applies a different set while this panel is open.
+    act(() => {
+      withState({
+        createRoom: { availableFilters: baseFilters() },
+        room: { activeFilters: [{ key: 'genre', operator: '=', value: ['Drama'] }] },
+      });
+      rerender(<FilterPanel onClose={vi.fn()} onApply={vi.fn()} isOpen={true} />);
+    });
+    expect(screen.getByText('Year')).toBeDefined();
+    expect(screen.queryByText('Genre')).toBeNull();
   });
 });

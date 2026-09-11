@@ -13,8 +13,11 @@ const { useStoreMock, useLocalPlexReachableMock, isIOSMock } = vi.hoisted(() => 
 
 vi.mock('../../../../web/app/src/store', () => ({
   useStore: useStoreMock,
+  // The factory replaces the whole module, so every real export is listed:
+  // one missing is `undefined` at any call site that reaches it.
   useDispatch: vi.fn(),
   useSelector: vi.fn(),
+  useStoreComputed: vi.fn(),
   createStore: vi.fn(),
 }));
 

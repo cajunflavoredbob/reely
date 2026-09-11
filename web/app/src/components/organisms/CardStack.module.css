@@ -12,19 +12,15 @@
      front card. */
   perspective-origin: 50% 0%;
   overflow: hidden;
-  /* Clears the two back cards' peek (~72px at Y_PEEK = -36) so their tops
-     aren't clipped. */
-  padding-top: 96px;
+  /* Clears the two back cards' peek (~72px at Y_PEEK = -36) plus the mobile
+     top bar, so their tops aren't clipped. Carried on the base rule rather
+     than in a (max-width: 899px) query: that query and the desktop
+     (min-width: 900px) one below do not tile, and at a fractional width
+     between them the stack fell back to a smaller value that clipped the
+     peek. Desktop overrides it at the bottom of this file. */
+  padding-top: 120px;
   /* Room for the action buttons. */
   padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px));
-}
-
-/* Mobile needs clearance from the top bar; desktop is centered by
-   .desktopSwipeStage. */
-@media (max-width: 899px) {
-  .stack {
-    padding-top: 120px;
-  }
 }
 
 .emptyStack {
@@ -50,13 +46,6 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-}
-
-.emptyText {
-  font-family: var(--ry-font-display);
-  font-size: 1.6rem;
-  line-height: 1.1;
-  color: var(--ry-text-0);
 }
 
 .emptySubtext {
@@ -155,6 +144,16 @@
   border-radius: 50%;
 }
 
+/* Disconnected: rateItem early-returns, so drop the affordances that promise
+   otherwise. The hover and active rules below are written as :not(:disabled)
+   for the same reason. */
+.dislikeButton:disabled,
+.likeButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
 .dislikeButton {
   width: 56px;
   height: 56px;
@@ -163,11 +162,11 @@
   left: calc(50% - 70px);
 }
 
-.dislikeButton:hover {
+.dislikeButton:hover:not(:disabled) {
   background: var(--ry-bg-3);
 }
 
-.dislikeButton:active {
+.dislikeButton:active:not(:disabled) {
   transform: scale(0.95);
 }
 
@@ -179,18 +178,18 @@
   right: calc(50% - 76px);
 }
 
-.likeButton:hover {
+.likeButton:hover:not(:disabled) {
   filter: brightness(1.08);
 }
 
-.likeButton:active {
+.likeButton:active:not(:disabled) {
   transform: scale(0.96);
 }
 
 /* px, NOT em: must stay in lockstep with Room's useIsDesktop
-   matchMedia('(min-width: 900px)') and the 899px rule above. 56.25em only
-   equals 900px at a 16px root, so a larger browser default opens a zone with
-   the desktop layout and mobile CardStack styling. */
+   matchMedia('(min-width: 900px)'). 56.25em only equals 900px at a 16px root,
+   so a larger browser default opens a zone with the desktop layout and mobile
+   CardStack styling. */
 @media screen and (min-width: 900px) {
   .stack {
     /* Stage width = 100vw - 300px sidebar. Card is 2:3, so targeting ~55% of
@@ -203,6 +202,13 @@
     padding-top: 130px;
   }
 
+  /* .emptyStack composes .stack and resets to a symmetric 32px, but it is
+     declared earlier in the file, so the padding-top above would win here and
+     push the exhausted-deck copy off the stage's visual centre. */
+  .emptyStack {
+    padding-top: 32px;
+  }
+
   .dislikeButton {
     width: 60px;
     height: 60px;
@@ -212,7 +218,7 @@
     transform: translateY(-50%);
   }
 
-  .dislikeButton:active {
+  .dislikeButton:active:not(:disabled) {
     transform: translateY(-50%) scale(0.95);
   }
 
@@ -225,7 +231,7 @@
     transform: translateY(-50%);
   }
 
-  .likeButton:active {
+  .likeButton:active:not(:disabled) {
     transform: translateY(-50%) scale(0.96);
   }
 }

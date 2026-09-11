@@ -7,7 +7,11 @@ vi.mock('../../internal/app/reely/logger', () => loggerMockFactory());
 // Runs against the real configs/localization/ files: getTranslations calls
 // getAvailableLocales and loadTranslation through closure, which vi.mock
 // cannot re-route.
-import { getTranslations, loadTranslation } from '../../internal/app/reely/i18n';
+import {
+  getTranslations,
+  loadTranslation,
+  resolveLanguage,
+} from '../../internal/app/reely/i18n';
 
 // Named apart from helpers.ts's `makeReq`, which stubs socket.remoteAddress
 // instead and would yield a request with no Accept-Language header.
@@ -59,20 +63,65 @@ describe('getTranslations Accept-Language negotiation', () => {
   });
 });
 
+// The tag itself, not the bundle: it is what the HTML shell puts in
+// `<html lang>`, so the shell declares the language it actually renders.
+describe('resolveLanguage', () => {
+  it('returns the negotiated tag', async () => {
+    expect(await resolveLanguage(makeAcceptLanguageReq('de'))).toBe('de');
+  });
+
+  it('returns the highest-q tag, not the first listed', async () => {
+    expect(await resolveLanguage(makeAcceptLanguageReq('en;q=0.5,de;q=1.0'))).toBe('de');
+  });
+
+  it('returns en when the Accept-Language header is missing', async () => {
+    expect(await resolveLanguage(makeAcceptLanguageReq(undefined))).toBe('en');
+  });
+
+  it('returns en when no requested locale is available', async () => {
+    expect(await resolveLanguage(makeAcceptLanguageReq('tlh'))).toBe('en');
+  });
+});
+
 describe('loadTranslation path-traversal guard', () => {
   // `setLocale` is an unauthenticated WS message and its language string
   // reaches loadTranslation directly, so an unguarded join() would read any
   // .json on disk, data/rooms/*.json included.
+  //
+  // Each traversal here targets a file that IS a valid flat string map, so the
+  // guarded and unguarded outcomes differ. Pointing at package.json instead
+  // proves nothing: it fails the shape check, so the fallback to en runs
+  // whether the guard exists or not.
   it('falls back to en for a `../`-traversal locale', async () => {
-    // Unguarded this resolves to <cwd>/package.json, which parses but has no
-    // FILTERS_LOADING key.
-    const t = await loadTranslation('../../package');
+    // Unguarded, join() collapses this back to configs/localization/de.json
+    // and the German bundle is returned.
+    const t = await loadTranslation('../localization/de');
     expectLocale(t, 'en');
   });
 
   it('falls back to en for a locale containing path separators', async () => {
-    const t = await loadTranslation('en/../../package');
+    const t = await loadTranslation('en/../de');
     expectLocale(t, 'en');
+  });
+
+  // A tag is only as long as the sender makes it. Unbounded, readFile fails
+  // ENAMETOOLONG rather than ENOENT and the error branch logs the whole
+  // caller-chosen path back out, once per message.
+  it('falls back to en for an over-long tag without logging the path', async () => {
+    const { logger } = await import('../../internal/app/reely/logger');
+    const t = await loadTranslation(`en-${'a'.repeat(300)}`);
+    expectLocale(t, 'en');
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  // 8 characters is the BCP-47 subtag maximum, so a 9-character subtag is not
+  // a locale. The full tag is dropped without touching the filesystem; the
+  // language-only fallback still resolves, as it does for any unknown region.
+  it('drops a subtag longer than the BCP-47 maximum and falls back to the language', async () => {
+    const { logger } = await import('../../internal/app/reely/logger');
+    const t = await loadTranslation('de-abcdefghi');
+    expectLocale(t, 'de');
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });
 

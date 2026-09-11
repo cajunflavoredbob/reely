@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { MockInstance } from 'vitest';
 
 import { loggerMockFactory } from '../helpers';
 vi.mock('../../internal/app/reely/logger', () => loggerMockFactory());
@@ -38,6 +39,7 @@ vi.mock('../../internal/app/reely/room', async () => {
 
 import { Client } from '../../internal/app/reely/client';
 import {
+  NoMediaError,
   RoomExistsError,
   hasRoom,
   createRoom,
@@ -46,6 +48,7 @@ import {
 } from '../../internal/app/reely/room';
 import type { Room } from '../../internal/app/reely/room';
 import { getConfig } from '../../internal/app/reely/config/main';
+import { logger } from '../../internal/app/reely/logger';
 import type { ReelyProvider } from '../../internal/app/reely/providers/types';
 import { makeWs, push, sent, flush } from '../helpers';
 
@@ -54,6 +57,7 @@ const mockedCreateRoom = vi.mocked(createRoom);
 const mockedGetRoom = vi.mocked(getRoom);
 const mockedGetConfig = vi.mocked(getConfig);
 const mockedIsRegisteredRoom = vi.mocked(isRegisteredRoom);
+const mockedLogger = vi.mocked(logger);
 
 // ---------------------------------------------------------------------------
 
@@ -189,7 +193,12 @@ describe('Client applyFilters handling', () => {
 
     client.userName = 'alice';
     client.isLoggedIn = true;
+    // lastApplyAt mirrors the real Room's initial value. Left undefined, the
+    // cooldown arithmetic is NaN and the throttle branch can never be entered
+    // or exited wrongly, so no test here would notice it breaking.
     client.room = {
+      roomName: 'movies',
+      lastApplyAt: 0,
       users: new Map([['alice', client]]),
       applyFilters,
       notifyFilterApplied,
@@ -297,6 +306,114 @@ describe('Client applyFilters handling', () => {
     await push(ws, { type: 'applyFilters', payload: { filters: 'oops' } });
     await flush();
     expect(applyFilters).not.toHaveBeenCalled();
+  });
+
+  // Per-entry caps still let one 64KB frame carry ~1,400 rows, which persist,
+  // broadcast to every member, and turn the next panel open into one
+  // requestFilterValues per row.
+  it('rejects more than 64 filters even when every entry is valid', async () => {
+    const row = { key: 'genre', operator: '=', value: ['Action'] };
+    await push(ws, {
+      type: 'applyFilters',
+      payload: { filters: Array(65).fill(row) },
+    });
+    await flush();
+    expect(applyFilters).not.toHaveBeenCalled();
+    expect(sent(ws).some((m) => m.type === 'filterChangeError')).toBe(true);
+  });
+
+  it('accepts a filter set right at the cap', async () => {
+    const row = { key: 'genre', operator: '=', value: ['Action'] };
+    await push(ws, {
+      type: 'applyFilters',
+      payload: { filters: Array(64).fill(row) },
+    });
+    await flush();
+    expect(applyFilters).toHaveBeenCalled();
+  });
+
+  // A Plex timeout or a rotated token must leave a server-side trace; without
+  // it the only record anywhere is the generic copy on the client.
+  it('logs the cause of a non-NoMedia apply failure', async () => {
+    applyFilters.mockRejectedValue(new Error('plex timeout'));
+
+    await push(ws, {
+      type: 'applyFilters',
+      payload: { filters: [{ key: 'genre', operator: '=', value: ['Action'] }] },
+    });
+    await flush();
+
+    expect(sent(ws).some((m) => m.type === 'filterChangeError')).toBe(true);
+    expect(
+      mockedLogger.error.mock.calls.some((c) => String(c[0]).includes('plex timeout')),
+    ).toBe(true);
+  });
+
+  // NoMediaError is the expected "your filters matched nothing" answer, not a
+  // fault, so it must not fill the log on every over-narrow filter set.
+  it('does not log a NoMediaError apply failure', async () => {
+    mockedLogger.error.mockClear();
+    applyFilters.mockRejectedValue(new NoMediaError('No movies match those filters.'));
+
+    await push(ws, {
+      type: 'applyFilters',
+      payload: { filters: [{ key: 'genre', operator: '=', value: ['Action'] }] },
+    });
+    await flush();
+
+    const msgs = sent(ws);
+    expect(msgs.some((m) => m.type === 'filterChangeError')).toBe(true);
+    expect(msgs[0].payload.message).toBe('No movies match those filters.');
+    expect(mockedLogger.error).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// The 3s cooldown lives on the Room so two browser windows can't bypass it.
+// Every fake room here carries lastApplyAt, or the arithmetic is NaN and the
+// branch is unreachable under test.
+describe('Client applyFilters cooldown', () => {
+  const validFilters = [{ key: 'genre', operator: '=', value: ['Action'] }];
+
+  it('throttles a second apply inside the cooldown and accepts it after', async () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const ws = makeWs();
+      const client = new Client(ws, []);
+      const applyFilters = vi.fn().mockResolvedValue([]);
+      client.userName = 'alice';
+      client.isLoggedIn = true;
+      client.room = {
+        roomName: 'movies',
+        lastApplyAt: 0,
+        users: new Map([['alice', client]]),
+        applyFilters,
+        notifyFilterApplied: vi.fn(),
+      } as unknown as Room;
+      ws.send.mockClear();
+
+      await push(ws, { type: 'applyFilters', payload: { filters: validFilters } });
+      await flush();
+      expect(applyFilters).toHaveBeenCalledTimes(1);
+
+      // 2s later: inside the cooldown.
+      ws.send.mockClear();
+      nowSpy.mockReturnValue(1_002_000);
+      await push(ws, { type: 'applyFilters', payload: { filters: validFilters } });
+      await flush();
+      expect(applyFilters).toHaveBeenCalledTimes(1);
+      expect(sent(ws).some((m) => m.type === 'filterChangeError')).toBe(true);
+
+      // Past the cooldown, measured from the apply that committed, not the one
+      // that was refused.
+      nowSpy.mockReturnValue(1_005_500);
+      await push(ws, { type: 'applyFilters', payload: { filters: validFilters } });
+      await flush();
+      expect(applyFilters).toHaveBeenCalledTimes(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 });
 
@@ -672,6 +789,8 @@ describe('Client applyFilters validation errors answer', () => {
     client.userName = 'alice';
     client.isLoggedIn = true;
     client.room = {
+      roomName: 'movies',
+      lastApplyAt: 0,
       users: new Map([['alice', client]]),
       applyFilters: vi.fn().mockResolvedValue([]),
       notifyFilterApplied: vi.fn(),
@@ -914,6 +1033,12 @@ describe('Client validates filters on the create path', () => {
       name: 'a non-array filters field',
       filters: 'not-an-array',
     },
+    {
+      // Per-entry caps leave the array length unbounded, and this is the path
+      // that persists what it is given.
+      name: 'more filters than the count cap',
+      filters: Array(65).fill({ key: 'genre', operator: '=', value: ['Drama'] }),
+    },
   ])('rejects createRoom carrying $name', async ({ filters }) => {
     ws.send.mockClear();
 
@@ -1046,16 +1171,26 @@ describe('Client login rename cleanup', () => {
     ws.send.mockClear();
   });
 
-  it('leaves progress and rated state consistent after a rename', async () => {
+  it('keeps the old name\'s progress and rated state after a rename', async () => {
     await push(ws, { type: 'login', payload: { userName: 'alicia' } });
 
-    // Both survive or neither does. Progress alone reports 0 while the deck
-    // stays filtered by the rated set, so the bar never reaches 100%; ratings
-    // alone dissolves other users' matches.
-    const hasProgress = room.userProgress.has('alice');
-    const hasRated = room.userRated.has('alice');
-    expect(hasProgress).toBe(hasRated);
+    // Positive assertions, not "both or neither": that comparison is satisfied
+    // by false === false, so deleting both maps would ship green. Progress
+    // alone reports 0 while the deck stays filtered by the rated set, so the
+    // bar never reaches 100%; ratings alone dissolves other users' matches.
+    expect(room.userProgress.get('alice')).toBe(50);
+    expect(room.userRated.get('alice')).toEqual(new Set(['m1']));
     expect(client.getUsername()).toBe('alicia');
+  });
+
+  it('evicts the old name from the room this connection owned', async () => {
+    await push(ws, { type: 'login', payload: { userName: 'alicia' } });
+
+    // Skipping the cleanup leaves the old name in `users` as a ghost that pins
+    // the room past the TTL sweep and locks the username until restart.
+    expect(room.users.has('alice')).toBe(false);
+    expect(vi.mocked(room.notifyLeave)).toHaveBeenCalledWith({ userName: 'alice' });
+    expect(client.room).toBeUndefined();
   });
 
   it('does not touch the room when a newer connection already owns the name', async () => {
@@ -1069,5 +1204,366 @@ describe('Client login rename cleanup', () => {
     expect(room.userProgress.get('alice')).toBe(50);
     expect(room.users.get('alice')).toBe(newer);
     expect(vi.mocked(room.notifyLeave)).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// The filter-values key is interpolated into an outbound Plex URL path and into
+// one log line per movie library, so the format check needs a length bound too.
+describe('Client requestFilterValues key bounds', () => {
+  let ws: ReturnType<typeof makeWs>;
+  let getFilterValues: ReturnType<typeof vi.fn>;
+  let client: Client;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedGetConfig.mockReturnValue({
+      servers: [],
+      basicAuth: undefined,
+    } as unknown as ReturnType<typeof getConfig>);
+    ws = makeWs();
+    getFilterValues = vi.fn().mockResolvedValue([]);
+    const provider = {
+      getFilterValues,
+    } as unknown as ConstructorParameters<typeof Client>[1][number];
+    client = new Client(ws, [provider]);
+    client.userName = 'alice';
+    client.isLoggedIn = true;
+    ws.send.mockClear();
+  });
+
+  it('rejects a key longer than 64 chars before it reaches Plex', async () => {
+    await push(ws, { type: 'requestFilterValues', payload: { key: 'a'.repeat(65) } });
+    await flush();
+
+    expect(getFilterValues).not.toHaveBeenCalled();
+    expect(sent(ws)[0].type).toBe('requestFilterValuesError');
+  });
+
+  it('still accepts a key at the bound', async () => {
+    await push(ws, { type: 'requestFilterValues', payload: { key: 'a'.repeat(64) } });
+    await flush();
+
+    expect(getFilterValues).toHaveBeenCalledWith('a'.repeat(64));
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// PLEX_URL is accepted as any parseable http(s) URL, so an operator who pasted
+// the token-carrying form would ship that token to every browser on the LAN.
+describe('Client sendConfig strips URL credentials', () => {
+  const providerWith = (url: string) =>
+    ({
+      type: 'plex',
+      options: { url },
+      getName: vi.fn().mockResolvedValue('Home'),
+      getServerId: vi.fn().mockResolvedValue('server-machine-id'),
+    }) as unknown as ReelyProvider;
+
+  const configFrame = async (url: string) => {
+    mockedGetConfig.mockReturnValue({
+      servers: [{ url, token: 'tok' }],
+      basicAuth: undefined,
+      exposePlexBaseUrl: true,
+    } as ReturnType<typeof getConfig>);
+    const ws = makeWs();
+    new Client(ws, [providerWith(url)]);
+    await flush();
+    const config = sent(ws).find((m) => m.type === 'config');
+    expect(config, 'no config message sent').toBeTruthy();
+    return config.payload;
+  };
+
+  it('drops a token carried in the query string', async () => {
+    const payload = await configFrame('http://192.168.1.20:32400/?X-Plex-Token=notarealtoken');
+
+    expect(payload.plexBaseUrl).toBe('http://192.168.1.20:32400/');
+    expect(payload.plexBaseUrl).not.toContain('notarealtoken');
+  });
+
+  it('drops userinfo credentials', async () => {
+    const payload = await configFrame('http://user:pass@192.168.1.20:32400/');
+
+    expect(payload.plexBaseUrl).toBe('http://192.168.1.20:32400/');
+    expect(payload.plexBaseUrl).not.toContain('pass');
+  });
+
+  it('leaves an ordinary URL byte-identical', async () => {
+    const payload = await configFrame('http://192.168.1.20:32400');
+
+    expect(payload.plexBaseUrl).toBe('http://192.168.1.20:32400');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// Frames are attacker-controlled up to the 64KB maxPayload, and pino escapes
+// control bytes, so an untruncated frame multiplies into a far larger log line.
+describe('Client bounds untrusted frames in log lines', () => {
+  let ws: ReturnType<typeof makeWs>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedGetConfig.mockReturnValue({
+      servers: [],
+      basicAuth: undefined,
+    } as unknown as ReturnType<typeof getConfig>);
+    ws = makeWs();
+    new Client(ws, []);
+    ws.send.mockClear();
+  });
+
+  it('truncates an unparseable frame in the error log', async () => {
+    ws.emit('message', 'x'.repeat(65_000));
+    await flush();
+
+    const line = String(mockedLogger.error.mock.calls[0][0]);
+    expect(line.length).toBeLessThan(400);
+    expect(line).toContain('65000 chars');
+  });
+
+  it('truncates an unknown-type frame in the info log', async () => {
+    ws.emit('message', JSON.stringify({ type: 'nope', payload: 'y'.repeat(65_000) }));
+    await flush();
+
+    const line = String(
+      mockedLogger.info.mock.calls.find((c) =>
+        String(c[0]).startsWith('Unhandled message'),
+      )?.[0],
+    );
+    expect(line.length).toBeLessThan(400);
+  });
+
+  it('leaves a short frame untruncated', async () => {
+    ws.emit('message', '{oops');
+    await flush();
+
+    expect(String(mockedLogger.error.mock.calls[0][0])).toContain('{oops');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// JSON.parse happily yields null, a number or a string. Reading `.type` off
+// null throws inside an unawaited handler, so it escapes as a floating
+// rejection instead of being answered.
+describe('Client rejects frames that are not typed message objects', () => {
+  let ws: ReturnType<typeof makeWs>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedGetConfig.mockReturnValue({
+      servers: [],
+      basicAuth: undefined,
+    } as unknown as ReturnType<typeof getConfig>);
+    ws = makeWs();
+    new Client(ws, []);
+    ws.send.mockClear();
+  });
+
+  it.each(['null', '42', '"hello"', '[]'])('discards the frame %s', async (frame) => {
+    ws.emit('message', frame);
+    await flush();
+
+    expect(sent(ws)).toHaveLength(0);
+    expect(mockedLogger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs once per connection, not once per bad frame', async () => {
+    for (let i = 0; i < 5; i += 1) ws.emit('message', 'null');
+    await flush();
+
+    expect(mockedLogger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('still serves a well-formed frame afterwards', async () => {
+    ws.emit('message', 'null');
+    await push(ws, { type: 'login', payload: { userName: 'alice' } });
+    await flush();
+
+    expect(sent(ws).some((m) => m.type === 'loginSuccess')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// The per-connection limiter is the only per-socket flood defence; the
+// MAX_WS_PER_IP cap in handlers/api.ts is sized on the assumption it is real.
+describe('Client message rate limit', () => {
+  const MSG_RATE_MAX = 100;
+  const MSG_RATE_WINDOW_MS = 10_000;
+  const START = 1_000_000;
+
+  let nowSpy: MockInstance<() => number>;
+  let ws: ReturnType<typeof makeWs>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedGetConfig.mockReturnValue({
+      servers: [],
+      basicAuth: undefined,
+    } as unknown as ReturnType<typeof getConfig>);
+    // Installed before the Client, so msgWindowStart is the mocked value too.
+    nowSpy = vi.spyOn(Date, 'now').mockReturnValue(START);
+    ws = makeWs();
+    new Client(ws, []);
+    ws.send.mockClear();
+  });
+
+  afterEach(() => {
+    nowSpy.mockRestore();
+  });
+
+  // leaveRoom on a roomless client answers immediately, so replies count frames.
+  const pushLeaves = async (count: number) => {
+    for (let i = 0; i < count; i += 1) {
+      ws.emit('message', JSON.stringify({ type: 'leaveRoom' }));
+    }
+    await flush();
+  };
+
+  it('drops frames past the cap and warns exactly once per window', async () => {
+    await pushLeaves(MSG_RATE_MAX + 1);
+
+    expect(sent(ws)).toHaveLength(MSG_RATE_MAX);
+    expect(mockedLogger.warn).toHaveBeenCalledTimes(1);
+
+    // Same window: still dropped, still one warn.
+    ws.send.mockClear();
+    await pushLeaves(5);
+    expect(sent(ws)).toHaveLength(0);
+    expect(mockedLogger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts frames again once the window rolls', async () => {
+    await pushLeaves(MSG_RATE_MAX + 1);
+    ws.send.mockClear();
+
+    nowSpy.mockReturnValue(START + MSG_RATE_WINDOW_MS);
+    await pushLeaves(1);
+
+    expect(sent(ws)).toHaveLength(1);
+  });
+
+  // Date.now() is not monotonic. A backward NTP step used to leave the window
+  // unrollable for the length of the jump, dropping every frame with no error
+  // back to the client.
+  it('rolls the window when the wall clock steps backward', async () => {
+    await pushLeaves(MSG_RATE_MAX + 1);
+    ws.send.mockClear();
+
+    nowSpy.mockReturnValue(START - 60_000);
+    await pushLeaves(1);
+
+    expect(sent(ws)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// Memory backstop for frames queued behind a handler parked on slow I/O. It
+// sits above MSG_RATE_MAX, so reaching it takes more than one rate window.
+describe('Client dispatch queue cap', () => {
+  const MSG_RATE_MAX = 100;
+  const MAX_QUEUED_MESSAGES = MSG_RATE_MAX + 28;
+  const START = 1_000_000;
+
+  it('drops frames past the cap, warns once, and runs the rest', async () => {
+    vi.clearAllMocks();
+    mockedGetConfig.mockReturnValue({
+      servers: [],
+      basicAuth: undefined,
+    } as unknown as ReturnType<typeof getConfig>);
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(START);
+    try {
+      const ws = makeWs();
+      const client = new Client(ws, []);
+      client.userName = 'alice';
+      client.isLoggedIn = true;
+      ws.send.mockClear();
+
+      let releaseCreate: (() => void) | undefined;
+      mockedHasRoom.mockReturnValue(false);
+      mockedCreateRoom.mockImplementation((async () => {
+        await new Promise<void>((resolve) => {
+          releaseCreate = resolve;
+        });
+        throw new RoomExistsError('stop here');
+      }) as unknown as typeof createRoom);
+
+      const queueLeaves = async (count: number) => {
+        for (let i = 0; i < count; i += 1) {
+          ws.emit('message', JSON.stringify({ type: 'leaveRoom' }));
+        }
+        await flush();
+      };
+
+      // The create parks and holds the first slot; the rest queue behind it.
+      ws.emit('message', JSON.stringify({ type: 'createRoom', payload: { roomName: 'movies' } }));
+      await queueLeaves(MSG_RATE_MAX - 1);
+
+      // A second window, since the rate limiter pushes back before the cap does.
+      nowSpy.mockReturnValue(START + 10_000);
+      await queueLeaves(MSG_RATE_MAX);
+
+      expect(
+        mockedLogger.warn.mock.calls.filter((c) =>
+          String(c[0]).startsWith('Dispatch queue full'),
+        ),
+      ).toHaveLength(1);
+      // Nothing ran yet: the create is still parked.
+      expect(sent(ws)).toHaveLength(0);
+
+      releaseCreate?.();
+      await flush();
+
+      // Everything admitted before the cap drains; the create holds one slot.
+      expect(sent(ws).filter((m) => m.type === 'leaveRoomError')).toHaveLength(
+        MAX_QUEUED_MESSAGES - 1,
+      );
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// Past the backpressure ceiling the peer is stuck or the network is congested;
+// buffering forever is how one wedged client becomes a server-wide memory leak.
+describe('Client send backpressure', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedGetConfig.mockReturnValue({
+      servers: [],
+      basicAuth: undefined,
+    } as unknown as ReturnType<typeof getConfig>);
+  });
+
+  // makeWs defines neither field, and `undefined > n` is false, so the guard is
+  // unreachable unless the fake socket carries a real bufferedAmount.
+  const makeBufferedWs = (bufferedAmount: number) => {
+    const ws = makeWs();
+    return Object.assign(ws, { bufferedAmount, terminate: vi.fn() });
+  };
+
+  it('terminates a socket whose send buffer is over the ceiling', () => {
+    const ws = makeBufferedWs(5 * 1024 * 1024);
+
+    new Client(ws, []);
+
+    expect(ws.terminate).toHaveBeenCalled();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  it('sends normally when the buffer is under the ceiling', () => {
+    const ws = makeBufferedWs(1024);
+
+    new Client(ws, []);
+
+    expect(ws.terminate).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalled();
   });
 });

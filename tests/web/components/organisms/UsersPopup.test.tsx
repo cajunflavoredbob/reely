@@ -113,6 +113,22 @@ describe('UsersPopup', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  // aria-modal tells assistive tech the rest of the page is hidden, so focus
+  // has to come in with the dialog and go back to the trigger when it closes.
+  // The Tab cycle itself is not trapped; jsdom cannot exercise that.
+  it('moves focus onto the close button and restores it to the trigger on close', () => {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const { unmount } = render(
+      <UsersPopup users={[u('a')]} onClose={vi.fn()} onLeave={vi.fn()} />,
+    );
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close' }));
+    unmount();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
+
   it('pressing Escape fires onClose (useEscape hook)', () => {
     const onClose = vi.fn();
     render(<UsersPopup users={[u('a')]} onClose={onClose} onLeave={vi.fn()} />);

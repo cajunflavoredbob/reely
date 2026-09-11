@@ -54,7 +54,16 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov', 'html'],
-      include: ['cmd/**/*.ts', 'internal/**/*.ts', 'web/app/src/**/*.{ts,tsx}'],
+      // types/ is not declaration-only: types/sanitize.ts holds the shared
+      // strip loop both the server and the SPA sanitizers call, so leaving
+      // it out hid that code from every reporter. `**/*.d.ts` in `exclude`
+      // below still keeps the declaration-only files out of the numbers.
+      include: [
+        'cmd/**/*.ts',
+        'internal/**/*.ts',
+        'types/**/*.ts',
+        'web/app/src/**/*.{ts,tsx}',
+      ],
       exclude: [
         '**/*.d.ts',
         'tests/**',

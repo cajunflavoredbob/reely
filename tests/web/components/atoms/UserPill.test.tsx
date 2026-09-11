@@ -32,6 +32,25 @@ describe('UserPill', () => {
     expect(screen.getByText('abcdefghijklmn')).toBeDefined();
   });
 
+  // Counting and cutting by code unit split an astral character in half and
+  // rendered the replacement glyph next to the ellipsis.
+  it('counts and cuts by code point, never leaving a lone surrogate', () => {
+    const name = '🎬'.repeat(16);
+    render(<UserPill userName={name} />);
+    const label = screen.getByText(/🎬/).textContent ?? '';
+    // Same 13-then-ellipsis rule as the ASCII case, counted in code points.
+    expect(label).toBe(`${'🎬'.repeat(13)}…`);
+    // A high surrogate with no low after it, or a low with no high before it.
+    const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    expect(LONE_SURROGATE.test(label)).toBe(false);
+  });
+
+  it('does NOT truncate a 14-code-point name made of astral characters', () => {
+    const name = '🎬'.repeat(14);
+    render(<UserPill userName={name} />);
+    expect(screen.getByText(name)).toBeDefined();
+  });
+
   // The stylesheet reads --hue (0-359) and --progress (% string) off the inline
   // style; typing catches `--huee` at compile time, this pins the values.
   it('injects --hue and --progress as inline CSS variables', () => {

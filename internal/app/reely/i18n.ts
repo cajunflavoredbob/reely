@@ -25,7 +25,16 @@ class TranslationLoadError extends Error {}
 // BCP-47-ish locale tag ("en", "en-US", "zh-Hans"). `locale` arrives from an
 // unauthenticated setLocale WS message and is interpolated into a join() path
 // below, which resolves `../`: unvalidated, it reads arbitrary .json off disk.
-const LOCALE_TAG = /^[a-z]{2,3}(-[a-z0-9]+)*$/i;
+//
+// Subtags are bounded at 8 characters, the BCP-47 maximum, and the whole tag
+// at 35. Without a bound the tag is only as long as the sender cares to make
+// it: readFile then fails ENAMETOOLONG rather than ENOENT, and the non-ENOENT
+// branch below writes the entire caller-chosen path back out as a warn line.
+const MAX_LOCALE_TAG_LENGTH = 35;
+const LOCALE_TAG = /^[a-z]{2,3}(-[a-z0-9]{1,8})*$/i;
+
+const isLocaleTag = (candidate: string): boolean =>
+  candidate.length <= MAX_LOCALE_TAG_LENGTH && LOCALE_TAG.test(candidate);
 
 // JSON.parse proves valid JSON, not a flat string->string map. Nested objects
 // or non-string values would leak `[object Object]` into translated surfaces;
@@ -47,7 +56,7 @@ const isTranslationShape = (parsed: unknown): parsed is Record<string, string> =
 export const loadTranslation = memo1(
   async (locale: string): Promise<Record<string, string>> => {
     const candidates = [...new Set([locale, locale.split('-')[0], 'en'])].filter(
-      (candidate) => LOCALE_TAG.test(candidate),
+      isLocaleTag,
     );
     for (const candidate of candidates) {
       const path = join(LOCALIZATION_PATH, `${candidate}.json`);
@@ -75,15 +84,18 @@ export const loadTranslation = memo1(
   },
 );
 
-// Resolves the best available locale from Accept-Language.
-export const getTranslations = async (req: Request): Promise<Translations> => {
+// Resolves the best available locale from Accept-Language. Split out from
+// getTranslations because the HTML shell needs the tag itself, not just the
+// bundle: a document that renders German while declaring `lang="en"` gets
+// English phonemes from a screen reader and a translation prompt from Chrome.
+export const resolveLanguage = async (req: Request): Promise<string> => {
   const availableLocales = await getAvailableLocales();
 
   if (!req.headers['accept-language']) {
     // Short-circuit: accepts() with no header returns the first offer, not en.
     // debug, not info: a header-less request is a poller, and info would spam.
     logger.debug('No Accept-Language header; defaulting to en');
-    return (await loadTranslation('en')) as Translations;
+    return 'en';
   }
 
   const negotiator = accepts(req);
@@ -91,15 +103,10 @@ export const getTranslations = async (req: Request): Promise<Translations> => {
   // readdir's order is filesystem-dependent.
   const acceptedLanguage = negotiator.languages([...availableLocales].sort());
 
-  let language: string;
-
-  if (!acceptedLanguage) {
-    language = 'en';
-  } else if (Array.isArray(acceptedLanguage)) {
-    language = acceptedLanguage[0];
-  } else {
-    language = acceptedLanguage;
-  }
-
-  return (await loadTranslation(language)) as Translations;
+  if (!acceptedLanguage) return 'en';
+  if (Array.isArray(acceptedLanguage)) return acceptedLanguage[0];
+  return acceptedLanguage;
 };
+
+export const getTranslations = async (req: Request): Promise<Translations> =>
+  (await loadTranslation(await resolveLanguage(req))) as Translations;

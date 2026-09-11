@@ -5,6 +5,7 @@ import { CloseIcon } from "../atoms/CloseIcon";
 import { SearchControl } from "../molecules/SearchControl";
 import { FieldPicker } from "../molecules/FieldPicker";
 import { useStore, useDispatch } from "../../store";
+import { FILTER_VALUES_UNAVAILABLE } from "../../store/reducer";
 import styles from "./FilterPanel.module.css";
 
 interface FilterPanelProps {
@@ -36,6 +37,13 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
   // and on desktop this panel is mounted alongside it, so both would fire in
   // the same tick and the server would see two requests for one room.
 
+  // Only a key with nothing recorded yet is worth requesting. A key whose
+  // fetch failed keeps its marker and is deliberately left alone: re-asking on
+  // every panel open is what turned one provider outage into a toast per row
+  // per open. The row's Retry button is the way back.
+  const needsValues = (key: string): boolean =>
+    createRoom?.filterValues?.[key] === undefined;
+
   // Re-sync the draft on each open, so a returning user sees current room
   // state; edits made while open are left alone, even if another user applies
   // filters mid-edit. Also prefetches values for pre-populated rows so the
@@ -52,7 +60,7 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
       setPickerOpen(false);
       setPickerSearch("");
       for (const f of fresh) {
-        if (!createRoom?.filterValues?.[f.key]) {
+        if (needsValues(f.key)) {
           dispatch({ type: "requestFilterValues", payload: { key: f.key } });
         }
       }
@@ -65,7 +73,7 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
   // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only prefetch; adding draft/createRoom/dispatch would re-fire on every state change and duplicate the requestFilterValues dispatches.
   useEffect(() => {
     for (const f of draft) {
-      if (!createRoom?.filterValues?.[f.key]) {
+      if (needsValues(f.key)) {
         dispatch({ type: "requestFilterValues", payload: { key: f.key } });
       }
     }
@@ -102,7 +110,7 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
     setExpandedRows((prev) => new Set(prev).add(key));
     setPickerOpen(false);
     setPickerSearch("");
-    if (!createRoom?.filterValues?.[key]) {
+    if (needsValues(key)) {
       dispatch({ type: "requestFilterValues", payload: { key } });
     }
   };
@@ -130,7 +138,7 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
     // re-invokes them (StrictMode always, production at will), which would
     // duplicate the requestFilterValues frame.
     const willExpand = !expandedRows.has(key);
-    if (willExpand && !createRoom?.filterValues?.[key]) {
+    if (willExpand && needsValues(key)) {
       dispatch({ type: "requestFilterValues", payload: { key } });
     }
     setExpandedRows((prev) => {
@@ -168,12 +176,37 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
 
   // Boolean rows always count; others need at least one selected value. Shared
   // by the canApply gate and handleApply so the two cannot drift.
+  //
+  // A key the catalog does not carry never counts. room.activeFilters and the
+  // filter catalog come from two independent server payloads and can disagree
+  // (the synthetic `library` filter disappears once a Plex server is down to
+  // one movie library, and pointing reely at a different server renames keys):
+  // the row map below renders nothing for such a key, so counting it left an
+  // invisible row holding Apply enabled, blocking "Clear filters", and getting
+  // resubmitted on every Apply.
+  //
+  // An absent OR empty catalog means no key can be judged, so fall back to the
+  // value test there. Empty counts because requestFiltersError parks an empty
+  // catalog on any getFilters failure: treating that as "every key is unknown"
+  // turned the footer of a filtered room into an enabled "Clear filters",
+  // one click from wiping everyone's filters, in a panel simultaneously
+  // claiming there were none.
   const isFilterApplicable = (f: Filter): boolean => {
+    if (!filters || filters.filters.length === 0) return f.value.length > 0;
     const fd = fieldsByKey.get(f.key);
-    return fd?.type === "boolean" || f.value.length > 0;
+    if (!fd) return false;
+    return fd.type === "boolean" || f.value.length > 0;
   };
 
   const canApply = draft.filter(isFilterApplicable).length > 0;
+
+  // Rows the body can actually draw. Unknown-key rows render as nothing, so
+  // the "no filters yet" prompt keys off this instead of draft.length: an
+  // unknown-key draft otherwise left the body blank with no copy at all.
+  const visibleRowCount = draft.reduce(
+    (n, f) => (fieldsByKey.has(f.key) ? n + 1 : n),
+    0,
+  );
 
   // "Clear" mode: an empty draft in a filtered room submits the empty set.
   // Without it, a disabled button leaves applied filters unremovable.
@@ -212,7 +245,7 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
           </p>
         ) : (
           <>
-            {draft.length === 0 && !pickerOpen && (
+            {visibleRowCount === 0 && !pickerOpen && (
               <div className={styles.emptyFilters}>
                 No filters yet. Tap below to add one.
               </div>
@@ -223,13 +256,19 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
               if (!fieldDef) return null;
               const expanded = expandedRows.has(filter.key);
               const operators = filters.filterTypes[fieldDef.type] ?? [];
-              // Server-enumerated values. Three states:
-              //   undefined  request in flight
-              //   [...]      show pills, whatever fieldDef.type says
-              //   []         no values; show the free-text SearchControl
+              // Server-enumerated values. Four states:
+              //   undefined                   request in flight
+              //   [...]                       show pills, whatever fieldDef.type says
+              //   []                          no values; show the free-text SearchControl
+              //   FILTER_VALUES_UNAVAILABLE   the fetch failed; offer a retry
+              // The last two are both empty arrays and are told apart by
+              // reference, so the failed case never reaches the free-text
+              // control, which can't produce the tag ids an enumerated field
+              // matches on.
               // Do not gate on fieldDef.type: Plex enumerates some integer
               // fields, decade being the canonical case.
               const filterValues = createRoom?.filterValues?.[filter.key];
+              const valuesFailed = filterValues === FILTER_VALUES_UNAVAILABLE;
               const isBoolean = fieldDef.type === "boolean";
 
               return (
@@ -309,6 +348,27 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
                         <p className={styles.loadingInline}>Loading values…</p>
                       )}
 
+                      {!isBoolean && valuesFailed && (
+                        <>
+                          <p className={styles.loadingInline}>
+                            Couldn't load values.
+                          </p>
+                          <div className={styles.multiPills}>
+                            <button
+                              type="button"
+                              className={styles.pill}
+                              onClick={() =>
+                                dispatch({
+                                  type: "requestFilterValues",
+                                  payload: { key: filter.key },
+                                })}
+                            >
+                              Retry
+                            </button>
+                          </div>
+                        </>
+                      )}
+
                       {!isBoolean && filterValues && filterValues.length > 0 && (
                         <div className={styles.multiPills}>
                           {filterValues.map((fv) => {
@@ -337,7 +397,7 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
                         </div>
                       )}
 
-                      {!isBoolean && filterValues && filterValues.length === 0 && (
+                      {!isBoolean && !valuesFailed && filterValues && filterValues.length === 0 && (
                         <SearchControl
                           values={filter.value}
                           placeholder={`Add ${fieldDef.title.toLowerCase()}…`}
@@ -388,6 +448,11 @@ export const FilterPanel = ({ onClose, onApply, isDrawer = false, isOpen = true 
             ? "CLEARS ALL FILTERS FOR EVERYONE IN THE ROOM"
             : draft.length === 0
             ? "ADD AT LEAST ONE FILTER TO APPLY"
+            // A freshly added non-boolean row starts with an empty value, so
+            // Apply is disabled. Without this branch the hint fell through to
+            // the scope copy below and never said what was missing.
+            : !canSubmit
+            ? "PICK A VALUE TO APPLY"
             : "APPLIES FOR EVERYONE IN THE ROOM"}
         </p>
         <button

@@ -49,19 +49,33 @@ export const buildPlexLinks = (
   };
 };
 
-// One probe per page session: network topology doesn't change mid-session, so
-// the result is cached and shared by every caller.
+// The result is cached and shared by every caller, but only for as long as the
+// network it describes can be assumed unchanged: a phone that leaves the house
+// Wi-Fi mid-session would otherwise point every "Open in Plex" link at a LAN
+// address it can no longer reach, for the life of the tab.
 const PROBE_TIMEOUT_MS = 1500;
+const PROBE_TTL_MS = 60_000;
 let probe: Promise<boolean> | undefined;
 let probeBaseUrl: string | undefined;
+let probedAt = 0;
+
+// Expires the cache rather than dropping it, so the first of the N mounted
+// link components to react to an online/offline event re-probes and the rest
+// join that one probe instead of each firing their own.
+const markProbeStale = () => {
+  probedAt = 0;
+};
 
 export const probeLocalPlexReachable = (
   baseUrl: string | undefined,
 ): Promise<boolean> => {
   if (!baseUrl) return Promise.resolve(false);
   // Keyed by baseUrl so a config change mid-session re-probes.
-  if (probe && probeBaseUrl === baseUrl) return probe;
+  if (probe && probeBaseUrl === baseUrl && Date.now() - probedAt < PROBE_TTL_MS) {
+    return probe;
+  }
   probeBaseUrl = baseUrl;
+  probedAt = Date.now();
   probe = (async () => {
     try {
       // no-cors: only network-level success matters, and Plex sends no CORS
@@ -87,11 +101,31 @@ export const useLocalPlexReachable = (
   const [state, setState] = useState<boolean | undefined>(undefined);
   useEffect(() => {
     let cancelled = false;
-    probeLocalPlexReachable(baseUrl).then((ok) => {
-      if (!cancelled) setState(ok);
-    });
+    const run = () => {
+      probeLocalPlexReachable(baseUrl).then((ok) => {
+        if (!cancelled) setState(ok);
+      });
+    };
+    run();
+    // An online/offline flip means the network changed, so the cached answer is
+    // worthless. Returning to a backgrounded tab only re-checks if the cache
+    // has gone stale, which is the case that matters: the phone was carried off
+    // the LAN (or back onto it) while the tab sat in the background.
+    const reprobe = () => {
+      markProbeStale();
+      run();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") run();
+    };
+    window.addEventListener("online", reprobe);
+    window.addEventListener("offline", reprobe);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
+      window.removeEventListener("online", reprobe);
+      window.removeEventListener("offline", reprobe);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [baseUrl]);
   return state;

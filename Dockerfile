@@ -30,14 +30,25 @@ ENV NODE_ENV=production
 WORKDIR /app
 
 LABEL org.opencontainers.image.title="reely" \
-      org.opencontainers.image.description="Social movie-picking app for Plex"
+      org.opencontainers.image.description="Social movie-picking app for Plex" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.source="https://github.com/cajunflavoredbob/reely"
 
 # Node's official images refresh Debian packages on their own cadence and
 # lag security publishes, so a pinned base ships known base-package CVEs.
 # Upgrading at build time trades OS-layer reproducibility for freshness;
 # the Node and pnpm pins still fix the application layer. clean + rm keep
 # the layer small.
-RUN apt-get update \
+#
+# APT_REFRESH is what makes that freshness real. BuildKit keys this RUN on
+# the parent image digest plus the command string, and both are pinned, so
+# a CI layer cache would otherwise replay the same upgrade forever and ship
+# the package state from the day the cache entry was first written. The
+# workflows pass the build date; a plain `docker build` keeps the default
+# and stays cached.
+ARG APT_REFRESH=unset
+RUN echo "apt refresh: ${APT_REFRESH}" \
+    && apt-get update \
     && apt-get upgrade -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -51,6 +62,12 @@ COPY --from=builder /deploy/package.json ./
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/configs ./configs
 COPY --from=builder /app/VERSION ./
+
+# The image is a binary redistribution, so Apache-2.0 section 4 requires the
+# license text and the NOTICE attribution to travel with it. Without these the
+# upstream author's copyright notice is stripped from everything Docker Hub
+# serves. (The bundled fonts' OFL text already rides along inside dist/web/.)
+COPY --from=builder /app/LICENSE /app/NOTICE ./
 
 # Drop root: run as the image's unprivileged 'node' user (UID 1000).
 # data/ must exist and be owned before the volume mounts, since Docker seeds

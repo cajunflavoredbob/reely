@@ -15,9 +15,6 @@
     "isolatedModules": true,
     "noUnusedParameters": true,
     "noUnusedLocals": true,
-    "noFallthroughCasesInSwitch": true,
-    "paths": {
-      "/types/*": ["../../types/*"]
-    }
+    "noFallthroughCasesInSwitch": true
   }
 }

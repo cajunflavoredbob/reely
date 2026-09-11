@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Request, Response } from 'express';
 import { memo } from '../util/memo';
-import { getTranslations } from '../i18n';
+import { getTranslations, resolveLanguage } from '../i18n';
 import { getConfig } from '../config/main';
 import type { Config } from '../../../../types/reely';
 import { getVersion } from '../version';
@@ -69,6 +69,7 @@ const getRootPath = (req: Request, config: Config): string => {
 
 export const handler = async (req: Request, res: Response): Promise<void> => {
   const config = getConfig();
+  const lang = await resolveLanguage(req);
   const translations = await getTranslations(req);
   const template = await getTemplate();
 
@@ -81,6 +82,10 @@ export const handler = async (req: Request, res: Response): Promise<void> => {
     // interpolate() escapes them.
     interpolate(template, {
       ...translations,
+      // Named after the attribute it is for: `<html lang="${lang}">`. Placed
+      // after the spread so a locale file can never shadow it with a key of
+      // the same name.
+      lang,
       rootPath: getRootPath(req, config),
       version: await getVersion(),
     }),

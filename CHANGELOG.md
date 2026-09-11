@@ -15,6 +15,108 @@ the continuation's first stable release.
 
 ## [Unreleased]
 
+## [1.1.9] - 2026-09-11
+
+No configuration changes, no wire-protocol changes, and nothing breaking for
+image pinners: every item below is a repair to existing behavior or a
+hardening of an existing surface.
+
+### Fixed
+
+- The room-file sweep no longer deletes rooms it merely failed to read. It
+  used to wrap the read and the JSON parse in one catch whose handler
+  unlinked the file, so a permission or I/O error (a volume whose files
+  changed ownership after a PUID/PGID switch, say) answered a transient
+  problem by destroying the data. Only a genuine parse failure removes a
+  file now; anything else is logged with its path and left alone. A save
+  interrupted between its temp write and the rename no longer strands the
+  temp file either: the write path cleans up after itself, and the sweep
+  reaps stale ones.
+- A room save now snapshots its state when it is called rather than after
+  the directory check, so a rating landing in that window can no longer be
+  captured by an older save and committed out of order.
+- Shutdown terminates WebSocket clients before draining the save queue
+  instead of after. Ratings accepted during the drain used to arm a timer
+  on a queue that had already been snapshotted and cleared, so the last
+  swipes before a restart were the ones most likely to be lost.
+- A WebSocket frame that is valid JSON but not an object (the four bytes
+  `null`, for instance) is rejected instead of throwing inside a handler
+  nobody was awaiting. Filter keys and filter arrays are now length-bounded
+  before they reach Plex, and untrusted frames are truncated before they
+  reach the log rather than being written out whole.
+- A backward wall-clock step (an NTP correction, a host resumed from
+  suspend) no longer silences a connection for the length of the jump: the
+  per-connection message window rolls instead of waiting out a future
+  timestamp.
+- A failure reading `VERSION` during boot now logs fatal and exits 1. It
+  previously fell through to the log-only unhandled-rejection handler and
+  the process exited 0 without ever listening, which every supervisor reads
+  as a clean shutdown rather than a crash loop.
+- An unreachable Plex server at startup reports itself as unavailable with
+  the underlying cause attached, instead of falling into the generic
+  startup-error path. The message no longer truncates the server URL, which
+  had been defeating the log redaction that matches the URL exactly.
+- Credentials embedded in a Plex URL are stripped before that URL is sent
+  to the browser.
+- `NODE_ENV=development` no longer throws on the published image: the
+  pretty-printing log transport is a dev dependency that is absent there,
+  and its construction now falls back to plain NDJSON.
+- The join button no longer sticks on "joining..." when the socket drops
+  mid-request. The screen recovers on its own, and a reply that arrives
+  after its own timeout puts you in the room rather than being discarded
+  while you sit on the login form.
+- The "not configured yet" screen now leaves once the server is configured,
+  instead of stranding a returning visitor on a notice that promises it
+  will.
+- A filter whose values fail to load shows the failure and a Retry, rather
+  than spinning on "Loading values..." forever. The failure is reported
+  once per filter instead of once per filter per time the panel is opened.
+- Holding an arrow key no longer rates a card per key-repeat, silently
+  draining the deck past the server's rate limit and stopping matches with
+  no visible sign.
+- Like and Pass are disabled while disconnected instead of looking live and
+  doing nothing, and toasts render above the mobile overlays instead of
+  underneath them. The toast strip no longer swallows taps along the bottom
+  of the screen.
+- Poster images fall back to the placeholder when a request fails, instead
+  of rendering the browser's broken-image glyph across the card.
+- One Escape press closes only the topmost overlay, rather than dismissing
+  the match celebration and the open filter panel together.
+- Counts read "1 match" rather than "1 matches", the filter control is
+  labelled the same on mobile and desktop, and a long room name truncates
+  instead of pushing the desktop header's controls out of the viewport.
+- A `config.yaml` that is empty, whitespace-only, or nothing but comments is
+  treated as carrying no settings rather than killing the boot. Mounting a
+  placeholder config while configuring through environment variables is a
+  supported setup, and a configuration load failure is fatal, so this was
+  worth getting right: js-yaml 5 raises on an empty document where 4 returned
+  undefined, and the check now happens before the parse instead of depending
+  on what the parser returns.
+
+### Security
+
+- `allowedOrigins` is validated when it comes from YAML, where a scalar
+  used to be accepted silently and then reject every WebSocket upgrade.
+  Paired settings are checked together, so a present-but-empty `TLS_KEY`
+  alongside a `TLS_CERT` fails the boot instead of quietly serving plain
+  HTTP.
+- GitHub Actions are pinned to commit SHAs rather than mutable tags, and
+  the runtime image's package upgrade is keyed on a build date so the layer
+  cache stops serving an indefinitely stale one.
+
+### Changed
+
+- Dependencies: js-yaml 4.1.1 to 5.4.1, the runtime base image from
+  node 26.7.0-slim to 26.8.1-slim, vite 6.4.2 to 8.2.2 for the UI build, and
+  the test and build toolchains moved off packages carrying published
+  advisories. The advisories were all in build- and test-time packages, which
+  the runtime image does not contain.
+- Documentation corrections: the Apache reverse-proxy example sets
+  `ProxyPreserveHost On`, without which the WebSocket origin check rejects
+  every upgrade; the HAProxy example includes the server name its syntax
+  requires; the configuration guide no longer claims support for multiple
+  Plex servers, which the code has always refused.
+
 ## [1.1.8] - 2026-08-21
 
 ### Changed

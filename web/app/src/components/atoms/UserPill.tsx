@@ -13,10 +13,18 @@ interface UserPillProps {
 // Typo-safe CSS-var keys, as in Avatar.
 type UserPillCssVars = { "--hue": number; "--progress": string };
 
-// Purely layout: the full name is in the users popup and in title= on hover.
+// Purely layout: the full name stays recoverable from title= on hover. The
+// users popup renders this same pill, so it is truncated there too.
+//
+// Counted and cut by code point, not code unit: slicing an emoji in half
+// leaves a lone surrogate, which renders as the replacement glyph.
 const TRUNCATE_AT = 14;
-const display = (name: string) =>
-  name.length > TRUNCATE_AT ? `${name.slice(0, TRUNCATE_AT - 1)}…` : name;
+const display = (name: string) => {
+  const chars = [...name];
+  return chars.length > TRUNCATE_AT
+    ? `${chars.slice(0, TRUNCATE_AT - 1).join("")}…`
+    : name;
+};
 
 // memo: one per user in UserPillRow and UsersPopup, so progress-bump churn
 // adds up. All props primitive, so shallow equality is correct.

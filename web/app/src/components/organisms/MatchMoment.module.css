@@ -128,9 +128,16 @@
   }
 }
 
-/* Big celebratory overlay (first match) */
+/* Big celebratory overlay (first match).
+ *
+ * fixed, not absolute: it declares aria-modal, and as an absolute box its
+ * containing block is only .desktopSwipeStage on desktop (leaving the header
+ * and the 300px matches sidebar lit and clickable beside a supposed modal) or
+ * the taller-than-viewport .screenLayout on mobile. No ancestor carries a
+ * transform, filter or perspective, so fixed resolves against the viewport in
+ * both layouts. */
 .overlay {
-  position: absolute;
+  position: fixed;
   inset: 0;
   z-index: 200;
   background: radial-gradient(
@@ -143,11 +150,31 @@
   display: flex;
   flex-direction: column;
   align-items: center;
+  /* ~640px of content that will not shrink. On a short window (a 1280x720
+     display, or any half-height window) plain `center` + `overflow: hidden`
+     split the overflow across both ends and clipped the whole .actions row,
+     taking "Keep swiping" and "Open in Plex" with it. `safe center` centres
+     while the content fits and switches to start alignment once it does not,
+     so the scroll below can reach the tail. The plain `center` is the fallback
+     for browsers that drop the `safe` declaration outright: without it they
+     would land on `normal` and lose the centring entirely. */
   justify-content: center;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: progressive-enhancement fallback pair, not a mistake. */
+  justify-content: safe center;
   padding: 32px;
   cursor: pointer;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   animation: ry-float-up 320ms ease;
+}
+
+/* Own clipping layer so the confetti's 700px fall does not become scrollable
+   overflow on the overlay above. */
+.confettiLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 /* Confetti pieces */
@@ -157,6 +184,15 @@
   height: 12px;
   border-radius: 2px;
   animation: ry-confetti-fall linear infinite;
+}
+
+/* Twenty pieces translating and rotating for as long as the celebration is up,
+   well past WCAG 2.2.2's five seconds. Matches the guard in
+   Loading.module.css. */
+@media (prefers-reduced-motion: reduce) {
+  .confettiLayer {
+    display: none;
+  }
 }
 
 @keyframes ry-confetti-fall {

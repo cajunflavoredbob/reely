@@ -1,10 +1,12 @@
 import type { Filter } from '../../../../types/reely';
-
-// Well above any real filter from the UI; stops a crafted WS message from
-// pushing huge strings into the Plex query layer.
-const MAX_FILTER_KEY_LEN = 64;
-const MAX_FILTER_VALUES = 32;
-const MAX_FILTER_VALUE_LEN = 128;
+// Bounds live in the shared module so the SPA's filter controls can cap a
+// selection client-side: the server rejects the WHOLE applyFilters payload on
+// one over-long row, and a UI that cannot know the limit cannot avoid that.
+import {
+  MAX_FILTER_KEY_LEN,
+  MAX_FILTER_VALUE_LEN,
+  MAX_FILTER_VALUES,
+} from '../../../../types/sanitize';
 
 /**
  * Validate one filter before it can reach the Plex query layer.

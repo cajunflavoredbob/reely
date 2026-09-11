@@ -107,7 +107,7 @@ describe('connected handler', () => {
 
   // A reconnect must not pre-empt a user typing their identity on the login
   // screen with whatever cached userName localStorage happens to hold.
-  it('does NOT auto-login when the route is "login" (stale-localStorage race guard, #301)', async () => {
+  it('does NOT auto-login when the route is "login" (stale-localStorage race guard)', async () => {
     setupDomGlobals({ userName: 'alice' });
     const mod = await loadCreateStore();
     mod.createStore();
@@ -116,6 +116,27 @@ describe('connected handler', () => {
     mod.useZustandStore.getState().dispatch({ type: 'navigate', payload: { route: 'login' } } as any);
     clientMock.dispatchEvent(new Event('connected'));
     expect(clientMock.login).not.toHaveBeenCalled();
+  });
+
+  // The reconnect's server-side session is brand new and unauthenticated. With
+  // the cached `user` still set, Login's submit takes its "already logged in"
+  // branch and joins without logging in, so every attempt comes back
+  // NotLoggedInError until the page is reloaded.
+  it('clears the cached user when the socket reconnects at the login screen', async () => {
+    setupDomGlobals({ userName: 'alice' });
+    const mod = await loadCreateStore();
+    mod.createStore();
+    // Land on login with a user set, the state a leaveRoom leaves behind.
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
+    }));
+    expect(mod.useZustandStore.getState().route).toBe('login');
+    expect(mod.useZustandStore.getState().user).toEqual({ userName: 'alice' });
+
+    clientMock.dispatchEvent(new Event('connected'));
+    expect(clientMock.login).not.toHaveBeenCalled();
+    expect(mod.useZustandStore.getState().user).toBeUndefined();
   });
 
   it('navigates to login when no userName is stored', async () => {
@@ -245,6 +266,79 @@ describe('message handler: loginSuccess paths', () => {
     expect(mod.useZustandStore.getState().room).toBeUndefined();
   });
 
+  // connectionStatus mirrors the raw socket, not the session: a reconnect that
+  // completes the handshake and dies before loginSuccess still flips it to
+  // "connected". Only a write-once stamp keeps the window measured from the
+  // real drop, so an overnight flap can't silently re-create an expired room.
+  it('path 1: a socket that opens and dies before login does not extend the window', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    setupDomGlobals({ userName: 'alice' });
+    const mod = await loadCreateStore();
+    mod.createStore();
+    clientMock.dispatchEvent(new Event('connected'));
+    enterRoom(mod, 'movie-night');
+
+    // The real drop.
+    clientMock.dispatchEvent(new Event('disconnected'));
+    // A handshake that completes and dies again, still on route 'room'.
+    vi.setSystemTime(9 * 60 * 1000);
+    clientMock.dispatchEvent(new Event('connected'));
+    clientMock.dispatchEvent(new Event('disconnected'));
+
+    vi.setSystemTime(11 * 60 * 1000);
+    clientMock.joinOrCreateRoom.mockClear();
+    clientMock.dispatchEvent(new Event('connected'));
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
+    }));
+
+    // Measured from t=0, so expired: the user lands on login instead.
+    expect(clientMock.joinOrCreateRoom).not.toHaveBeenCalled();
+    expect(mod.useZustandStore.getState().route).toBe('login');
+  });
+
+  // The rejoin is fired, not resolved: the socket can die again before
+  // joinRoomSuccess lands. That second drop is the same outstanding drop, so
+  // the candidate must still carry the ORIGINAL timestamp, or each half-
+  // completed rejoin walks the window forward and an overnight flap silently
+  // re-creates a room the server expired hours ago.
+  it('path 1: a drop during a pending rejoin does not extend the window', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    setupDomGlobals({ userName: 'alice' });
+    const mod = await loadCreateStore();
+    mod.createStore();
+    clientMock.dispatchEvent(new Event('connected'));
+    enterRoom(mod, 'movie-night');
+
+    // The real drop at t=0, then a reconnect that rejoins.
+    clientMock.dispatchEvent(new Event('disconnected'));
+    clientMock.dispatchEvent(new Event('connected'));
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
+    }));
+    expect(clientMock.joinOrCreateRoom).toHaveBeenCalledWith({ roomName: 'movie-night' });
+
+    // No joinRoomSuccess: the socket dies again with the rejoin unresolved.
+    vi.setSystemTime(9 * 60 * 1000);
+    clientMock.dispatchEvent(new Event('disconnected'));
+
+    vi.setSystemTime(11 * 60 * 1000);
+    clientMock.joinOrCreateRoom.mockClear();
+    clientMock.dispatchEvent(new Event('connected'));
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
+    }));
+
+    // Measured from t=0, so expired: the user lands on login instead.
+    expect(clientMock.joinOrCreateRoom).not.toHaveBeenCalled();
+    expect(mod.useZustandStore.getState().route).toBe('login');
+  });
+
   it('path 1: surfaces a toast when the silent rejoin rejects', async () => {
     clientMock.joinOrCreateRoom = vi.fn().mockRejectedValue(new Error('room gone'));
     setupDomGlobals({ userName: 'alice' });
@@ -278,6 +372,46 @@ describe('message handler: loginSuccess paths', () => {
       data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
     }));
     expect(clientMock.joinOrCreateRoom).toHaveBeenCalledWith({ roomName: 'movie-night' });
+  });
+
+  // The login form owns the room name once the user is on it: Login fires its
+  // own join, and this one would create a second, unwanted room alongside it.
+  it('path 2: does not fire once the user is on the login form', async () => {
+    setupDomGlobals({
+      href: 'https://reely.example.com/?roomName=movie-night',
+      userName: 'alice',
+    });
+    const mod = await loadCreateStore();
+    mod.createStore();
+    // biome-ignore lint/suspicious/noExplicitAny: navigate action shape.
+    mod.useZustandStore.getState().dispatch({ type: 'navigate', payload: { route: 'login' } } as any);
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
+    }));
+    expect(clientMock.joinOrCreateRoom).not.toHaveBeenCalled();
+  });
+
+  // A server with no providers can't build a room, so the deep-link join would
+  // fail and drop the visitor onto a login form with a create-room error.
+  it('path 2: does not fire while the server is unconfigured', async () => {
+    setupDomGlobals({
+      href: 'https://reely.example.com/?roomName=movie-night',
+      userName: 'alice',
+    });
+    const mod = await loadCreateStore();
+    mod.createStore();
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'config', payload: { requiresConfiguration: true } } as any,
+    }));
+    expect(mod.useZustandStore.getState().route).toBe('config');
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
+    }));
+    expect(clientMock.joinOrCreateRoom).not.toHaveBeenCalled();
+    expect(mod.useZustandStore.getState().route).toBe('config');
   });
 
   // Path 3: no room, no pendingRoomJoin, so the reducer's loginSuccess takes
@@ -371,26 +505,64 @@ describe('message handler: URL syncing', () => {
     expect(url).not.toContain('roomName');
   });
 
+  // The reducer treats NOT_JOINED as a completed leave, so the URL has to go
+  // with it: otherwise a refresh deep-links straight back into the room the
+  // user believes they just left.
+  it('leaveRoomError NOT_JOINED removes ?roomName from the URL', async () => {
+    setupDomGlobals({ href: 'https://reely.example.com/?roomName=movie-night' });
+    const mod = await loadCreateStore();
+    mod.createStore();
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
+      data: { type: 'leaveRoomError', payload: { errorType: 'NOT_JOINED' } } as any,
+    }));
+    expect(mod.useZustandStore.getState().room).toBeUndefined();
+    expect(historyReplaceState).toHaveBeenCalled();
+    const url = historyReplaceState.mock.calls[0]?.[2] as string;
+    expect(url).not.toContain('roomName');
+  });
+
+  // Any other errorType keeps the user in the room, so the link must survive.
+  it('leaveRoomError with another errorType leaves the URL alone', async () => {
+    setupDomGlobals({ href: 'https://reely.example.com/?roomName=movie-night' });
+    const mod = await loadCreateStore();
+    mod.createStore();
+    clientMock.dispatchEvent(new MessageEvent('message', {
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately unmapped errorType.
+      data: { type: 'leaveRoomError', payload: { errorType: 'SOMETHING_ELSE' } } as any,
+    }));
+    expect(historyReplaceState).not.toHaveBeenCalled();
+  });
+
   // An explicit leave must drop the rejoin candidate, or a later reconnect
   // pulls the user back into the room they deliberately left.
   it('leaveRoomSuccess drops the silent-rejoin candidate so a later reconnect does NOT rejoin', async () => {
     setupDomGlobals({ userName: 'alice' });
     const mod = await loadCreateStore();
     mod.createStore();
+    // The candidate is only armed by a drop taken while in a room, so the
+    // connection has to be live first.
+    clientMock.dispatchEvent(new Event('connected'));
     enterRoom(mod, 'movie-night');
-    // User explicitly leaves.
+    clientMock.dispatchEvent(new Event('disconnected'));
+
+    // The socket comes back and the user explicitly leaves.
+    clientMock.dispatchEvent(new Event('connected'));
     clientMock.dispatchEvent(new MessageEvent('message', {
       // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
       data: { type: 'leaveRoomSuccess' } as any,
     }));
-    // Off route 'room' the disconnect captures nothing, and the leave already
-    // wiped any candidate.
-    clientMock.dispatchEvent(new Event('disconnected'));
+
+    // Back on the room screen without a fresh join success, so nothing but the
+    // leave itself can have cleared the candidate.
+    // biome-ignore lint/suspicious/noExplicitAny: navigate action shape.
+    mod.useZustandStore.getState().dispatch({ type: 'navigate', payload: { route: 'room' } } as any);
     clientMock.joinOrCreateRoom.mockClear();
     clientMock.dispatchEvent(new MessageEvent('message', {
       // biome-ignore lint/suspicious/noExplicitAny: message payload shape.
       data: { type: 'loginSuccess', payload: { userName: 'alice' } } as any,
     }));
+    // A surviving candidate would drag them back into 'movie-night'.
     expect(clientMock.joinOrCreateRoom).not.toHaveBeenCalled();
   });
 });

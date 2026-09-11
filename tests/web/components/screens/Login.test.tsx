@@ -212,6 +212,34 @@ describe('LoginScreen: deferred-join effect', () => {
     });
   });
 
+  // The room input stays editable through the login round-trip, so this is the
+  // assertion that actually distinguishes the captured string from a boolean
+  // flag plus a live read of `roomName`.
+  it('joins the room captured at submit, not what the input holds when login lands', () => {
+    const { rerender } = render(<LoginScreen />);
+    const nameInput = screen.getByLabelText('Your name') as HTMLInputElement;
+    const roomInput = screen.getByLabelText('Room name') as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: 'alice' } });
+    fireEvent.change(roomInput, { target: { value: 'movie-night' } });
+    fireEvent.submit(nameInput.closest('form')!);
+
+    // The user keeps typing while the login is in flight.
+    fireEvent.change(roomInput, { target: { value: 'somewhere-else' } });
+
+    act(() => {
+      withState({ user: { userName: 'alice' } });
+      rerender(<LoginScreen />);
+    });
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'joinOrCreateRoom',
+      payload: { roomName: 'movie-night' },
+    });
+    expect(dispatch).not.toHaveBeenCalledWith({
+      type: 'joinOrCreateRoom',
+      payload: { roomName: 'somewhere-else' },
+    });
+  });
+
   // Clearing the slot on error stops a later auto-set of `user` (a WS reconnect
   // restoring the cached session) from firing a stale join unprompted.
   it('clears the deferred-join slot when an error appears (no stale fire on later user-set)', () => {
