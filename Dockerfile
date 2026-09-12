@@ -1,7 +1,7 @@
 # Exact patch pin keeps production builds reproducible; CI floors to `26`
 # so upstream Node 26.x breakage surfaces in PR CI, not in the image.
 # Bump in lockstep with `engines.node` in package.json.
-FROM node:26.7.0-slim AS builder
+FROM node:26.8.1-slim AS builder
 WORKDIR /app
 
 # Node 25+ images no longer ship corepack, so install pnpm via npm.
@@ -25,7 +25,7 @@ RUN pnpm build
 RUN pnpm --filter=reely deploy --prod --legacy /deploy
 
 # Runtime image: same exact patch pin as the builder.
-FROM node:26.7.0-slim
+FROM node:26.8.1-slim
 ENV NODE_ENV=production
 WORKDIR /app
 
